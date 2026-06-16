@@ -1,0 +1,23 @@
+# LocalLink Phase 1 sample Docker topology
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: locallink-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: locallink
+      POSTGRES_USER: locallink
+      POSTGRES_PASSWORD: locallink
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    labels:
+      locallink.name: Postgres Compose
+      locallink.group: docker
+      locallink.runtime: docker
+      locallink.downstream: Queue Worker
+      locallink.envVars: POSTGRES_PORT
+      locallink.docsUrl: https://hub.docker.com/_/postgres
+      locallink.notes: Persistent state for local services.
+      locallink.detail: Keeps database dependencies visible without leaving the local workspace.
+      locallink.tags: docker,db,stable
+      locallink.portEnv: POSTGRES_PORT

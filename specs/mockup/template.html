@@ -1,0 +1,1062 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8f8f5">
+  <title>LocalLink — PWA Dashboard</title>
+  <style>
+    :root {
+      --bg:      oklch(98% 0.005 250);
+      --surface: oklch(100% 0 0);
+      --fg:      oklch(22% 0.02 240);
+      --muted:   oklch(50% 0.018 240);
+      --border:  oklch(90% 0.008 240);
+      --accent:  oklch(58% 0.16 145);
+
+      --font-display: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+      --font-body:    -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+      --font-mono:    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { color-scheme: light; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top right, color-mix(in oklch, var(--accent) 8%, transparent), transparent 28%),
+        linear-gradient(180deg, color-mix(in oklch, var(--bg) 94%, white), var(--bg));
+      color: var(--fg);
+      font-family: var(--font-body);
+      letter-spacing: -0.01em;
+    }
+
+    button, input {
+      font: inherit;
+      color: inherit;
+    }
+
+    .shell {
+      max-width: 1600px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      justify-content: space-between;
+      padding: 14px 18px;
+      margin: 0 0 18px;
+      border: 1px solid color-mix(in oklch, var(--border) 85%, white);
+      background: color-mix(in oklch, var(--surface) 88%, transparent);
+      backdrop-filter: blur(16px);
+      border-radius: 18px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .mark {
+      width: 40px;
+      height: 40px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      background: color-mix(in oklch, var(--accent) 18%, white);
+      border: 1px solid color-mix(in oklch, var(--accent) 28%, var(--border));
+      font-family: var(--font-mono);
+      font-size: 14px;
+      font-weight: 700;
+      color: color-mix(in oklch, var(--accent) 58%, black);
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.1;
+      letter-spacing: 0.02em;
+    }
+
+    .brand p,
+    .eyebrow {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .search {
+      width: min(340px, 42vw);
+      height: 42px;
+      padding: 0 14px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      outline: none;
+    }
+
+    .chip,
+    .tab,
+    .ghost,
+    .primary {
+      border: 1px solid transparent;
+      border-radius: 999px;
+      transition: transform .18s ease, border-color .18s ease, background .18s ease, color .18s ease;
+    }
+
+    .chip:hover,
+    .tab:hover,
+    .ghost:hover,
+    .primary:hover { transform: translateY(-1px); }
+
+    .chip,
+    .tab,
+    .ghost {
+      min-height: 40px;
+      padding: 0 14px;
+      background: var(--surface);
+      border-color: var(--border);
+    }
+
+    .primary {
+      min-height: 40px;
+      padding: 0 16px;
+      background: var(--accent);
+      color: white;
+      box-shadow: 0 10px 30px color-mix(in oklch, var(--accent) 18%, transparent);
+    }
+
+    .chip.is-active,
+    .tab.is-active {
+      background: color-mix(in oklch, var(--accent) 10%, white);
+      border-color: color-mix(in oklch, var(--accent) 40%, var(--border));
+      color: color-mix(in oklch, var(--accent) 55%, black);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.35fr .85fr;
+      gap: 18px;
+      align-items: stretch;
+      margin-bottom: 18px;
+    }
+
+    .panel {
+      border: 1px solid var(--border);
+      background: color-mix(in oklch, var(--surface) 96%, transparent);
+      border-radius: 22px;
+      box-shadow: 0 12px 40px color-mix(in oklch, black 5%, transparent);
+    }
+
+    .hero-copy {
+      padding: 30px;
+      display: grid;
+      gap: 20px;
+      align-content: start;
+    }
+
+    .hero-copy h2 {
+      margin: 0;
+      max-width: 12ch;
+      font-size: clamp(38px, 4.2vw, 72px);
+      line-height: .95;
+      letter-spacing: -0.05em;
+    }
+
+    .hero-copy p {
+      margin: 0;
+      max-width: 60ch;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    .hero-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .inline-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: color-mix(in oklch, var(--accent) 10%, white);
+      color: color-mix(in oklch, var(--accent) 60%, black);
+      border: 1px solid color-mix(in oklch, var(--accent) 26%, var(--border));
+      font-size: 12px;
+    }
+
+    .stack {
+      padding: 22px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .stack h3,
+    .section h3 {
+      margin: 0;
+      font-size: 13px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .stack-value {
+      font-size: 44px;
+      letter-spacing: -0.06em;
+      line-height: .95;
+      margin: 0;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    .summary-card {
+      padding: 18px 18px 20px;
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      display: grid;
+      gap: 8px;
+    }
+
+    .summary-card strong {
+      font-size: 34px;
+      letter-spacing: -0.05em;
+    }
+
+    .summary-card span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.7fr) minmax(320px, .92fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .section {
+      padding: 22px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .section-head p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+      max-width: 60ch;
+    }
+
+    .filter-row,
+    .tab-row,
+    .action-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .services-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .service-card {
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      background: linear-gradient(180deg, white, color-mix(in oklch, var(--bg) 90%, white));
+      display: grid;
+      gap: 14px;
+    }
+
+    .service-top {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .service-name {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: -0.03em;
+    }
+
+    .service-kind {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .status {
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+
+    .status.healthy {
+      background: color-mix(in oklch, var(--accent) 10%, white);
+      color: color-mix(in oklch, var(--accent) 62%, black);
+      border-color: color-mix(in oklch, var(--accent) 28%, var(--border));
+    }
+
+    .status.warn {
+      background: color-mix(in oklch, oklch(76% 0.16 80) 15%, white);
+      color: oklch(53% 0.16 80);
+      border-color: color-mix(in oklch, oklch(76% 0.16 80) 28%, var(--border));
+    }
+
+    .status.off {
+      background: color-mix(in oklch, oklch(73% 0.03 250) 22%, white);
+      color: oklch(42% 0.03 250);
+      border-color: var(--border);
+    }
+
+    .service-stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .service-stats div {
+      border-radius: 12px;
+      padding: 10px 10px 11px;
+      background: color-mix(in oklch, var(--bg) 72%, white);
+      border: 1px solid color-mix(in oklch, var(--border) 80%, white);
+    }
+
+    .service-stats b {
+      display: block;
+      font-family: var(--font-mono);
+      font-size: 14px;
+      margin-bottom: 4px;
+    }
+
+    .service-stats span {
+      display: block;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.35;
+    }
+
+    .service-notes {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .service-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .service-actions button {
+      min-height: 38px;
+      padding-inline: 12px;
+    }
+
+    .rail {
+      display: grid;
+      gap: 18px;
+    }
+
+    .rail .panel {
+      padding: 18px;
+    }
+
+    .mini-grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    .mini-card {
+      padding: 14px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      display: grid;
+      gap: 6px;
+    }
+
+    .mini-card strong {
+      font-size: 17px;
+      letter-spacing: -0.02em;
+    }
+
+    .mini-card span {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .terminal {
+      background: linear-gradient(180deg, oklch(20% 0.02 240), oklch(14% 0.02 240));
+      color: oklch(95% 0.01 250);
+      border-color: color-mix(in oklch, black 18%, transparent);
+      overflow: hidden;
+    }
+
+    .terminal .section-head h3,
+    .terminal .section-head p,
+    .terminal .eyebrow {
+      color: oklch(78% 0.02 250);
+    }
+
+    .terminal .section-head h3 {
+      color: oklch(72% 0.02 250);
+    }
+
+    .terminal-body {
+      display: grid;
+      gap: 10px;
+      max-height: 420px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .log-line {
+      display: grid;
+      grid-template-columns: 70px 90px 1fr;
+      gap: 10px;
+      align-items: start;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: color-mix(in oklch, white 6%, transparent);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .log-line[data-level="warn"] { background: color-mix(in oklch, oklch(76% 0.16 80) 10%, transparent); }
+    .log-line[data-level="error"] { background: color-mix(in oklch, oklch(62% 0.16 25) 18%, transparent); }
+
+    .log-time,
+    .log-stream {
+      color: oklch(70% 0.02 250);
+      white-space: nowrap;
+    }
+
+    .log-message { color: white; }
+
+    .ports-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .port-box {
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      display: grid;
+      gap: 12px;
+    }
+
+    .port-form {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+    }
+
+    .port-form input {
+      height: 42px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      padding: 0 12px;
+      background: white;
+    }
+
+    .result {
+      display: grid;
+      gap: 8px;
+    }
+
+    .result strong {
+      font-size: 36px;
+      letter-spacing: -0.05em;
+    }
+
+    .table {
+      display: grid;
+      gap: 8px;
+    }
+
+    .table-row {
+      display: grid;
+      grid-template-columns: 1fr 92px 1fr;
+      gap: 10px;
+      align-items: center;
+      padding: 12px;
+      border-radius: 12px;
+      background: color-mix(in oklch, var(--bg) 78%, white);
+      border: 1px solid color-mix(in oklch, var(--border) 88%, white);
+      font-size: 13px;
+    }
+
+    .table-row span:last-child {
+      color: var(--muted);
+      text-align: right;
+    }
+
+    .tools-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .tool-card {
+      padding: 14px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: white;
+      display: grid;
+      gap: 6px;
+    }
+
+    .tool-card code,
+    .mono {
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    .tool-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .footer-rail {
+      display: grid;
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .footer-note {
+      padding: 14px 16px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: color-mix(in oklch, white 78%, var(--bg));
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .mobile-nav {
+      display: none;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (max-width: 1180px) {
+      .hero,
+      .main-grid,
+      .ports-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .summary-grid,
+      .services-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 820px) {
+      .shell {
+        padding: 14px;
+      }
+
+      .topbar {
+        align-items: start;
+        flex-direction: column;
+      }
+
+      .search {
+        width: 100%;
+      }
+
+      .summary-grid,
+      .services-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .service-stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .log-line {
+        grid-template-columns: 1fr;
+      }
+
+      body[data-focus-panel]:not([data-focus-panel="overview"]) [data-shell-panel] {
+        display: none;
+      }
+
+      body[data-focus-panel="overview"] [data-shell-panel="overview"],
+      body[data-focus-panel="services"] [data-shell-panel="services"],
+      body[data-focus-panel="logs"] [data-shell-panel="logs"],
+      body[data-focus-panel="ports"] [data-shell-panel="ports"] {
+        display: grid;
+      }
+
+      .mobile-nav {
+        position: sticky;
+        bottom: 12px;
+        z-index: 25;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+        margin-top: 16px;
+        padding: 10px;
+        border-radius: 18px;
+        border: 1px solid var(--border);
+        background: color-mix(in oklch, var(--surface) 86%, transparent);
+        backdrop-filter: blur(16px);
+      }
+
+      .mobile-nav .tab {
+        width: 100%;
+        padding-inline: 8px;
+      }
+    }
+  </style>
+</head>
+<body data-focus-panel="overview">
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark">LL</div>
+        <div>
+          <h1>LocalLink</h1>
+          <p>{{data.app.subtitle}}</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <input class="search" type="search" placeholder="Filter services, ports, or logs" aria-label="Search dashboard" data-search>
+        <button class="ghost" type="button" data-refresh>Refresh snapshot</button>
+        <button class="primary" type="button">Open dashboard PWA</button>
+      </div>
+    </header>
+
+    <section class="hero">
+      <div class="panel hero-copy" data-shell-panel="overview">
+        <div class="eyebrow">{{data.hero.eyebrow}}</div>
+        <h2>{{data.hero.title}}</h2>
+        <p>{{data.hero.body}}</p>
+        <div class="hero-row">
+          <button class="primary" type="button">Open service matrix</button>
+          <button class="ghost" type="button" data-focus="logs">Tail logs</button>
+          <div class="inline-meta">
+            <span class="pill">{{data.app.scope}}</span>
+            <span class="pill">{{data.pwa.install}}</span>
+            <span class="pill">{{data.pwa.serviceWorker}}</span>
+          </div>
+        </div>
+      </div>
+
+      <aside class="panel stack">
+        <h3>System snapshot</h3>
+        <p class="stack-value">{{data.snapshot.value}}</p>
+        <p class="eyebrow">{{data.snapshot.detail}}</p>
+        <div class="inline-meta">
+          <span class="pill">{{data.pwa.manifest}}</span>
+          <span class="pill">{{data.pwa.offline}}</span>
+        </div>
+      </aside>
+    </section>
+
+    <section class="summary-grid" data-shell-panel="overview">
+      <div class="summary-card" data-od-repeat="stat in data.stats">
+        <strong>{{stat.value}}</strong>
+        <span>{{stat.label}} — {{stat.detail}}</span>
+      </div>
+    </section>
+
+    <section class="main-grid">
+      <div class="panel section" data-shell-panel="services">
+        <div class="section-head">
+          <div>
+            <h3>Service matrix</h3>
+            <p>Docker containers, PM2 processes, and detected Windows executables stay visible in one local control plane.</p>
+          </div>
+          <div class="filter-row" data-filter-row>
+            <button class="chip is-active" type="button" data-filter="all">All</button>
+            <button class="chip" type="button" data-filter="docker">Docker</button>
+            <button class="chip" type="button" data-filter="pm2">PM2</button>
+            <button class="chip" type="button" data-filter="windows">Windows</button>
+          </div>
+        </div>
+
+        <div class="services-grid" data-service-grid>
+          <article class="service-card" data-od-repeat="service in data.services" data-service-card data-group="{{service.group}}" data-name="{{service.name}}" data-state="{{service.status}}">
+            <div class="service-top">
+              <div>
+                <p class="service-name">{{service.name}}</p>
+                <p class="service-kind">{{service.kind}} · {{service.notes}}</p>
+              </div>
+              <span class="status {{service.statusTone}}">{{service.statusLabel}}</span>
+            </div>
+            <div class="service-stats">
+              <div><b>{{service.port}}</b><span>Port</span></div>
+              <div><b>{{service.cpu}}</b><span>CPU</span></div>
+              <div><b>{{service.memory}}</b><span>Memory</span></div>
+              <div><b>{{service.uptime}}</b><span>Uptime</span></div>
+            </div>
+            <p class="service-notes">{{service.detail}}</p>
+            <div class="mono">{{service.tags}}</div>
+            <div class="service-actions">
+              <button class="ghost" type="button" data-command="start" data-service="{{service.name}}">Start</button>
+              <button class="ghost" type="button" data-command="stop" data-service="{{service.name}}">Stop</button>
+              <button class="primary" type="button" data-command="restart" data-service="{{service.name}}">Restart</button>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <aside class="rail">
+        <section class="panel" data-shell-panel="services">
+          <div class="section-head">
+            <div>
+              <h3>PWA readiness</h3>
+              <p>Manifest, service worker, and loopback scope stay visible so installation intent is obvious.</p>
+            </div>
+          </div>
+          <div class="mini-grid">
+            <div class="mini-card">
+              <strong>{{data.pwa.manifest}}</strong>
+              <span>Web App Manifest present and scoped to the LocalLink shell.</span>
+            </div>
+            <div class="mini-card">
+              <strong>{{data.pwa.serviceWorker}}</strong>
+              <span>Offline shell cached for quick relaunch and predictable startup.</span>
+            </div>
+            <div class="mini-card">
+              <strong>{{data.pwa.scope}}</strong>
+              <span>Bound to localhost to keep the Phase 1 control plane local only.</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" data-shell-panel="services">
+          <div class="section-head">
+            <div>
+              <h3>MCP tools</h3>
+              <p>These are the four automation primitives exposed to agents and local orchestration flows.</p>
+            </div>
+          </div>
+          <div class="tools-list">
+            <div class="tool-card" data-od-repeat="tool in data.tools">
+              <strong>{{tool.name}}</strong>
+              <code>{{tool.input}}</code>
+              <p>{{tool.detail}}</p>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </section>
+
+    <section class="panel section terminal" data-shell-panel="logs">
+      <div class="section-head">
+        <div>
+          <h3>Log streamer</h3>
+          <p>Terminal-style output for container logs, PM2 events, and local process lifecycle changes.</p>
+        </div>
+        <div class="tab-row" data-log-tabs>
+          <button class="tab is-active" type="button" data-log-tab="all">All</button>
+          <button class="tab" type="button" data-log-tab="lifecycle">Lifecycle</button>
+          <button class="tab" type="button" data-log-tab="runtime">Runtime</button>
+          <button class="tab" type="button" data-log-tab="alerts">Alerts</button>
+        </div>
+      </div>
+      <div class="terminal-body" data-log-list>
+        <div class="log-line" data-od-repeat="log in data.logs" data-log-item data-stream="{{log.stream}}" data-level="{{log.level}}">
+          <span class="log-time">{{log.time}}</span>
+          <span class="log-stream">{{log.stream}}</span>
+          <span class="log-message">{{log.message}}</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="main-grid" data-shell-panel="ports">
+      <div class="panel section">
+        <div class="section-head">
+          <div>
+            <h3>Port allocator</h3>
+            <p>Find the next open port deterministically before wiring a new service into the local stack.</p>
+          </div>
+        </div>
+        <div class="ports-grid">
+          <div class="port-box">
+            <div class="result">
+              <span class="eyebrow">Next free port</span>
+              <strong data-next-port>{{data.ports.nextFree}}</strong>
+              <span class="eyebrow">Start scanning from {{data.ports.startFrom}}</span>
+            </div>
+            <form class="port-form" data-port-form>
+              <input type="number" min="1024" step="1" value="{{data.ports.startFrom}}" aria-label="Start port" data-port-input>
+              <button class="primary" type="submit">Find port</button>
+            </form>
+            <div class="inline-meta">
+              <span class="pill">Busy: {{data.ports.busyText}}</span>
+              <span class="pill">Rule: {{data.ports.rule}}</span>
+            </div>
+          </div>
+
+          <div class="port-box">
+            <div class="section-head">
+              <div>
+                <h3>Recent allocations</h3>
+                <p>Suggested ports and their currently bound local service names.</p>
+              </div>
+            </div>
+            <div class="table">
+              <div class="table-row" data-od-repeat="entry in data.ports.recent">
+                <span>{{entry.service}}</span>
+                <span class="mono">{{entry.port}}</span>
+                <span>{{entry.status}}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="rail">
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <h3>LocalLink constraints</h3>
+              <p>What this Phase 1 shell makes explicit.</p>
+            </div>
+          </div>
+          <div class="mini-grid">
+            <div class="mini-card" data-od-repeat="item in data.constraints">
+              <strong>{{item.title}}</strong>
+              <span>{{item.detail}}</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <h3>Activity loop</h3>
+              <p>Short-form events that help developers and AI agents orient quickly.</p>
+            </div>
+          </div>
+          <div class="mini-grid">
+            <div class="mini-card" data-od-repeat="note in data.timeline">
+              <strong>{{note.title}}</strong>
+              <span>{{note.detail}}</span>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </section>
+
+    <div class="footer-rail">
+      <div class="footer-note">
+        LocalLink Phase 1 is designed as a local-only control plane: no public proxy, no cloud dependency, and no machine-specific absolute paths in the configuration model.
+      </div>
+    </div>
+
+    <nav class="mobile-nav" aria-label="Dashboard panels">
+      <button class="tab is-active" type="button" data-panel="overview">Overview</button>
+      <button class="tab" type="button" data-panel="services">Services</button>
+      <button class="tab" type="button" data-panel="logs">Logs</button>
+      <button class="tab" type="button" data-panel="ports">Ports</button>
+    </nav>
+  </div>
+
+  <script>
+    const dashboard = document.body;
+    const serviceCards = Array.from(document.querySelectorAll('[data-service-card]'));
+    const filterButtons = Array.from(document.querySelectorAll('[data-filter]'));
+    const searchInput = document.querySelector('[data-search]');
+    const logItems = Array.from(document.querySelectorAll('[data-log-item]'));
+    const logTabs = Array.from(document.querySelectorAll('[data-log-tab]'));
+    const portForm = document.querySelector('[data-port-form]');
+    const portInput = document.querySelector('[data-port-input]');
+    const nextPortLabel = document.querySelector('[data-next-port]');
+    const panelButtons = Array.from(document.querySelectorAll('[data-panel]'));
+    const focusButtons = Array.from(document.querySelectorAll('[data-focus]'));
+    const refreshButton = document.querySelector('[data-refresh]');
+
+    const busyPorts = [5000, 5001, 5002, 5003, 5004, 5005];
+    let activeFilter = 'all';
+    let activeLogTab = 'all';
+
+    function updateServices() {
+      const query = (searchInput?.value || '').trim().toLowerCase();
+      serviceCards.forEach(card => {
+        const group = card.dataset.group;
+        const label = `${card.dataset.name} ${card.textContent}`.toLowerCase();
+        const matchesGroup = activeFilter === 'all' || group === activeFilter;
+        const matchesQuery = !query || label.includes(query);
+        card.hidden = !(matchesGroup && matchesQuery);
+      });
+    }
+
+    function updateLogs() {
+      logItems.forEach(line => {
+        const stream = line.dataset.stream;
+        const level = line.dataset.level;
+        const matchesTab =
+          activeLogTab === 'all' ||
+          (activeLogTab === 'lifecycle' && stream === 'Lifecycle') ||
+          (activeLogTab === 'runtime' && (stream === 'Runtime' || stream === 'PM2' || stream === 'Docker')) ||
+          (activeLogTab === 'alerts' && level !== 'info');
+        line.hidden = !matchesTab;
+      });
+    }
+
+    function nextFreePort(start) {
+      let port = Number(start) || 5000;
+      while (busyPorts.includes(port)) port += 1;
+      return port;
+    }
+
+    function setPanel(name) {
+      dashboard.dataset.focusPanel = name;
+      panelButtons.forEach(button => button.classList.toggle('is-active', button.dataset.panel === name));
+    }
+
+    function appendLog(message, stream = 'Lifecycle', level = 'info') {
+      const item = document.createElement('div');
+      item.className = 'log-line';
+      item.dataset.logItem = '';
+      item.dataset.stream = stream;
+      item.dataset.level = level;
+      item.innerHTML = `
+        <span class="log-time">${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
+        <span class="log-stream">${stream}</span>
+        <span class="log-message">${message}</span>
+      `;
+      document.querySelector('[data-log-list]')?.prepend(item);
+      logItems.unshift(item);
+      updateLogs();
+    }
+
+    filterButtons.forEach(button => {
+      button.addEventListener('click', () => {
+        activeFilter = button.dataset.filter;
+        filterButtons.forEach(btn => btn.classList.toggle('is-active', btn === button));
+        updateServices();
+      });
+    });
+
+    searchInput?.addEventListener('input', updateServices);
+
+    logTabs.forEach(button => {
+      button.addEventListener('click', () => {
+        activeLogTab = button.dataset.logTab;
+        logTabs.forEach(btn => btn.classList.toggle('is-active', btn === button));
+        updateLogs();
+      });
+    });
+
+    portForm?.addEventListener('submit', event => {
+      event.preventDefault();
+      const port = nextFreePort(portInput.value);
+      nextPortLabel.textContent = port;
+      appendLog(`Port scan resolved ${port} as the next free slot.`, 'Runtime');
+    });
+
+    panelButtons.forEach(button => button.addEventListener('click', () => setPanel(button.dataset.panel)));
+    focusButtons.forEach(button => button.addEventListener('click', () => setPanel(button.dataset.focus)));
+
+    document.addEventListener('click', event => {
+      const commandButton = event.target.closest('[data-command]');
+      if (!commandButton) return;
+      const service = commandButton.dataset.service;
+      const command = commandButton.dataset.command;
+      const card = serviceCards.find(item => item.dataset.name === service);
+      if (!card) return;
+      const status = card.querySelector('.status');
+      if (command === 'restart') {
+        status.textContent = 'Restarting';
+        status.className = 'status warn';
+        appendLog(`${service} restart requested from the dashboard.`, 'Lifecycle', 'warn');
+        setTimeout(() => {
+          status.textContent = 'Up';
+          status.className = 'status healthy';
+          appendLog(`${service} recovered and reported healthy.`, 'Lifecycle');
+        }, 900);
+      }
+      if (command === 'stop') {
+        status.textContent = 'Down';
+        status.className = 'status off';
+        appendLog(`${service} stopped from the dashboard.`, 'Lifecycle', 'warn');
+      }
+      if (command === 'start') {
+        status.textContent = 'Up';
+        status.className = 'status healthy';
+        appendLog(`${service} started from the dashboard.`, 'Lifecycle');
+      }
+    });
+
+    refreshButton?.addEventListener('click', () => appendLog('Snapshot refreshed from local runtime state.', 'Runtime'));
+
+    updateServices();
+    updateLogs();
+    setPanel('overview');
+  </script>
+</body>
+</html>

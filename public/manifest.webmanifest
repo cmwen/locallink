@@ -1,0 +1,53 @@
+{
+  "name": "LocalLink",
+  "short_name": "LocalLink",
+  "description": "Local-first orchestration shell for Docker, PM2, PWAs, ports, and logs.",
+  "id": "./dashboard",
+  "start_url": "./dashboard",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f4f7fa",
+  "theme_color": "#f4f7fa",
+  "categories": ["developer", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "./assets/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./assets/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./assets/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Launcher",
+      "short_name": "Launcher",
+      "url": "./",
+      "description": "Open the LocalLink launcher overview."
+    },
+    {
+      "name": "Dashboard",
+      "short_name": "Dashboard",
+      "url": "./dashboard",
+      "description": "Open the canonical LocalLink product dashboard."
+    },
+    {
+      "name": "Template preview",
+      "short_name": "Template",
+      "url": "./template",
+      "description": "Open the static composition contract preview."
+    }
+  ]
+}

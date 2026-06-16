@@ -1,0 +1,21 @@
+version: "3"
+
+tasks:
+  windows-file-indexer:start:
+    cmds:
+      - echo "Windows File Indexer start placeholder"
+  windows-file-indexer:stop:
+    cmds:
+      - echo "Windows File Indexer stop placeholder"
+  windows-file-indexer:restart:
+    cmds:
+      - echo "Windows File Indexer restart placeholder"
+  agentgateway-proxy:start:
+    cmds:
+      - echo "AgentGateway Proxy start placeholder"
+  agentgateway-proxy:stop:
+    cmds:
+      - echo "AgentGateway Proxy stop placeholder"
+  agentgateway-proxy:restart:
+    cmds:
+      - echo "AgentGateway Proxy restart placeholder"
