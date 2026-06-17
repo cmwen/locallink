@@ -439,20 +439,23 @@ async function loadState(options = {}) {
         setStatus(options.announce ? 'Snapshot refreshed from /api/state.' : '', 'info');
       } catch (error) {
         const fallback = readPersistedSnapshot();
+        const mockState = fallback ? null : await readMockSnapshot();
         runtime.usingMockFallback = true;
         runtime.cachedSnapshotSavedAt = fallback?.savedAt || null;
-        state = normalizeState(fallback?.state || DEFAULT_STATE);
+        state = normalizeState(fallback?.state || mockState || DEFAULT_STATE);
         setStatus(
           fallback
             ? `Live API unavailable; showing the last saved snapshot from ${formatPersistedSnapshotTime(fallback.savedAt)} until /api/state responds again.`
-            : 'Live API unavailable and no saved snapshot is available yet.',
+            : mockState
+              ? 'Live API unavailable; showing the shared mock snapshot.'
+              : 'Live API unavailable and no saved snapshot is available yet.',
           'warn'
         );
       }
     } else {
-      const previewState = await fetchJson('./assets/data/mock-state.json');
+      const previewState = await readMockSnapshot();
       runtime.usingMockFallback = true;
-      state = normalizeState(previewState);
+      state = normalizeState(previewState || DEFAULT_STATE);
       if (options.announce) {
         setStatus('Template preview loaded from the shared mock snapshot.', 'info');
       }
@@ -476,6 +479,14 @@ async function loadState(options = {}) {
     setStatus(`Unable to load LocalLink state: ${error.message}.`, 'error');
   } finally {
     setLoading(false);
+  }
+}
+
+async function readMockSnapshot() {
+  try {
+    return await fetchJson('./assets/data/mock-state.json');
+  } catch (error) {
+    return null;
   }
 }
 
