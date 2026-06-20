@@ -53,3 +53,20 @@ test('HTTP server exposes the dashboard state endpoint', async () => {
 
   await server.close();
 });
+
+test('HTTP server exposes static project docs', async () => {
+  const root = await createTempProject();
+  const context = new AppContext(root);
+  await context.initialize();
+  const server = context.createServer();
+
+  const response = await server.inject({
+    method: 'GET',
+    url: '/docs/',
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.match(response.body, /LocalLink Documentation/);
+
+  await server.close();
+});

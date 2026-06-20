@@ -9,6 +9,7 @@ import { PortAllocator } from '../ports/allocator';
 import { buildPhase2Advisor } from './phase2';
 import { selectPm2Row, type Pm2Row } from './pm2';
 import { buildResourceDashboard } from './resources';
+import { normalizeLoopbackBindHost } from '../shared/network';
 import type {
   DashboardState,
   LogEntry,
@@ -397,7 +398,7 @@ export class RuntimeResolver {
     const trackedServices = services.length;
     const healthyServices = services.filter((service) => service.status === 'running').length;
     const alerts = services.filter((service) => service.status !== 'running').length;
-    const bindHost = model.env.LOCALLINK_BIND_HOST || '127.0.0.1';
+    const bindHost = normalizeLoopbackBindHost(model.env.LOCALLINK_BIND_HOST);
 
     if (logs.length === 0) {
       this.logs.seed([

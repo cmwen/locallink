@@ -7,6 +7,7 @@ export interface ProjectPaths {
   root: string;
   appRoot: string;
   publicDir: string;
+  docsDir: string;
 }
 
 export function resolveProjectRoot(): string {
@@ -34,6 +35,7 @@ export function resolvePaths(root = resolveProjectRoot()): ProjectPaths {
     root,
     appRoot,
     publicDir: resolvePublicDir(root, appRoot),
+    docsDir: path.join(appRoot, 'docs'),
   };
 }
 

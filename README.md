@@ -5,11 +5,12 @@ LocalLink Phase 1 is a local-first orchestration MVP for a single developer work
 ## What is implemented
 
 - Node + TypeScript backend/control plane
-- Local-only HTTP dashboard server, bound by default to `127.0.0.1`
+- Local-only HTTP dashboard server, bound to a loopback host in Phase 1
 - Static frontend/PWA assets in `public/`
   - `/` launcher
   - `/dashboard` dashboard
   - `/template` template preview
+  - `/docs` static project documentation
   - `manifest.webmanifest` + `sw.js`
 - MCP stdio server with four tools:
   - `read_infra_config`
@@ -97,6 +98,9 @@ Open:
 - `http://127.0.0.1:4010/` - launcher
 - `http://127.0.0.1:4010/dashboard` - dashboard
 - `http://127.0.0.1:4010/template` - static template preview
+- `http://127.0.0.1:4010/docs` - static project documentation
+
+For a deeper implementation and operations guide, open [docs/index.html](docs/index.html) directly or use the dashboard docs route after starting the web server.
 
 ### Run the MCP server directly
 
@@ -242,7 +246,7 @@ Practical MVP rules:
 
 ## Assumptions and limitations
 
-- Phase 1 is local-only by default: the dashboard binds to `127.0.0.1` unless you change `.env`.
+- Phase 1 is local-only: the dashboard coerces non-loopback bind hosts back to `127.0.0.1`, even if `.env` drifts.
 - The HTTP dashboard is the only network listener here; the implemented MCP server is stdio-based, not an HTTP/TCP MCP endpoint.
 - LocalLink treats Docker, PM2, and Windows process probes as the source of truth for service state; restarting LocalLink triggers a fresh runtime re-query instead of trusting stale in-memory state.
 - If Docker, PM2, or Windows probing is unavailable, or a declared service has no trustworthy runtime probe, the dashboard reports that service as `Unknown` instead of guessing `Down`.

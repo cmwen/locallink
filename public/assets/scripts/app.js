@@ -27,6 +27,14 @@ const PAGE_CONFIG = {
         meta: state.pwa.install || 'Install readiness',
         href: './manifest.webmanifest',
         cta: 'Inspect manifest'
+      },
+      {
+        title: 'Project docs',
+        detail:
+          'Read the operating guide for architecture, workspace setup, dashboard behavior, MCP tools, and troubleshooting.',
+        meta: 'What + how',
+        href: './docs/',
+        cta: 'Open docs'
       }
     ]
   },
@@ -69,6 +77,14 @@ const PAGE_CONFIG = {
         meta: 'Framework-free shell',
         href: './manifest.webmanifest',
         cta: 'Inspect shell'
+      },
+      {
+        title: 'Project docs',
+        detail:
+          'Review the implementation guide that explains the current LocalLink control plane and extension model.',
+        meta: 'Static guide',
+        href: './docs/',
+        cta: 'Open docs'
       }
     ]
   }
@@ -86,6 +102,8 @@ const LOG_TABS = [
   { value: 'runtime', label: 'Runtime' },
   { value: 'alerts', label: 'Alerts' }
 ];
+const COMPACT_LOG_LIMIT = 80;
+const MAX_LIVE_LOGS = 200;
 const DEFAULT_STATE = {
   app: {
     name: 'LocalLink',
@@ -211,6 +229,8 @@ const runtime = {
   logViewerOpen: false,
   logViewerQuery: '',
   logViewerTimeFilter: 'all',
+  logRenderFrame: null,
+  liveLogKeys: new Set(),
   selectedProcess: null,
   pendingProcessIds: new Set(),
   cachedSnapshotSavedAt: null
@@ -362,6 +382,9 @@ function bindEvents() {
       runtime.activeLogTab = logTabButton.dataset.logTab || 'all';
       renderLogTabs();
       renderLogs();
+      if (runtime.logViewerOpen) {
+        renderLogViewer();
+      }
       return;
     }
 
@@ -605,7 +628,9 @@ function renderAll() {
   renderPhase2();
   renderLogTabs();
   renderLogs();
-  renderLogViewer();
+  if (runtime.logViewerOpen) {
+    renderLogViewer();
+  }
   renderPorts();
   renderResources();
   renderProcessDetail();
@@ -726,17 +751,19 @@ function renderDiagnostics() {
   if (!ui.diagnosticsGrid) return;
   const diagnostics = runtime.state.diagnostics || { summary: '', checks: [] };
   const checks = Array.isArray(diagnostics.checks) ? diagnostics.checks : [];
-  ui.diagnosticsGrid.innerHTML = checks
+  const summaryCards = buildDiagnosticsSummaryCards(diagnostics);
+  const checkCards = checks
     .map(
       check => `
-        <div class="mini-card" data-tone="${escapeAttribute(check.status || 'ok')}">
+        <div class="mini-card startup-check-card" data-tone="${escapeAttribute(check.status || 'ok')}">
           <strong>${escapeHtml(check.label || 'Startup check')}</strong>
           <span>${escapeHtml(check.summary || diagnostics.summary || 'No summary available.')}</span>
           <span>${escapeHtml(check.detail || '')}</span>
         </div>
       `
-    )
-    .join('');
+    );
+
+  ui.diagnosticsGrid.innerHTML = summaryCards.concat(checkCards).join('');
 }
 
 function renderTools() {
@@ -805,8 +832,9 @@ function renderLogTabs() {
 
 function renderLogs() {
   if (!ui.logList) return;
-  const logs = getVisibleLogs();
-  ui.logsEmpty.hidden = logs.length > 0;
+  const visibleLogs = getVisibleLogs();
+  const logs = visibleLogs.slice(0, COMPACT_LOG_LIMIT);
+  ui.logsEmpty.hidden = visibleLogs.length > 0;
   ui.logList.innerHTML = logs
     .map(
       log => `
@@ -1159,10 +1187,32 @@ function matchesLogTab(log) {
 }
 
 function pushLiveLog(log) {
+  const key = getLogKey(log);
+  if (runtime.liveLogKeys.has(key)) return;
+
   runtime.liveLogs.unshift(log);
-  runtime.liveLogs = mergeLogs(runtime.liveLogs, []).slice(0, 200);
-  renderLogs();
-  renderLogViewer();
+  runtime.liveLogKeys.add(key);
+
+  while (runtime.liveLogs.length > MAX_LIVE_LOGS) {
+    const removed = runtime.liveLogs.pop();
+    if (removed) {
+      runtime.liveLogKeys.delete(getLogKey(removed));
+    }
+  }
+
+  scheduleLogRender();
+}
+
+function scheduleLogRender() {
+  if (runtime.logRenderFrame !== null) return;
+
+  runtime.logRenderFrame = window.requestAnimationFrame(() => {
+    runtime.logRenderFrame = null;
+    renderLogs();
+    if (runtime.logViewerOpen) {
+      renderLogViewer();
+    }
+  });
 }
 
 function setLogViewerOpen(open) {
@@ -1184,6 +1234,40 @@ function setLogViewerOpen(open) {
   }
 
   delete ui.body.dataset.logViewerOpen;
+}
+
+function buildDiagnosticsSummaryCards(diagnostics) {
+  const services = Array.isArray(runtime.state.services) ? runtime.state.services : [];
+  const totalServices = services.length;
+  const healthyServices = services.filter(service => service.statusTone === 'healthy').length;
+  const alertServices = services.filter(service => service.statusTone !== 'healthy').length;
+  const checks = Array.isArray(diagnostics?.checks) ? diagnostics.checks : [];
+  const actionableChecks = checks.filter(check => check.status !== 'ok').length;
+  const runtimeGroups = dedupeBy(
+    services.map(service => service.group).filter(Boolean),
+    group => group
+  )
+    .map(formatGroupLabel)
+    .join(', ');
+  const status = diagnostics?.status || (actionableChecks > 0 ? 'warn' : 'ok');
+  const serviceTone = alertServices > 0 ? 'warn' : 'ok';
+
+  return [
+    `
+      <div class="mini-card startup-summary-card" data-tone="${escapeAttribute(status)}">
+        <strong>Startup status</strong>
+        <span>${escapeHtml(diagnostics?.summary || 'Startup checks are waiting for the first snapshot.')}</span>
+        <span>${escapeHtml(`${checks.length} checks · ${actionableChecks} need attention`)}</span>
+      </div>
+    `,
+    `
+      <div class="mini-card startup-summary-card" data-tone="${escapeAttribute(serviceTone)}">
+        <strong>${escapeHtml(`${totalServices} registered services`)}</strong>
+        <span>${escapeHtml(`${healthyServices} healthy · ${alertServices} need attention`)}</span>
+        <span>${escapeHtml(runtimeGroups || 'No runtime groups detected yet.')}</span>
+      </div>
+    `
+  ];
 }
 
 function matchesTimeFilter(log, timeFilter) {
@@ -1932,11 +2016,15 @@ async function postJson(url, payload) {
 function mergeLogs(primary, secondary) {
   const seen = new Set();
   return [...primary, ...secondary].filter(log => {
-    const key = `${log.timestamp || log.time}|${log.stream}|${log.level}|${log.message}`;
+    const key = getLogKey(log);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
+}
+
+function getLogKey(log) {
+  return `${log.timestamp || log.time}|${log.stream}|${log.level}|${log.message}`;
 }
 
 function dedupeBy(items, keyFn) {

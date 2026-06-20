@@ -14,6 +14,8 @@
       <p>Static implementation docs for the current LocalLink control plane, generated from the updated PRD and the shipped codebase.</p>
       <nav>
         <a href="#overview">Overview</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#state-model">Runtime state model</a>
         <a href="#quickstart">Quick start</a>
         <a href="#workspace">Workspace scaffold</a>
         <a href="#agents">AGENTS.md contract</a>
@@ -21,11 +23,14 @@
         <a href="#metadata">Service metadata</a>
         <a href="#dashboard">Dashboard views</a>
         <a href="#resources">Resource watch</a>
+        <a href="#operations">Operating LocalLink</a>
         <a href="#phase2">Phase 2 advisor</a>
         <a href="#cli">CLI commands</a>
         <a href="#http-api">HTTP API</a>
         <a href="#mcp">MCP toolkit</a>
         <a href="#config">Configuration surfaces</a>
+        <a href="#testing">Testing and build</a>
+        <a href="#troubleshooting">Troubleshooting</a>
       </nav>
     </aside>
 
@@ -41,6 +46,67 @@
           <span class="pill">MCP toolkit</span>
           <span class="pill">Phase 2 advisor</span>
           <span class="pill">Resource watch</span>
+        </div>
+      </section>
+
+      <section id="architecture" class="section">
+        <h2>Architecture</h2>
+        <p>LocalLink is intentionally small: the Node.js control plane reads workspace configuration, probes external runtime managers, and serves a local dashboard from the same loopback-only process. Docker, PM2, Taskfile, and the host process table remain the source of runtime truth.</p>
+        <div class="grid two">
+          <div class="card">
+            <strong>Control plane</strong>
+            <small><code>src/app-context.ts</code> composes config loading, runtime snapshots, lifecycle execution, port allocation, diagnostics, logs, and the HTTP/MCP entrypoints.</small>
+          </div>
+          <div class="card">
+            <strong>Dashboard surface</strong>
+            <small><code>public/</code> contains the framework-free PWA shell: launcher, dashboard, template preview, shared CSS, shared JS, manifest, service worker, and mock state.</small>
+          </div>
+          <div class="card">
+            <strong>MCP stdio server</strong>
+            <small><code>src/mcp/server.ts</code> registers PRD-aligned tools so coding agents can inspect blueprints, allocate ports, verify compliance, and orchestrate declared services.</small>
+          </div>
+          <div class="card">
+            <strong>Workspace generator</strong>
+            <small><code>src/init/scaffold.ts</code> creates the private infrastructure workspace with env files, Docker Compose, PM2, Taskfile, MCP registry, README, and AGENTS instructions.</small>
+          </div>
+        </div>
+      </section>
+
+      <section id="state-model" class="section">
+        <h2>Runtime state model</h2>
+        <p>Every dashboard refresh asks Docker, PM2, Windows process probes, port scanning, diagnostics, and resource watchers for a fresh picture. LocalLink may cache the last successful browser snapshot for relaunch UX, but live state is always replaced when <code>/api/state</code> succeeds.</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>State</th>
+                <th>When it appears</th>
+                <th>Why it matters</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>Up</code></td>
+                <td>The runtime manager reports a matching running service.</td>
+                <td>The service is externally observable and can show CPU, memory, or uptime when the manager provides it.</td>
+              </tr>
+              <tr>
+                <td><code>Restarting</code></td>
+                <td>The manager reports startup, restart, launch, stop, or initialization states.</td>
+                <td>The user gets a degraded but truthful status instead of a false success or false outage.</td>
+              </tr>
+              <tr>
+                <td><code>Down</code></td>
+                <td>The manager is reachable and reports no matching runtime instance for a declared service.</td>
+                <td>Down means LocalLink could verify absence; it is not used when probing failed.</td>
+              </tr>
+              <tr>
+                <td><code>Unknown</code></td>
+                <td>Docker, PM2, Windows probing, or a trustworthy service mapping is unavailable.</td>
+                <td>This preserves the PRD rule: unknown is better than guessing down.</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
@@ -114,7 +180,7 @@ locallink mcp</code></pre>
               </tr>
               <tr>
                 <td>Network isolation</td>
-                <td>Phase 1 is localhost-only. Phase 2 edge features are optional, detectable, and can be disabled from <code>.env</code>.</td>
+                <td>Phase 1 is localhost-only and coerces non-loopback bind hosts back to <code>127.0.0.1</code>. Phase 2 edge features are optional, detectable, and can be disabled from <code>.env</code>.</td>
               </tr>
             </tbody>
           </table>
@@ -263,6 +329,29 @@ locallink: {
         </div>
       </section>
 
+      <section id="operations" class="section">
+        <h2>Operating LocalLink</h2>
+        <div class="grid two">
+          <div class="card">
+            <strong>Daily local workflow</strong>
+            <small>Run <code>locallink doctor</code> when setup feels wrong, <code>locallink web</code> for the dashboard, and <code>locallink snapshot</code> when you need a JSON view for debugging or agent handoff.</small>
+          </div>
+          <div class="card">
+            <strong>Adding a PM2 service</strong>
+            <small>Add the app to <code>ecosystem.config.js</code>, include <code>locallink</code> metadata, point <code>dockerfile</code> at its blueprint, and use env variables instead of hardcoded ports or URLs.</small>
+          </div>
+          <div class="card">
+            <strong>Adding a Docker service</strong>
+            <small>Add the service to <code>docker-compose.yml</code>, declare ports through env variables, and add <code>locallink.*</code> labels for display name, group, dependencies, env vars, and docs.</small>
+          </div>
+          <div class="card">
+            <strong>Adding a Taskfile service</strong>
+            <small>Add an ecosystem entry with <code>runtime: 'taskfile'</code> and <code>taskName</code>, then provide tasks like <code>name:start</code>, <code>name:stop</code>, <code>name:restart</code>, or <code>name:up</code>.</small>
+          </div>
+        </div>
+        <p class="note">Lifecycle actions are declaration-first. LocalLink only runs actions for services declared in <code>docker-compose.yml</code> or <code>ecosystem.config.js</code>, which keeps agent-triggered operations bounded to the workspace contract.</p>
+      </section>
+
       <section id="phase2" class="section">
         <h2>Phase 2 advisor</h2>
         <p>Phase 2 remains optional. LocalLink stays local-only by default, but the advisor can detect a usable edge path and surface it in the dashboard.</p>
@@ -403,6 +492,60 @@ LOCALLINK_PHASE2_PREFERRED_EDGE=auto</code></pre>
               <tr><td><code>mcp-registry.json</code></td><td>Optional registry for local-build MCP servers and external volume mappings.</td></tr>
               <tr><td><code>Taskfile.yml</code></td><td>Shared task orchestration entrypoints for workspace-level commands.</td></tr>
               <tr><td><code>AGENTS.md</code></td><td>Permanent AI guardrails and conventions for the workspace.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="testing" class="section">
+        <h2>Testing and build</h2>
+        <p>The repository uses Node's built-in test runner with <code>tsx</code> for TypeScript tests. The build compiles TypeScript and copies the PWA assets into <code>dist/public</code>.</p>
+        <div class="grid two">
+          <div class="card">
+            <strong>Full test suite</strong>
+            <pre><code>CI=true pnpm test</code></pre>
+            <small>Use <code>CI=true</code> in non-interactive shells so pnpm can reconcile <code>node_modules</code> without prompting.</small>
+          </div>
+          <div class="card">
+            <strong>Production build</strong>
+            <pre><code>pnpm build</code></pre>
+            <small>Runs <code>tsc -p tsconfig.json</code> and refreshes the static assets under <code>dist/public</code>.</small>
+          </div>
+        </div>
+      </section>
+
+      <section id="troubleshooting" class="section">
+        <h2>Troubleshooting</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Symptom</th>
+                <th>Likely cause</th>
+                <th>What to do</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Services show <code>Unknown</code></td>
+                <td>Docker, PM2, Windows probing, or service mapping was unavailable.</td>
+                <td>Run <code>locallink doctor</code>, verify external tools are installed, and check service names / <code>runtimeName</code> metadata.</td>
+              </tr>
+              <tr>
+                <td>Lifecycle action returns unavailable runtime</td>
+                <td>The required external binary is missing from <code>PATH</code>.</td>
+                <td>Install Docker, PM2, or Task as needed, then rerun <code>locallink doctor</code>.</td>
+              </tr>
+              <tr>
+                <td>Blueprint compliance warning</td>
+                <td>A PM2 or task-backed service lacks a readable Dockerfile blueprint.</td>
+                <td>Add <code>locallink.dockerfile</code> in <code>ecosystem.config.js</code> and include <code>EXPOSE</code>, <code>ENV</code>, and <code>CMD</code> / <code>ENTRYPOINT</code> where useful.</td>
+              </tr>
+              <tr>
+                <td>Dashboard will not start</td>
+                <td>The configured host/port is unavailable or invalid.</td>
+                <td>Check <code>LOCALLINK_BIND_HOST</code> and <code>LOCALLINK_WEB_PORT</code> in <code>.env</code>, or stop the process already using that port.</td>
+              </tr>
             </tbody>
           </table>
         </div>

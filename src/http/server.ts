@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+
 import fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { z } from 'zod';
@@ -80,6 +82,13 @@ export function createHttpServer(context: AppContext) {
     root: context.paths.publicDir,
     prefix: '/',
   });
+  if (fs.existsSync(context.paths.docsDir)) {
+    void app.register(fastifyStatic, {
+      root: context.paths.docsDir,
+      prefix: '/docs/',
+      decorateReply: false,
+    });
+  }
 
   app.get('/health', async () => ({ ok: true }));
 
@@ -183,6 +192,7 @@ export function createHttpServer(context: AppContext) {
   app.get('/', async (_request, reply) => reply.sendFile('index.html'));
   app.get('/dashboard', async (_request, reply) => reply.sendFile('dashboard.html'));
   app.get('/template', async (_request, reply) => reply.sendFile('template.html'));
+  app.get('/docs', async (_request, reply) => reply.redirect('/docs/'));
 
   return app;
 }

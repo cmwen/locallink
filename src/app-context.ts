@@ -8,6 +8,7 @@ import { RuntimeResolver } from './runtime/snapshot';
 import { StartupDiagnosticsService } from './startup/diagnostics';
 import { resolvePaths } from './shared/paths';
 import { logDebug, logInfo, mirrorBrokerEntry } from './shared/logger';
+import { normalizeLoopbackBindHost } from './shared/network';
 import { startStreamingCommand, type StreamingCommandHandle } from './shared/utils';
 import { TaskExecutor } from './tasks/executor';
 import type {
@@ -176,7 +177,7 @@ export class AppContext {
   async getBinding(): Promise<{ host: string; port: number }> {
     const model = await this.configRepository.loadProjectModel();
     return {
-      host: model.env.LOCALLINK_BIND_HOST || '127.0.0.1',
+      host: normalizeLoopbackBindHost(model.env.LOCALLINK_BIND_HOST),
       port: Number(model.env.LOCALLINK_WEB_PORT || '4010'),
     };
   }
