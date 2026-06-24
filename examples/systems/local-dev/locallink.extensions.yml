@@ -1,0 +1,38 @@
+# Optional LocalLink workspace extensions.
+#
+# Core LocalLink starts as a headless API by default. Extensions describe the
+# optional layers a workspace can turn on without baking them into the core
+# control plane.
+extensions:
+  - id: dashboard
+    name: Dashboard
+    kind: dashboard
+    enabled: true
+    exposedPorts:
+      - "${LOCALLINK_DASHBOARD_PORT:-4111}"
+    docsUrl: https://github.com/cmwen/locallink
+
+  - id: caddy
+    name: Caddy Reverse Proxy
+    kind: reverse-proxy
+    enabled: false
+    command: caddy
+    docsUrl: https://caddyserver.com/docs/
+
+  - id: tailscale
+    name: Tailscale Network Edge
+    kind: network-edge
+    enabled: false
+    command: tailscale
+    docsUrl: https://tailscale.com/kb
+
+  - id: openobserve
+    name: OpenObserve OTEL
+    kind: observability
+    enabled: false
+    requiredEnv:
+      - OPENOBSERVE_ENDPOINT
+      - OPENOBSERVE_ORGANIZATION
+      - OPENOBSERVE_STREAM
+      - OPENOBSERVE_TOKEN
+    docsUrl: https://openobserve.ai/docs/

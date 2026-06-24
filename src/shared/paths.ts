@@ -10,8 +10,8 @@ export interface ProjectPaths {
   docsDir: string;
 }
 
-export function resolveProjectRoot(): string {
-  return process.cwd();
+export function resolveProjectRoot(explicitRoot?: string): string {
+  return path.resolve(explicitRoot || process.env.LOCALLINK_WORKSPACE || process.cwd());
 }
 
 function resolveAppRoot(): string {

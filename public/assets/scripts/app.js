@@ -97,12 +97,12 @@ const SNAPSHOT_CACHE_KEY = 'locallink-last-live-state';
 const LIGHT_THEME_COLOR = '#f4f7fa';
 const DARK_THEME_COLOR = '#0f161f';
 const LOG_TABS = [
-  { value: 'all', label: 'All' },
+  { value: 'alerts', label: 'Alerts' },
   { value: 'lifecycle', label: 'Lifecycle' },
-  { value: 'runtime', label: 'Runtime' },
-  { value: 'alerts', label: 'Alerts' }
+  { value: 'all', label: 'All' },
+  { value: 'runtime', label: 'Runtime' }
 ];
-const COMPACT_LOG_LIMIT = 80;
+const COMPACT_LOG_LIMIT = 40;
 const MAX_LIVE_LOGS = 200;
 const DEFAULT_STATE = {
   app: {
@@ -112,9 +112,9 @@ const DEFAULT_STATE = {
   },
   hero: {
     eyebrow: 'Phase 1 control plane',
-    title: 'One dashboard for local runtimes, ports, and logs.',
+    title: 'Find the local service you need.',
     body:
-      'Monitor hybrid services, trigger lifecycle actions, and hand the whole workspace to AI through the same compact surface.'
+      'Launch running services, inspect their connection targets, and use Edge extension exports without remembering ports or paths.'
   },
   snapshot: {
     value: '0 services',
@@ -154,6 +154,15 @@ const DEFAULT_STATE = {
   resources: {
     summary: [],
     processes: []
+  },
+  toolWorkspace: {
+    summary: [],
+    versions: [],
+    trials: []
+  },
+  extensions: {
+    summary: [],
+    extensions: []
   },
   constraints: [],
   timeline: []
@@ -209,6 +218,23 @@ const ui = {
   processEmpty: document.querySelector('[data-process-empty]'),
   processDetail: document.querySelector('[data-process-detail]'),
   processDetailEmpty: document.querySelector('[data-process-detail-empty]'),
+  toolSummary: document.querySelector('[data-tool-summary]'),
+  toolVersionList: document.querySelector('[data-tool-version-list]'),
+  toolVersionsEmpty: document.querySelector('[data-tool-versions-empty]'),
+  trialForm: document.querySelector('[data-trial-form]'),
+  provisionPlannedTrial: document.querySelector('[data-provision-planned-trial]'),
+  toolTrialList: document.querySelector('[data-tool-trial-list]'),
+  toolTrialsEmpty: document.querySelector('[data-tool-trials-empty]'),
+  connectionGrid: document.querySelector('[data-connection-grid]'),
+  connectionsEmpty: document.querySelector('[data-connections-empty]'),
+  edgeSummary: document.querySelector('[data-edge-summary]'),
+  extensionSummary: document.querySelector('[data-extension-summary]'),
+  extensionList: document.querySelector('[data-extension-list]'),
+  extensionsEmpty: document.querySelector('[data-extensions-empty]'),
+  serviceDrawer: document.querySelector('[data-service-drawer]'),
+  serviceDrawerTitle: document.querySelector('[data-service-drawer-title]'),
+  serviceDrawerSubtitle: document.querySelector('[data-service-drawer-subtitle]'),
+  serviceDrawerBody: document.querySelector('[data-service-drawer-body]'),
   constraintsGrid: document.querySelector('[data-constraints-grid]'),
   timelineGrid: document.querySelector('[data-timeline-grid]'),
   footerNote: document.querySelector('[data-footer-note]'),
@@ -218,7 +244,7 @@ const ui = {
 const runtime = {
   state: normalizeState(DEFAULT_STATE),
   activeFilter: 'all',
-  activeLogTab: 'all',
+  activeLogTab: 'alerts',
   query: '',
   liveLogs: [],
   pendingServices: new Set(),
@@ -231,8 +257,12 @@ const runtime = {
   logViewerTimeFilter: 'all',
   logRenderFrame: null,
   liveLogKeys: new Set(),
+  serviceDrawerOpen: false,
+  selectedServiceName: '',
   selectedProcess: null,
   pendingProcessIds: new Set(),
+  pendingTools: new Set(),
+  plannedTrial: null,
   cachedSnapshotSavedAt: null
 };
 
@@ -320,7 +350,10 @@ function formatPersistedSnapshotTime(savedAt) {
 function bindEvents() {
   ui.search?.addEventListener('input', event => {
     runtime.query = String(event.target.value || '').trim().toLowerCase();
+    renderConnections();
     renderServices();
+    renderToolWorkbench();
+    renderExtensions();
     renderLogs();
     renderPorts();
   });
@@ -356,6 +389,11 @@ function bindEvents() {
     event.preventDefault();
     const startFrom = Number(ui.portInput?.value) || runtime.state.ports.startFrom || 5000;
     await handlePortRequest(startFrom);
+  });
+
+  ui.trialForm?.addEventListener('submit', async event => {
+    event.preventDefault();
+    await handleTrialPlan(event.currentTarget);
   });
 
   ui.logViewerSearch?.addEventListener('input', event => {
@@ -397,18 +435,63 @@ function bindEvents() {
     const focusButton = event.target.closest('[data-focus]');
     if (focusButton) {
       setPanel(focusButton.dataset.focus || 'overview');
+      if (runtime.serviceDrawerOpen) {
+        setServiceDrawerOpen(false);
+      }
       return;
     }
 
     const focusServiceButton = event.target.closest('[data-focus-service]');
     if (focusServiceButton) {
-      focusServiceCard(focusServiceButton.dataset.focusService || '');
+      openServiceDrawer(focusServiceButton.dataset.focusService || '');
+      return;
+    }
+
+    const openServiceButton = event.target.closest('[data-open-service]');
+    if (openServiceButton) {
+      openServiceDrawer(openServiceButton.dataset.openService || '');
+      return;
+    }
+
+    const serviceCard = event.target.closest('[data-service-card]');
+    if (serviceCard && !event.target.closest('a, button, input, select, textarea')) {
+      openServiceDrawer(serviceCard.dataset.name || '');
       return;
     }
 
     const commandButton = event.target.closest('[data-command]');
     if (commandButton) {
       handleServiceCommand(commandButton);
+      return;
+    }
+
+    const versionCheckButton = event.target.closest('[data-tool-version-check]');
+    if (versionCheckButton) {
+      handleToolVersionCheck(versionCheckButton);
+      return;
+    }
+
+    const versionUpdateButton = event.target.closest('[data-tool-version-update]');
+    if (versionUpdateButton) {
+      handleToolVersionUpdate(versionUpdateButton);
+      return;
+    }
+
+    const provisionButton = event.target.closest('[data-provision-planned-trial]');
+    if (provisionButton) {
+      handleTrialProvision();
+      return;
+    }
+
+    const promoteTrialButton = event.target.closest('[data-promote-trial]');
+    if (promoteTrialButton) {
+      handleTrialPromote(promoteTrialButton);
+      return;
+    }
+
+    const removeTrialButton = event.target.closest('[data-remove-trial]');
+    if (removeTrialButton) {
+      handleToolRemoval(removeTrialButton);
       return;
     }
 
@@ -421,6 +504,12 @@ function bindEvents() {
     const closeLogViewerButton = event.target.closest('[data-close-log-viewer]');
     if (closeLogViewerButton || event.target === ui.logViewer) {
       setLogViewerOpen(false);
+      return;
+    }
+
+    const closeServiceDrawerButton = event.target.closest('[data-close-service-drawer]');
+    if (closeServiceDrawerButton || event.target === ui.serviceDrawer) {
+      setServiceDrawerOpen(false);
       return;
     }
 
@@ -437,8 +526,18 @@ function bindEvents() {
   });
 
   document.addEventListener('keydown', event => {
+    const serviceCard = event.target.closest?.('[data-service-card]');
+    if (serviceCard && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault();
+      openServiceDrawer(serviceCard.dataset.name || '');
+      return;
+    }
+
     if (event.key === 'Escape' && runtime.logViewerOpen) {
       setLogViewerOpen(false);
+    }
+    if (event.key === 'Escape' && runtime.serviceDrawerOpen) {
+      setServiceDrawerOpen(false);
     }
   });
 
@@ -620,10 +719,16 @@ function renderAll() {
   renderHero();
   renderSummary();
   renderLauncher();
+  renderConnections();
   renderFilters();
   renderServices();
   renderPwa();
   renderDiagnostics();
+  renderToolWorkbench();
+  renderExtensions();
+  if (runtime.serviceDrawerOpen) {
+    renderServiceDrawer();
+  }
   renderTools();
   renderPhase2();
   renderLogTabs();
@@ -693,6 +798,79 @@ function renderLauncher() {
     .join('');
 }
 
+function renderConnections() {
+  const targets = getVisibleConnectionTargets();
+
+  if (ui.connectionsEmpty) {
+    ui.connectionsEmpty.hidden = targets.length > 0;
+  }
+  if (ui.connectionGrid) {
+    ui.connectionGrid.innerHTML = targets
+      .slice(0, 8)
+      .map(buildConnectionCard)
+      .join('');
+  }
+  renderEdgeSummary();
+}
+
+function renderEdgeSummary() {
+  if (!ui.edgeSummary) return;
+  const extensions = runtime.state.extensions?.extensions || [];
+  const edgeExtensions = extensions.filter(extension => ['network-edge', 'reverse-proxy'].includes(extension.kind));
+  const enabledEdge = edgeExtensions.filter(extension => extension.status === 'enabled');
+  const availableEdge = edgeExtensions.filter(extension => extension.status === 'available');
+  const edgeTargets = buildConnectionTargets().filter(target => target.source === 'edge' || target.source === 'extension');
+  const primary = enabledEdge[0] || availableEdge[0] || edgeExtensions[0];
+  const statusText = primary
+    ? `${primary.name}: ${primary.statusLabel || primary.status}`
+    : 'No Edge extensions declared';
+
+  ui.edgeSummary.innerHTML = `
+    <div class="mini-card edge-summary-card" data-tone="${escapeAttribute(primary ? extensionStatusTone(primary.status) : 'off')}">
+      <strong>Edge exports</strong>
+      <span>${escapeHtml(statusText)}</span>
+      <span>${escapeHtml(`${edgeTargets.length} routed links or exported ports detected`)}</span>
+      <div class="card-actions">
+        <button class="ghost" type="button" data-focus="edge">Inspect Edge</button>
+      </div>
+    </div>
+    <div class="mini-card">
+      <strong>How links are built</strong>
+      <span>Local service ports are paired with enabled network-edge URLs when the extension exposes them.</span>
+      <span>Extension URLs and exposed ports stay visible even when they are optional.</span>
+    </div>
+  `;
+}
+
+function buildConnectionCard(target) {
+  const tone = target.tone || 'healthy';
+  const launch = target.href
+    ? `<a class="primary action-link" href="${escapeAttribute(target.href)}" target="_blank" rel="noreferrer">Open</a>`
+    : `<button class="primary" type="button" data-open-service="${escapeAttribute(target.serviceName)}">Details</button>`;
+  const serviceButton = target.serviceName
+    ? `<button class="ghost" type="button" data-open-service="${escapeAttribute(target.serviceName)}">Details</button>`
+    : '';
+
+  return `
+    <article class="connection-card" data-tone="${escapeAttribute(tone)}">
+      <div>
+        <p class="service-name">${escapeHtml(target.title)}</p>
+        <p class="service-kind">${escapeHtml(target.subtitle)}</p>
+      </div>
+      <p class="service-notes">${escapeHtml(target.detail)}</p>
+      <div class="version-grid">
+        <div><span>Port</span><b>${escapeHtml(target.port || '—')}</b></div>
+        <div><span>Route</span><b>${escapeHtml(target.routeLabel)}</b></div>
+        <div><span>Source</span><b>${escapeHtml(target.sourceLabel)}</b></div>
+      </div>
+      <div class="card-actions">
+        ${launch}
+        ${serviceButton}
+      </div>
+    </article>
+  `;
+}
+
 function renderFilters() {
   if (!ui.filterRow) return;
   ui.filterRow.innerHTML = runtime.state.filters
@@ -713,6 +891,9 @@ function renderServices() {
   ui.serviceGrid.innerHTML = services
     .map(service => buildServiceCard(service))
     .join('');
+  if (runtime.serviceDrawerOpen) {
+    renderServiceDrawer();
+  }
 }
 
 function renderPwa() {
@@ -764,6 +945,168 @@ function renderDiagnostics() {
     );
 
   ui.diagnosticsGrid.innerHTML = summaryCards.concat(checkCards).join('');
+}
+
+function renderToolWorkbench() {
+  const workspace = runtime.state.toolWorkspace || { summary: [], versions: [], trials: [] };
+  if (ui.toolSummary) {
+    ui.toolSummary.innerHTML = workspace.summary
+      .map(
+        stat => `
+          <div class="summary-card">
+            <strong>${escapeHtml(stat.value)}</strong>
+            <span>${escapeHtml(stat.label)} — ${escapeHtml(stat.detail)}</span>
+          </div>
+        `
+      )
+      .join('');
+  }
+
+  if (ui.toolVersionList) {
+    const visibleVersions = workspace.versions.filter(entry => {
+      if (!runtime.query) return true;
+      return `${entry.serviceName} ${entry.source?.type || ''} ${entry.source?.ref || ''} ${entry.desiredVersion} ${entry.resolvedVersion} ${entry.latestVersion} ${entry.status}`.toLowerCase().includes(runtime.query);
+    });
+    if (ui.toolVersionsEmpty) {
+      ui.toolVersionsEmpty.hidden = visibleVersions.length > 0;
+    }
+    ui.toolVersionList.innerHTML = visibleVersions.map(buildToolVersionCard).join('');
+  }
+
+  if (ui.provisionPlannedTrial) {
+    ui.provisionPlannedTrial.disabled = !runtime.plannedTrial || liveApiUnavailable();
+    ui.provisionPlannedTrial.textContent = runtime.plannedTrial ? 'Provision plan' : 'Provision plan';
+  }
+
+  if (ui.toolTrialList) {
+    const visibleTrials = workspace.trials.filter(entry => {
+      if (!runtime.query) return true;
+      return `${entry.trialId} ${entry.serviceName} ${entry.source?.type || ''} ${entry.source?.ref || ''} ${entry.desiredVersion} ${entry.status}`.toLowerCase().includes(runtime.query);
+    });
+    if (ui.toolTrialsEmpty) {
+      ui.toolTrialsEmpty.hidden = visibleTrials.length > 0;
+    }
+    ui.toolTrialList.innerHTML = visibleTrials.map(buildToolTrialCard).join('');
+  }
+}
+
+function buildToolVersionCard(entry) {
+  const pending = runtime.pendingTools.has(entry.serviceName);
+  const tone = toolStatusTone(entry.status);
+  const latest = entry.latestVersion || 'unknown';
+  const updateDisabled = pending || liveApiUnavailable() || latest === 'unknown';
+  return `
+    <article class="tool-work-card" data-tone="${escapeAttribute(tone)}">
+      <div class="service-top">
+        <div>
+          <p class="service-name">${escapeHtml(entry.serviceName)}</p>
+          <p class="service-kind">${escapeHtml(entry.source ? `${entry.source.type}:${entry.source.ref}` : 'No tool source declared')}</p>
+        </div>
+        <span class="status ${escapeAttribute(tone === 'ok' ? 'healthy' : tone === 'off' ? 'off' : 'warn')}">${escapeHtml(formatToolStatus(entry.status))}</span>
+      </div>
+      <div class="version-grid">
+        <div><span>Desired</span><b>${escapeHtml(entry.desiredVersion)}</b></div>
+        <div><span>Locked</span><b>${escapeHtml(entry.resolvedVersion)}</b></div>
+        <div><span>Latest</span><b>${escapeHtml(latest)}</b></div>
+      </div>
+      <p class="service-notes">${escapeHtml(entry.detail)}</p>
+      <div class="card-actions">
+        <button class="ghost" type="button" data-tool-version-check="${escapeAttribute(entry.serviceName)}"${pending || liveApiUnavailable() ? ' disabled' : ''}>Check latest</button>
+        <button class="primary" type="button" data-tool-version-update="${escapeAttribute(entry.serviceName)}" data-target-version="${escapeAttribute(latest)}"${updateDisabled ? ' disabled' : ''}>Plan update</button>
+      </div>
+    </article>
+  `;
+}
+
+function buildToolTrialCard(entry) {
+  const pending = runtime.pendingTools.has(entry.serviceName);
+  return `
+    <article class="tool-work-card" data-tone="warn">
+      <div class="service-top">
+        <div>
+          <p class="service-name">${escapeHtml(entry.serviceName)}</p>
+          <p class="service-kind">${escapeHtml(entry.trialId)}</p>
+        </div>
+        <span class="status warn">${escapeHtml(entry.status || 'trial')}</span>
+      </div>
+      <div class="version-grid">
+        <div><span>Runtime</span><b>${escapeHtml(entry.runtime || 'pm2')}</b></div>
+        <div><span>Version</span><b>${escapeHtml(entry.desiredVersion || 'latest')}</b></div>
+        <div><span>Port</span><b>${escapeHtml(entry.port || '—')}</b></div>
+      </div>
+      <p class="service-notes">${escapeHtml(entry.source ? `${entry.source.type}:${entry.source.ref}` : 'Manual trial service')}</p>
+      <div class="card-actions">
+        <button class="primary" type="button" data-promote-trial="${escapeAttribute(entry.trialId)}"${pending || liveApiUnavailable() ? ' disabled' : ''}>Promote</button>
+        <button class="ghost" type="button" data-remove-trial="${escapeAttribute(entry.serviceName)}" data-remove-mode="trial"${pending || liveApiUnavailable() ? ' disabled' : ''}>Remove</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderExtensions() {
+  const workspace = runtime.state.extensions || { summary: [], extensions: [] };
+  if (ui.extensionSummary) {
+    ui.extensionSummary.innerHTML = workspace.summary
+      .map(
+        stat => `
+          <div class="summary-card">
+            <strong>${escapeHtml(stat.value)}</strong>
+            <span>${escapeHtml(stat.label)} — ${escapeHtml(stat.detail)}</span>
+          </div>
+        `
+      )
+      .join('');
+  }
+
+  if (!ui.extensionList) return;
+  const visibleExtensions = workspace.extensions.filter(extension => {
+    if (!runtime.query) return true;
+    return `${extension.name} ${extension.id} ${extension.kind} ${extension.status} ${extension.detail} ${(extension.urls || []).join(' ')} ${(extension.exposedPorts || []).join(' ')} ${(extension.requiredEnv || []).join(' ')} ${(extension.missingEnv || []).join(' ')}`.toLowerCase().includes(runtime.query);
+  });
+  if (ui.extensionsEmpty) {
+    ui.extensionsEmpty.hidden = visibleExtensions.length > 0;
+  }
+  ui.extensionList.innerHTML = visibleExtensions.map(buildExtensionCard).join('');
+}
+
+function buildExtensionCard(extension) {
+  const tone = extensionStatusTone(extension.status);
+  const statusClass = tone === 'ok' ? 'healthy' : tone === 'off' ? 'off' : 'warn';
+  const urls = Array.isArray(extension.urls) ? extension.urls.filter(Boolean).slice(0, 3) : [];
+  const ports = Array.isArray(extension.exposedPorts) ? extension.exposedPorts.filter(Boolean).slice(0, 4) : [];
+  const missingEnv = Array.isArray(extension.missingEnv) ? extension.missingEnv.filter(Boolean) : [];
+  const requiredEnv = Array.isArray(extension.requiredEnv) ? extension.requiredEnv.filter(Boolean).slice(0, 5) : [];
+  const envLine = missingEnv.length > 0
+    ? `Missing: ${missingEnv.join(', ')}`
+    : requiredEnv.length > 0
+      ? `Env: ${requiredEnv.join(', ')}`
+      : '';
+
+  return `
+    <article class="extension-card" data-tone="${escapeAttribute(tone)}">
+      <div class="service-top">
+        <div>
+          <p class="service-name">${escapeHtml(extension.name)}</p>
+          <p class="service-kind">${escapeHtml(formatExtensionKind(extension.kind))}</p>
+        </div>
+        <span class="status ${escapeAttribute(statusClass)}">${escapeHtml(extension.statusLabel || extension.status)}</span>
+      </div>
+      <p class="service-notes">${escapeHtml(extension.detail)}</p>
+      <div class="version-grid">
+        <div><span>Mode</span><b>${escapeHtml(extension.enabled ? 'Enabled' : 'Optional')}</b></div>
+        <div><span>Command</span><b>${escapeHtml(extension.command || '—')}</b></div>
+        <div><span>Detected</span><b>${escapeHtml(extension.detectedValue || '—')}</b></div>
+      </div>
+      ${urls.length > 0 ? `<div class="inline-meta">${urls.map(url => `<a class="pill" href="${escapeAttribute(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>`).join('')}</div>` : ''}
+      ${ports.length > 0 ? `<div class="inline-meta">${ports.map(port => `<span class="pill">Port ${escapeHtml(port)}</span>`).join('')}</div>` : ''}
+      ${envLine ? `<p class="service-notes">${escapeHtml(envLine)}</p>` : ''}
+      ${
+        extension.docsUrl
+          ? `<div class="card-actions"><a class="ghost action-link" href="${escapeAttribute(extension.docsUrl)}" target="_blank" rel="noreferrer">Docs</a></div>`
+          : ''
+      }
+    </article>
+  `;
 }
 
 function renderTools() {
@@ -1024,6 +1367,117 @@ function renderFooter() {
   }
 }
 
+function renderServiceDrawer() {
+  if (!ui.serviceDrawer || !ui.serviceDrawerBody) return;
+  const service = getSelectedService();
+  if (!service) {
+    setServiceDrawerOpen(false);
+    return;
+  }
+
+  const isPending = runtime.pendingServices.has(service.name);
+  const disableActions = isPending || liveApiUnavailable();
+  const connections = buildServiceConnectionTargets(service);
+  const connectionMarkup = connections.length
+    ? connections.map(buildCompactConnectionRow).join('')
+    : '<div class="empty-state">No direct URL is known yet. Add a port, proxy route, or Edge export to make this service launchable.</div>';
+
+  if (ui.serviceDrawerTitle) ui.serviceDrawerTitle.textContent = service.name;
+  if (ui.serviceDrawerSubtitle) {
+    ui.serviceDrawerSubtitle.textContent = `${service.kind} · ${service.notes}`;
+  }
+
+  ui.serviceDrawerBody.innerHTML = `
+    <section class="drawer-section">
+      <div class="service-top">
+        <div>
+          <p class="service-name">${escapeHtml(service.name)}</p>
+          <p class="service-kind">${escapeHtml(service.kind)} · ${escapeHtml(service.tags)}</p>
+        </div>
+        <span class="status ${escapeAttribute(service.statusTone)}${isPending ? ' is-updating' : ''}">${escapeHtml(isPending ? 'Updating' : service.statusLabel)}</span>
+      </div>
+      <p class="service-notes">${escapeHtml(service.detail)}</p>
+    </section>
+    <section class="drawer-section">
+      <div class="section-head">
+        <div>
+          <h3>Connection targets</h3>
+          <p>Local and Edge-derived routes for this service.</p>
+        </div>
+      </div>
+      <div class="connection-list">${connectionMarkup}</div>
+    </section>
+    <section class="drawer-section">
+      <div class="service-stats">
+        <div><b>${escapeHtml(service.port)}</b><span>Port</span></div>
+        <div><b>${escapeHtml(service.cpu)}</b><span>CPU</span></div>
+        <div><b>${escapeHtml(service.memory)}</b><span>Memory</span></div>
+        <div><b>${escapeHtml(service.uptime)}</b><span>Uptime</span></div>
+      </div>
+    </section>
+    <section class="drawer-section">
+      ${buildServiceMetadata(service) || '<div class="empty-state">No dependency, blueprint, or version metadata is declared for this service yet.</div>'}
+    </section>
+    <section class="drawer-section">
+      <div class="service-actions">
+        <button class="ghost" type="button" data-command="start" data-runtime="${escapeAttribute(service.runtime)}" data-service="${escapeAttribute(service.name)}"${disableActions ? ' disabled' : ''}>Start</button>
+        <button class="ghost" type="button" data-command="stop" data-runtime="${escapeAttribute(service.runtime)}" data-service="${escapeAttribute(service.name)}"${disableActions ? ' disabled' : ''}>Stop</button>
+        <button class="primary" type="button" data-command="restart" data-runtime="${escapeAttribute(service.runtime)}" data-service="${escapeAttribute(service.name)}"${disableActions ? ' disabled' : ''}>Restart</button>
+        <button class="ghost" type="button" data-focus="troubleshooting">Troubleshoot</button>
+      </div>
+    </section>
+  `;
+}
+
+function buildCompactConnectionRow(target) {
+  const openLink = target.href
+    ? `<a class="primary action-link" href="${escapeAttribute(target.href)}" target="_blank" rel="noreferrer">Open</a>`
+    : '';
+
+  return `
+    <div class="connection-row" data-tone="${escapeAttribute(target.tone || 'healthy')}">
+      <div>
+        <strong>${escapeHtml(target.routeLabel)}</strong>
+        <span>${escapeHtml(target.detail)}</span>
+      </div>
+      <code>${escapeHtml(target.href || target.port || 'No URL')}</code>
+      ${openLink}
+    </div>
+  `;
+}
+
+function getSelectedService() {
+  if (!runtime.selectedServiceName) return null;
+  return runtime.state.services.find(service => service.name === runtime.selectedServiceName) || null;
+}
+
+function openServiceDrawer(serviceName) {
+  if (!serviceName) return;
+  const service = runtime.state.services.find(entry => entry.name === serviceName);
+  if (!service) {
+    setStatus(`Service "${serviceName}" is not declared in the current snapshot.`, 'warn');
+    return;
+  }
+
+  runtime.selectedServiceName = service.name;
+  setServiceDrawerOpen(true);
+}
+
+function setServiceDrawerOpen(open) {
+  runtime.serviceDrawerOpen = open;
+  if (!ui.serviceDrawer) return;
+  ui.serviceDrawer.hidden = !open;
+  ui.serviceDrawer.setAttribute('aria-hidden', String(!open));
+  if (open) {
+    ui.body.dataset.serviceDrawerOpen = 'true';
+    renderServiceDrawer();
+    ui.serviceDrawer.querySelector('[data-close-service-drawer]')?.focus();
+    return;
+  }
+
+  delete ui.body.dataset.serviceDrawerOpen;
+}
+
 function focusServiceCard(serviceName) {
   if (!serviceName) return;
 
@@ -1092,6 +1546,9 @@ function complianceTone(status) {
 
 function buildServiceMetadata(service) {
   const rows = [
+    buildMetadataRow('Tool source', service.toolSource ? `${service.toolSource.type}:${service.toolSource.ref}` : ''),
+    buildMetadataRow('Desired version', service.version?.desired || ''),
+    buildMetadataRow('State', service.lifecycleState === 'trial' ? `Trial ${service.trialId || ''}` : ''),
     buildMetadataRow('Dockerfile', service.blueprint?.dockerfilePath || ''),
     buildMetadataRow('EXPOSE', service.blueprint?.expose?.join(', ') || ''),
     buildServiceReferenceRow('Depends on', service.dependsOn),
@@ -1125,11 +1582,14 @@ function buildServiceMetadata(service) {
 
 function buildServiceCard(service) {
   const isPending = runtime.pendingServices.has(service.name);
-  const disableActions = isPending || liveApiUnavailable();
   const statusLabel = isPending && service.statusTone === 'healthy' ? 'Updating' : service.statusLabel;
   const statusTone = isPending && service.statusTone === 'healthy' ? 'warn' : service.statusTone;
+  const connections = buildServiceConnectionTargets(service).slice(0, 2);
+  const connectionPills = connections.length
+    ? connections.map(target => `<span class="pill">${escapeHtml(target.routeLabel)} ${escapeHtml(target.port ? `:${target.port}` : '')}</span>`).join('')
+    : '<span class="pill">No launch URL yet</span>';
   return `
-    <article class="service-card" data-service-card data-group="${escapeAttribute(service.group)}" data-name="${escapeAttribute(service.name)}">
+    <article class="service-card" data-service-card data-group="${escapeAttribute(service.group)}" data-name="${escapeAttribute(service.name)}" tabindex="0" role="button" aria-label="Open ${escapeAttribute(service.name)} details">
       <div class="service-top">
         <div>
           <p class="service-name">${escapeHtml(service.name)}</p>
@@ -1139,17 +1599,14 @@ function buildServiceCard(service) {
       </div>
       <div class="service-stats">
         <div><b>${escapeHtml(service.port)}</b><span>Port</span></div>
+        <div><b>${escapeHtml(service.uptime)}</b><span>Uptime</span></div>
         <div><b>${escapeHtml(service.cpu)}</b><span>CPU</span></div>
         <div><b>${escapeHtml(service.memory)}</b><span>Memory</span></div>
-        <div><b>${escapeHtml(service.uptime)}</b><span>Uptime</span></div>
       </div>
       <p class="service-notes">${escapeHtml(service.detail)}</p>
-      ${buildServiceMetadata(service)}
-      <div class="mono">${escapeHtml(service.tags)}</div>
+      <div class="inline-meta">${connectionPills}</div>
       <div class="service-actions">
-        <button class="ghost" type="button" data-command="start" data-runtime="${escapeAttribute(service.runtime)}" data-service="${escapeAttribute(service.name)}"${disableActions ? ' disabled' : ''}>Start</button>
-        <button class="ghost" type="button" data-command="stop" data-runtime="${escapeAttribute(service.runtime)}" data-service="${escapeAttribute(service.name)}"${disableActions ? ' disabled' : ''}>Stop</button>
-        <button class="primary" type="button" data-command="restart" data-runtime="${escapeAttribute(service.runtime)}" data-service="${escapeAttribute(service.name)}"${disableActions ? ' disabled' : ''}>Restart</button>
+        <button class="primary" type="button" data-open-service="${escapeAttribute(service.name)}">Details</button>
       </div>
     </article>
   `;
@@ -1383,6 +1840,180 @@ async function handlePortRequest(startFrom) {
   );
 }
 
+async function handleToolVersionCheck(button) {
+  const serviceName = button.dataset.toolVersionCheck;
+  if (!serviceName) return;
+  if (liveApiUnavailable()) {
+    setStatus('Tool version checks are unavailable until /api/tools reconnects.', 'warn');
+    return;
+  }
+
+  runtime.pendingTools.add(serviceName);
+  renderToolWorkbench();
+  try {
+    const result = await postJson('./api/tools/version/check', { serviceName });
+    mergeToolVersion(result);
+    setStatus(`${serviceName}: latest version check completed.`, 'info');
+    pushLiveLog(normalizeLog({ stream: 'Lifecycle', level: 'info', message: `${serviceName}: latest version check completed.` }));
+  } catch (error) {
+    setStatus(`Unable to check ${serviceName}: ${error.message}.`, 'error');
+  } finally {
+    runtime.pendingTools.delete(serviceName);
+    renderToolWorkbench();
+  }
+}
+
+async function handleToolVersionUpdate(button) {
+  const serviceName = button.dataset.toolVersionUpdate;
+  const targetVersion = button.dataset.targetVersion;
+  if (!serviceName || !targetVersion || targetVersion === 'unknown') return;
+  if (liveApiUnavailable()) {
+    setStatus('Tool version updates are unavailable until /api/tools reconnects.', 'warn');
+    return;
+  }
+
+  runtime.pendingTools.add(serviceName);
+  renderToolWorkbench();
+  try {
+    const plan = await postJson('./api/tools/version/update', { serviceName, targetVersion, dryRun: true });
+    setStatus(plan.summary || `${serviceName}: update plan ready.`, 'info');
+    const applied = await postJson('./api/tools/version/update', { serviceName, targetVersion, dryRun: false });
+    setStatus(applied.summary || `${serviceName}: version updated.`, 'info');
+    await refreshToolWorkspace();
+  } catch (error) {
+    setStatus(`Unable to update ${serviceName}: ${error.message}.`, 'error');
+  } finally {
+    runtime.pendingTools.delete(serviceName);
+    renderToolWorkbench();
+  }
+}
+
+async function handleTrialPlan(form) {
+  if (liveApiUnavailable()) {
+    setStatus('Trial provisioning is unavailable until /api/tools reconnects.', 'warn');
+    return;
+  }
+
+  const data = new FormData(form);
+  const sourceRef = String(data.get('sourceRef') || '').trim();
+  const payload = {
+    serviceName: String(data.get('serviceName') || '').trim(),
+    version: String(data.get('version') || '').trim() || 'latest',
+    runtime: String(data.get('runtime') || 'pm2'),
+    toolSource: sourceRef
+      ? {
+          type: String(data.get('sourceType') || 'npm'),
+          ref: sourceRef
+        }
+      : undefined
+  };
+
+  try {
+    runtime.plannedTrial = await postJson('./api/tools/trials/plan', payload);
+    setStatus(`${runtime.plannedTrial.serviceName}: trial plan ready.`, 'info');
+    renderToolWorkbench();
+  } catch (error) {
+    setStatus(`Unable to plan trial: ${error.message}.`, 'error');
+  }
+}
+
+async function handleTrialProvision() {
+  if (!runtime.plannedTrial) return;
+  if (liveApiUnavailable()) {
+    setStatus('Trial provisioning is unavailable until /api/tools reconnects.', 'warn');
+    return;
+  }
+
+  const plan = runtime.plannedTrial;
+  runtime.pendingTools.add(plan.serviceName);
+  renderToolWorkbench();
+  try {
+    const response = await postJson('./api/tools/trials/provision', { planId: plan.planId });
+    runtime.plannedTrial = null;
+    const stateFromResponse = extractStatePayload(response);
+    if (stateFromResponse) {
+      runtime.state = applyPageOverrides(normalizeState(stateFromResponse));
+      persistLiveSnapshot(runtime.state);
+    } else {
+      await refreshToolWorkspace();
+    }
+    setStatus(`${response.trial?.serviceName || plan.serviceName}: temporary service provisioned.`, 'info');
+    renderAll();
+  } catch (error) {
+    setStatus(`Unable to provision trial: ${error.message}.`, 'error');
+  } finally {
+    runtime.pendingTools.delete(plan.serviceName);
+    renderToolWorkbench();
+  }
+}
+
+async function handleTrialPromote(button) {
+  const trialId = button.dataset.promoteTrial;
+  if (!trialId) return;
+  if (liveApiUnavailable()) {
+    setStatus('Trial promotion is unavailable until /api/tools reconnects.', 'warn');
+    return;
+  }
+
+  runtime.pendingTools.add(trialId);
+  renderToolWorkbench();
+  try {
+    const response = await postJson('./api/tools/trials/promote', { trialId });
+    const stateFromResponse = extractStatePayload(response);
+    if (stateFromResponse) {
+      runtime.state = applyPageOverrides(normalizeState(stateFromResponse));
+      persistLiveSnapshot(runtime.state);
+    } else {
+      await refreshToolWorkspace();
+    }
+    setStatus(`${response.serviceName || trialId}: trial promoted.`, 'info');
+    renderAll();
+  } catch (error) {
+    setStatus(`Unable to promote trial: ${error.message}.`, 'error');
+  } finally {
+    runtime.pendingTools.delete(trialId);
+    renderToolWorkbench();
+  }
+}
+
+async function handleToolRemoval(button) {
+  const serviceName = button.dataset.removeTrial || '';
+  const mode = button.dataset.removeMode || 'trial';
+  if (!serviceName) return;
+  if (liveApiUnavailable()) {
+    setStatus('Tool removal is unavailable until /api/tools reconnects.', 'warn');
+    return;
+  }
+
+  runtime.pendingTools.add(serviceName);
+  renderToolWorkbench();
+  try {
+    const plan = await postJson('./api/tools/remove', { serviceName, mode, dryRun: true });
+    setStatus(plan.summary || `${serviceName}: removal plan ready.`, 'warn');
+    const response = await postJson('./api/tools/remove', { serviceName, mode, dryRun: false });
+    const stateFromResponse = extractStatePayload(response);
+    if (stateFromResponse) {
+      runtime.state = applyPageOverrides(normalizeState(stateFromResponse));
+      persistLiveSnapshot(runtime.state);
+    } else {
+      await refreshToolWorkspace();
+    }
+    setStatus(response.summary || `${serviceName}: removed.`, 'warn');
+    renderAll();
+  } catch (error) {
+    setStatus(`Unable to remove ${serviceName}: ${error.message}.`, 'error');
+  } finally {
+    runtime.pendingTools.delete(serviceName);
+    renderToolWorkbench();
+  }
+}
+
+async function refreshToolWorkspace() {
+  if (!hasLiveApiConnection()) return;
+  runtime.state.toolWorkspace = normalizeToolWorkspace(await fetchJson('./api/tools'));
+  renderToolWorkbench();
+}
+
 function applyPortResponse(response, startFrom) {
   runtime.state.ports = normalizePorts({
     ...runtime.state.ports,
@@ -1604,6 +2235,16 @@ function mergeService(serviceUpdate) {
   syncDerivedState(runtime.state);
 }
 
+function mergeToolVersion(update) {
+  const normalized = normalizeToolWorkspace({ versions: [update], summary: [], trials: [] }).versions[0];
+  if (!normalized) return;
+  const workspace = runtime.state.toolWorkspace || { summary: [], versions: [], trials: [] };
+  const versions = workspace.versions.some(entry => entry.serviceName === normalized.serviceName)
+    ? workspace.versions.map(entry => entry.serviceName === normalized.serviceName ? normalized : entry)
+    : [...workspace.versions, normalized];
+  runtime.state.toolWorkspace = normalizeToolWorkspace({ ...workspace, versions });
+}
+
 function normalizeState(input = {}) {
   const merged = {
     ...cloneState(DEFAULT_STATE),
@@ -1614,7 +2255,9 @@ function normalizeState(input = {}) {
     pwa: { ...DEFAULT_STATE.pwa, ...(input.pwa || {}) },
     diagnostics: normalizeDiagnostics(input.diagnostics || DEFAULT_STATE.diagnostics),
     phase2: normalizePhase2(input.phase2 || DEFAULT_STATE.phase2),
-    resources: normalizeResources(input.resources || DEFAULT_STATE.resources)
+    resources: normalizeResources(input.resources || DEFAULT_STATE.resources),
+    toolWorkspace: normalizeToolWorkspace(input.toolWorkspace || DEFAULT_STATE.toolWorkspace),
+    extensions: normalizeExtensionWorkspace(input.extensions || DEFAULT_STATE.extensions)
   };
 
   merged.services = normalizeServices(Array.isArray(input.services) ? input.services : []);
@@ -1657,6 +2300,15 @@ function normalizeServices(services) {
       downstream: Array.isArray(raw.downstream) ? raw.downstream.map(String) : [],
       envVars: Array.isArray(raw.envVars) ? raw.envVars.map(String) : [],
       docsUrl: raw.docsUrl ? String(raw.docsUrl) : '',
+      toolSource: normalizeToolSource(raw.toolSource),
+      version: raw.version
+        ? {
+            desired: raw.version.desired ? String(raw.version.desired) : '',
+            policy: raw.version.policy ? String(raw.version.policy) : 'manual'
+          }
+        : null,
+      lifecycleState: String(raw.lifecycleState || 'active'),
+      trialId: raw.trialId ? String(raw.trialId) : '',
       blueprint: raw.blueprint
         ? {
             dockerfilePath: String(raw.blueprint.dockerfilePath || ''),
@@ -1673,7 +2325,7 @@ function normalizeServices(services) {
           }
         : null
     };
-    normalized.searchable = `${normalized.name} ${normalized.kind} ${normalized.group} ${normalized.status} ${normalized.statusLabel} ${normalized.port} ${normalized.cpu} ${normalized.memory} ${normalized.uptime} ${normalized.notes} ${normalized.detail} ${normalized.tags} ${normalized.dependsOn.join(' ')} ${normalized.downstream.join(' ')} ${normalized.envVars.join(' ')} ${normalized.docsUrl} ${normalized.blueprint?.dockerfilePath || ''} ${normalized.blueprint?.expose?.join(' ') || ''} ${normalized.blueprint?.command || ''} ${normalized.compliance?.summary || ''} ${normalized.compliance?.issues?.join(' ') || ''}`.toLowerCase();
+    normalized.searchable = `${normalized.name} ${normalized.kind} ${normalized.group} ${normalized.status} ${normalized.statusLabel} ${normalized.port} ${normalized.cpu} ${normalized.memory} ${normalized.uptime} ${normalized.notes} ${normalized.detail} ${normalized.tags} ${normalized.dependsOn.join(' ')} ${normalized.downstream.join(' ')} ${normalized.envVars.join(' ')} ${normalized.docsUrl} ${normalized.toolSource?.type || ''} ${normalized.toolSource?.ref || ''} ${normalized.version?.desired || ''} ${normalized.lifecycleState} ${normalized.trialId} ${normalized.blueprint?.dockerfilePath || ''} ${normalized.blueprint?.expose?.join(' ') || ''} ${normalized.blueprint?.command || ''} ${normalized.compliance?.summary || ''} ${normalized.compliance?.issues?.join(' ') || ''}`.toLowerCase();
     return normalized;
   });
 }
@@ -1826,6 +2478,73 @@ function normalizeResources(input) {
   };
 }
 
+function normalizeToolWorkspace(input) {
+  return {
+    summary: normalizeStats(Array.isArray(input?.summary) ? input.summary : []),
+    versions: Array.isArray(input?.versions)
+      ? input.versions.map(entry => ({
+          serviceName: String(entry.serviceName || 'Unnamed tool'),
+          runtime: entry.runtime ? String(entry.runtime) : '',
+          lifecycleState: String(entry.lifecycleState || 'active'),
+          source: normalizeToolSource(entry.source),
+          desiredVersion: String(entry.desiredVersion || 'unlocked'),
+          resolvedVersion: String(entry.resolvedVersion || 'unresolved'),
+          latestVersion: String(entry.latestVersion || 'unknown'),
+          policy: String(entry.policy || 'manual'),
+          status: String(entry.status || 'unknown'),
+          detail: String(entry.detail || ''),
+          checkedAt: entry.checkedAt ? String(entry.checkedAt) : ''
+        }))
+      : [],
+    trials: Array.isArray(input?.trials)
+      ? input.trials.map(entry => ({
+          trialId: String(entry.trialId || ''),
+          serviceName: String(entry.serviceName || 'Unnamed trial'),
+          runtime: entry.runtime ? String(entry.runtime) : '',
+          source: normalizeToolSource(entry.source),
+          desiredVersion: String(entry.desiredVersion || 'latest'),
+          port: entry.port ? String(entry.port) : '',
+          status: String(entry.status || 'provisioned'),
+          manifestPath: entry.manifestPath ? String(entry.manifestPath) : '',
+          createdAt: entry.createdAt ? String(entry.createdAt) : '',
+          expiresAt: entry.expiresAt ? String(entry.expiresAt) : ''
+        }))
+      : []
+  };
+}
+
+function normalizeExtensionWorkspace(input) {
+  return {
+    summary: normalizeStats(Array.isArray(input?.summary) ? input.summary : []),
+    extensions: Array.isArray(input?.extensions)
+      ? input.extensions.map(extension => ({
+          id: String(extension.id || extension.name || 'extension'),
+          name: String(extension.name || extension.id || 'Extension'),
+          kind: String(extension.kind || 'custom'),
+          enabled: Boolean(extension.enabled),
+          status: String(extension.status || (extension.enabled ? 'enabled' : 'disabled')).toLowerCase(),
+          statusLabel: String(extension.statusLabel || extension.status || (extension.enabled ? 'Enabled' : 'Disabled')),
+          detail: String(extension.detail || ''),
+          docsUrl: extension.docsUrl ? String(extension.docsUrl) : '',
+          command: extension.command ? String(extension.command) : '',
+          detectedValue: extension.detectedValue ? String(extension.detectedValue) : '',
+          requiredEnv: Array.isArray(extension.requiredEnv) ? extension.requiredEnv.map(String) : [],
+          missingEnv: Array.isArray(extension.missingEnv) ? extension.missingEnv.map(String) : [],
+          urls: Array.isArray(extension.urls) ? extension.urls.map(String) : [],
+          exposedPorts: Array.isArray(extension.exposedPorts) ? extension.exposedPorts.map(String) : []
+        }))
+      : []
+  };
+}
+
+function normalizeToolSource(source) {
+  if (!source || typeof source !== 'object') return null;
+  return {
+    type: String(source.type || 'manual'),
+    ref: String(source.ref || '')
+  };
+}
+
 function syncDerivedState(state) {
   const totalServices = state.services.length;
   const healthyServices = state.services.filter(service => service.statusTone === 'healthy').length;
@@ -1861,7 +2580,7 @@ function syncDerivedState(state) {
 
 function extractStatePayload(response) {
   if (!response || typeof response !== 'object') return null;
-  const keys = ['app', 'hero', 'snapshot', 'stats', 'pwa', 'diagnostics', 'phase2', 'filters', 'services', 'tools', 'logs', 'ports', 'resources', 'constraints', 'timeline'];
+  const keys = ['app', 'hero', 'snapshot', 'stats', 'pwa', 'diagnostics', 'phase2', 'filters', 'services', 'tools', 'logs', 'ports', 'resources', 'toolWorkspace', 'extensions', 'constraints', 'timeline'];
   if (keys.some(key => key in response)) return { ...runtime.state, ...response };
   for (const key of ['state', 'snapshot', 'data']) {
     if (response[key] && typeof response[key] === 'object' && keys.some(prop => prop in response[key])) {
@@ -1891,6 +2610,166 @@ function extractLogs(response) {
     .find(candidate => Array.isArray(candidate));
   if (!raw) return [];
   return raw.map(entry => (typeof entry === 'string' ? normalizeLog({ stream: 'Lifecycle', level: 'info', message: entry }) : normalizeLog(entry)));
+}
+
+function getVisibleConnectionTargets() {
+  const query = runtime.query;
+  return buildConnectionTargets().filter(target => {
+    if (!query) return true;
+    return `${target.title} ${target.subtitle} ${target.detail} ${target.href || ''} ${target.port || ''} ${target.sourceLabel}`.toLowerCase().includes(query);
+  });
+}
+
+function buildConnectionTargets() {
+  const serviceTargets = runtime.state.services.flatMap(service => buildServiceConnectionTargets(service));
+  const extensionTargets = buildExtensionConnectionTargets();
+  return dedupeBy([...serviceTargets, ...extensionTargets], target => `${target.title}|${target.href || target.port}|${target.sourceLabel}`);
+}
+
+function buildServiceConnectionTargets(service) {
+  const targets = [];
+  const numericPort = servicePort(service);
+  if (numericPort) {
+    targets.push({
+      title: service.name,
+      subtitle: `${service.kind} service`,
+      detail: 'Local loopback route exposed by the service definition.',
+      href: `http://127.0.0.1:${numericPort}`,
+      port: numericPort,
+      routeLabel: 'Localhost',
+      source: 'local',
+      sourceLabel: 'Service port',
+      tone: service.statusTone,
+      serviceName: service.name
+    });
+  }
+
+  const extensions = runtime.state.extensions?.extensions || [];
+  for (const extension of extensions) {
+    if (extension.kind === 'network-edge' && extension.status === 'enabled' && numericPort) {
+      for (const url of extension.urls || []) {
+        const href = urlWithPort(url, numericPort);
+        if (!href) continue;
+        targets.push({
+          title: service.name,
+          subtitle: `${extension.name} route`,
+          detail: 'Private Edge route derived from the enabled network-edge extension.',
+          href,
+          port: numericPort,
+          routeLabel: extension.name,
+          source: 'edge',
+          sourceLabel: 'Edge export',
+          tone: service.statusTone,
+          serviceName: service.name
+        });
+      }
+    }
+
+    if (extension.kind === 'reverse-proxy' && extension.urls?.length && numericPort && (extension.exposedPorts || []).includes(numericPort)) {
+      for (const url of extension.urls) {
+        const href = normalizeHref(url);
+        if (!href) continue;
+        targets.push({
+          title: service.name,
+          subtitle: `${extension.name} route`,
+          detail: 'Proxy route matched to this service port by the extension export.',
+          href,
+          port: numericPort,
+          routeLabel: extension.name,
+          source: 'extension',
+          sourceLabel: 'Proxy export',
+          tone: service.statusTone,
+          serviceName: service.name
+        });
+      }
+    }
+  }
+
+  return dedupeBy(targets, target => `${target.href || target.port}|${target.sourceLabel}`);
+}
+
+function buildExtensionConnectionTargets() {
+  const servicesByPort = new Map(
+    runtime.state.services
+      .map(service => [servicePort(service), service])
+      .filter(([port]) => port)
+  );
+
+  return (runtime.state.extensions?.extensions || []).flatMap(extension => {
+    const targets = [];
+    const urls = Array.isArray(extension.urls) ? extension.urls.filter(Boolean) : [];
+    const ports = Array.isArray(extension.exposedPorts) ? extension.exposedPorts.filter(Boolean) : [];
+    const tone = extensionStatusTone(extension.status);
+
+    urls.forEach((url, index) => {
+      const href = normalizeHref(url);
+      if (!href) return;
+      const matchedService = ports.map(port => servicesByPort.get(String(port))).find(Boolean);
+      targets.push({
+        title: matchedService?.name || extension.name,
+        subtitle: matchedService ? `${extension.name} export` : formatExtensionKind(extension.kind),
+        detail: matchedService
+          ? 'Extension export matched to a declared LocalLink service port.'
+          : extension.detail || 'Workspace extension URL export.',
+        href,
+        port: ports[index] || ports[0] || '',
+        routeLabel: extension.name,
+        source: 'extension',
+        sourceLabel: extension.status === 'enabled' ? 'Enabled extension' : 'Extension',
+        tone: matchedService?.statusTone || tone,
+        serviceName: matchedService?.name || ''
+      });
+    });
+
+    ports.forEach(port => {
+      if (urls.length > 0) return;
+      const matchedService = servicesByPort.get(String(port));
+      targets.push({
+        title: matchedService?.name || extension.name,
+        subtitle: `${extension.name} port export`,
+        detail: matchedService
+          ? 'Extension exposes a port used by this service.'
+          : extension.detail || 'Workspace extension port export.',
+        href: '',
+        port: String(port),
+        routeLabel: extension.name,
+        source: 'extension',
+        sourceLabel: extension.status === 'enabled' ? 'Enabled extension' : 'Extension',
+        tone: matchedService?.statusTone || tone,
+        serviceName: matchedService?.name || ''
+      });
+    });
+
+    return targets;
+  });
+}
+
+function servicePort(service) {
+  const port = String(service?.port || '').trim();
+  return /^\d+$/.test(port) ? port : '';
+}
+
+function normalizeHref(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`;
+  try {
+    return new URL(candidate).href;
+  } catch {
+    return '';
+  }
+}
+
+function urlWithPort(value, port) {
+  const href = normalizeHref(value);
+  if (!href || !port) return '';
+  try {
+    const url = new URL(href);
+    url.port = String(port);
+    return url.href;
+  } catch {
+    return '';
+  }
 }
 
 function computeNextFreePort(startFrom, busy) {
@@ -1969,6 +2848,51 @@ function formatGroupLabel(group) {
   if (group === 'docker') return 'Docker';
   if (group === 'windows') return 'Windows';
   return group.charAt(0).toUpperCase() + group.slice(1);
+}
+
+function toolStatusTone(status) {
+  if (status === 'current') return 'ok';
+  if (status === 'unlocked') return 'off';
+  return 'warn';
+}
+
+function extensionStatusTone(status) {
+  if (status === 'enabled') return 'ok';
+  if (status === 'disabled') return 'off';
+  if (status === 'missing' || status === 'needs_config') return 'error';
+  return 'warn';
+}
+
+function formatExtensionKind(kind) {
+  switch (kind) {
+    case 'reverse-proxy':
+      return 'Reverse proxy';
+    case 'network-edge':
+      return 'Network edge';
+    case 'observability':
+      return 'Observability';
+    case 'dashboard':
+      return 'Dashboard';
+    default:
+      return 'Custom extension';
+  }
+}
+
+function formatToolStatus(status) {
+  switch (status) {
+    case 'current':
+      return 'Current';
+    case 'update_available':
+      return 'Update available';
+    case 'unlocked':
+      return 'Untracked';
+    case 'trial':
+      return 'Trial';
+    case 'error':
+      return 'Error';
+    default:
+      return 'Unknown';
+  }
 }
 
 function ensureActiveFilter(current, filters) {

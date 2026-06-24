@@ -1,0 +1,28 @@
+{
+  "services": {
+    "LocalLink MCP Core": {
+      "source": {
+        "type": "npm",
+        "ref": "locallink"
+      },
+      "resolvedVersion": "0.1.0",
+      "resolvedAt": "2026-06-21T00:00:00.000Z",
+      "artifact": {
+        "kind": "npm",
+        "ref": "locallink"
+      }
+    },
+    "Queue Worker": {
+      "source": {
+        "type": "manual",
+        "ref": "./scripts/mock-worker.js"
+      },
+      "resolvedVersion": "0.1.0",
+      "resolvedAt": "2026-06-21T00:00:00.000Z",
+      "artifact": {
+        "kind": "manual",
+        "ref": "./scripts/mock-worker.js"
+      }
+    }
+  }
+}

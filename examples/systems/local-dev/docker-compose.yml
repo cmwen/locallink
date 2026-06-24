@@ -1,8 +1,9 @@
-# LocalLink Phase 1 sample Docker topology
+name: ${COMPOSE_PROJECT_NAME:-locallink_local_dev}
+
+# LocalLink sample Docker topology for the local-dev system fixture.
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: locallink-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: locallink

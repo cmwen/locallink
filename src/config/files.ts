@@ -5,7 +5,7 @@ import vm from 'node:vm';
 
 import { parse as babelParse } from '@babel/parser';
 import { parse, print, types } from 'recast';
-import { YAMLMap, parseDocument } from 'yaml';
+import { YAMLMap, parseDocument, stringify } from 'yaml';
 
 import {
   TARGET_FILES,
@@ -18,6 +18,10 @@ import {
   type ProjectModel,
   type ServiceDefinition,
   type ServiceGroup,
+  type ToolLifecycleState,
+  type ToolSource,
+  type ToolSourceType,
+  type ToolVersionRequest,
   type TargetFile,
   type WriteInfraConfigInput,
   type WriteInfraConfigResult,
@@ -28,6 +32,7 @@ import { getInfraFilePath } from '../shared/paths';
 import { normalizeTags, slugify, titleCaseFromKey } from '../shared/utils';
 
 const { builders: b, namedTypes: n, visit } = types;
+const hydratedEnvValues = new Map<string, string>();
 
 const jsParser = {
   parse(source: string) {
@@ -72,18 +77,18 @@ function defaultNotes(group: ServiceGroup, name: string): { notes: string; detai
     case 'pwa':
       return {
         notes: `Dashboard-facing service for ${name}.`,
-        detail: 'Managed through ecosystem.config.js and surfaced as an installable local app surface.',
+        detail: 'Managed through locallink.services.yml and surfaced as an installable local app surface.',
       };
     case 'windows':
       return {
         notes: `Host-side Windows executable for ${name}.`,
-        detail: 'Detected under WSL using an allowlisted Windows process name from ecosystem.config.js.',
+        detail: 'Detected under WSL using an allowlisted Windows process name from locallink.services.yml.',
       };
     case 'pm2':
     default:
       return {
         notes: `PM2 app for ${name}.`,
-        detail: 'Managed through ecosystem.config.js and surfaced in the LocalLink runtime snapshot.',
+        detail: 'Managed through locallink.services.yml and surfaced in the LocalLink runtime snapshot.',
       };
   }
 }
@@ -132,14 +137,22 @@ function parseEnvMap(content: string): Record<string, string> {
   return values;
 }
 
-function mergeRuntimeEnv(values: Record<string, string>): Record<string, string> {
+function normalizePathEnv(values: Record<string, string>, root: string): Record<string, string> {
+  const normalized = { ...values };
+  if (normalized.PM2_HOME && !path.isAbsolute(normalized.PM2_HOME)) {
+    normalized.PM2_HOME = path.resolve(root, normalized.PM2_HOME);
+  }
+  return normalized;
+}
+
+function mergeRuntimeEnv(values: Record<string, string>, root: string): Record<string, string> {
   const runtimeOverrides = Object.fromEntries(
     Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
   );
-  return {
+  return normalizePathEnv({
     ...values,
     ...runtimeOverrides,
-  };
+  }, root);
 }
 
 function applyEnvPatch(content: string, patch: EnvPatch): string {
@@ -269,6 +282,8 @@ function buildComposeDefinitions(raw: string, env: Record<string, string>): Serv
       group,
       runtime: (labels['locallink.runtime'] as ServiceDefinition['runtime']) || 'docker',
       runtimeName: serviceName,
+      definitionSource: 'compose',
+      lifecycleState: 'active',
       portEnv,
       port: parseComposePort(serviceConfig, env, portEnv),
       notes: labels['locallink.notes'] || defaults.notes,
@@ -356,6 +371,8 @@ function buildEcosystemDefinitions(
       metadata.port ??
       (portEnv ? env[portEnv] : undefined) ??
       app.env?.PORT ??
+      app.env?.LOCALLINK_API_PORT ??
+      app.env?.LOCALLINK_DASHBOARD_PORT ??
       app.env?.LOCALLINK_WEB_PORT ??
       app.env?.LOCALLINK_MCP_PORT;
 
@@ -364,11 +381,14 @@ function buildEcosystemDefinitions(
       name: displayName,
       kind: typeof metadata.kind === 'string' ? metadata.kind : kindLabelForGroup(group),
       group,
+      definitionSource: 'ecosystem',
+      lifecycleState: 'active',
       runtime,
       runtimeName,
       taskName,
       cwd: resolvedCwd,
       script: typeof app.script === 'string' ? app.script : undefined,
+      args: typeof app.args === 'string' || Array.isArray(app.args) ? app.args : undefined,
       dockerfilePath:
         typeof metadata.dockerfile === 'string'
           ? path.resolve(resolvedCwd, metadata.dockerfile)
@@ -388,6 +408,175 @@ function buildEcosystemDefinitions(
       docsUrl: typeof metadata.docsUrl === 'string' ? metadata.docsUrl : undefined,
     };
   });
+}
+
+function normalizeToolSource(input: unknown): ToolSource | undefined {
+  if (!input || typeof input !== 'object') {
+    return undefined;
+  }
+
+  const source = input as Record<string, unknown>;
+  const type = typeof source.type === 'string' ? source.type : '';
+  const ref = typeof source.ref === 'string' ? source.ref : '';
+  const allowed: ToolSourceType[] = ['docker-image', 'npm', 'git', 'local-binary', 'taskfile', 'manual'];
+  if (!allowed.includes(type as ToolSourceType) || !ref) {
+    return undefined;
+  }
+
+  return {
+    type: type as ToolSourceType,
+    ref,
+  };
+}
+
+function normalizeVersionRequest(input: unknown): ToolVersionRequest | undefined {
+  if (!input || typeof input !== 'object') {
+    return undefined;
+  }
+
+  const version = input as Record<string, unknown>;
+  const policy = typeof version.policy === 'string' ? version.policy : undefined;
+  return {
+    desired: typeof version.desired === 'string' || typeof version.desired === 'number' ? String(version.desired) : undefined,
+    policy: policy === 'notify' || policy === 'auto-minor' ? policy : 'manual',
+  };
+}
+
+function normalizeLifecycleState(input: unknown, fallback: ToolLifecycleState = 'active'): ToolLifecycleState {
+  if (input === 'trial' || input === 'disabled' || input === 'retired' || input === 'active') {
+    return input;
+  }
+  return fallback;
+}
+
+function buildServiceRegistryDefinitions(
+  filePath: string,
+  raw: string,
+  env: Record<string, string>,
+  definitionSource: ServiceDefinition['definitionSource'] = 'services',
+  fallbackState: ToolLifecycleState = 'active',
+): ServiceDefinition[] {
+  if (!raw.trim()) {
+    return [];
+  }
+
+  const document = parseDocument(raw);
+  const parsed = document.toJS() as { services?: unknown };
+  const services = Array.isArray(parsed?.services) ? parsed.services : [];
+  const baseDir = path.dirname(filePath);
+
+  return services
+    .filter((service): service is Record<string, unknown> => !!service && typeof service === 'object')
+    .map((service) => {
+      const displayName = typeof service.name === 'string' ? service.name : 'Unnamed Service';
+      const group = (service.group as ServiceGroup) || 'pm2';
+      const runtime =
+        (service.runtime as ServiceDefinition['runtime']) || (group === 'windows' ? 'taskfile' : 'pm2');
+      const taskName = typeof service.taskName === 'string' ? service.taskName : undefined;
+      const runtimeName =
+        typeof service.runtimeName === 'string'
+          ? service.runtimeName
+          : runtime === 'taskfile'
+            ? taskName || displayName
+            : slugify(displayName);
+      const resolvedCwd = typeof service.cwd === 'string' ? path.resolve(baseDir, service.cwd) : baseDir;
+      const portEnv = typeof service.portEnv === 'string' ? service.portEnv : undefined;
+      const blueprintPath =
+        typeof service.blueprint === 'string'
+          ? service.blueprint
+          : typeof service.dockerfile === 'string'
+            ? service.dockerfile
+            : undefined;
+      const resolvedPort = service.port ?? (portEnv ? env[portEnv] : undefined);
+      const defaults = defaultNotes(group, displayName);
+
+      return {
+        id: slugify(displayName),
+        name: displayName,
+        kind: typeof service.kind === 'string' ? service.kind : kindLabelForGroup(group),
+        group,
+        definitionSource,
+        runtime,
+        runtimeName,
+        taskName,
+        cwd: resolvedCwd,
+        script: typeof service.script === 'string' ? service.script : undefined,
+        args:
+          typeof service.args === 'string' || Array.isArray(service.args)
+            ? (service.args as string | string[])
+            : undefined,
+        dockerfilePath: blueprintPath
+          ? path.resolve(resolvedCwd, blueprintPath)
+          : runtime === 'pm2'
+            ? path.join(resolvedCwd, 'Dockerfile')
+            : undefined,
+        toolSource: normalizeToolSource(service.source),
+        version: normalizeVersionRequest(service.version),
+        lifecycleState: normalizeLifecycleState(service.state, fallbackState),
+        trialId: typeof service.trialId === 'string' ? service.trialId : undefined,
+        windowsProcessName:
+          typeof service.windowsProcessName === 'string' ? service.windowsProcessName : undefined,
+        portEnv,
+        port: resolvedPort ? String(resolvedPort) : '—',
+        notes: typeof service.notes === 'string' ? service.notes : defaults.notes,
+        detail: typeof service.detail === 'string' ? service.detail : defaults.detail,
+        tags: normalizeTags(service.tags || [group]).join(' · ') || group,
+        dependsOn: normalizeMetadataList(service.dependsOn),
+        downstream: normalizeMetadataList(service.downstream),
+        envVars: normalizeMetadataList(service.envVars),
+        docsUrl: typeof service.docsUrl === 'string' ? service.docsUrl : undefined,
+      };
+    });
+}
+
+async function loadTrialDefinitions(root: string, env: Record<string, string>): Promise<ServiceDefinition[]> {
+  const trialsDir = path.join(root, '.locallink', 'trials');
+  let entries: string[];
+  try {
+    entries = await fs.readdir(trialsDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
+
+  const definitions: ServiceDefinition[] = [];
+  for (const entry of entries) {
+    const manifestPath = path.join(trialsDir, entry, 'manifest.yml');
+    const content = await readFileOrEmpty(manifestPath);
+    if (!content.trim()) {
+      continue;
+    }
+
+    const document = parseDocument(content);
+    const parsed = document.toJS() as { service?: Record<string, unknown>; trialId?: string };
+    const service = parsed.service;
+    if (!service || typeof service !== 'object') {
+      continue;
+    }
+
+    const trialContent = stringify({ services: [{ ...service, trialId: parsed.trialId || entry, state: 'trial' }] });
+    definitions.push(...buildServiceRegistryDefinitions(manifestPath, trialContent, env, 'trial', 'trial'));
+  }
+
+  return definitions;
+}
+
+function mergeDefinitionsByIdentity(definitions: ServiceDefinition[]): ServiceDefinition[] {
+  const seen = new Set<string>();
+  const merged: ServiceDefinition[] = [];
+
+  for (const definition of definitions) {
+    const key = definition.name || definition.id;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    merged.push(definition);
+  }
+
+  return merged;
 }
 
 function ensureComposeDocument(content: string) {
@@ -652,6 +841,12 @@ function initialContentForTarget(targetFile: TargetFile): string {
       return '';
     case 'docker-compose.yml':
       return 'services: {}\n';
+    case 'locallink.services.yml':
+      return 'services: []\n';
+    case 'locallink.lock.json':
+      return '{\n  "services": {}\n}\n';
+    case 'locallink.extensions.yml':
+      return 'extensions: []\n';
     case 'ecosystem.config.js':
       return 'module.exports = {\n  apps: [],\n};\n';
     case 'mcp-registry.json':
@@ -670,33 +865,66 @@ export class ConfigRepository {
 
   async hydrateProcessEnv(): Promise<void> {
     const envContent = await readFileOrEmpty(this.getFilePath('.env'));
-    for (const [key, value] of Object.entries(parseEnvMap(envContent))) {
-      if (process.env[key] === undefined) {
+    const rawValues = parseEnvMap(envContent);
+    const values = normalizePathEnv(rawValues, this.root);
+
+    for (const [key, previousValue] of hydratedEnvValues.entries()) {
+      if (values[key] !== undefined || process.env[key] !== previousValue) {
+        continue;
+      }
+
+      delete process.env[key];
+      hydratedEnvValues.delete(key);
+    }
+
+    for (const [key, value] of Object.entries(values)) {
+      const previousHydratedValue = hydratedEnvValues.get(key);
+      const canHydrate =
+        process.env[key] === undefined ||
+        process.env[key] === previousHydratedValue ||
+        (key === 'PM2_HOME' && process.env[key] === rawValues[key]);
+      if (canHydrate) {
         process.env[key] = value;
+        hydratedEnvValues.set(key, value);
       }
     }
   }
 
   async loadProjectModel(): Promise<ProjectModel> {
     const envContent = await readFileOrEmpty(this.getFilePath('.env'));
-    const env = mergeRuntimeEnv(parseEnvMap(envContent));
+    const env = mergeRuntimeEnv(parseEnvMap(envContent), this.root);
     const composeContent = await readFileOrEmpty(this.getFilePath('docker-compose.yml'));
+    const servicesContent = await readFileOrEmpty(this.getFilePath('locallink.services.yml'));
+    const servicesDefinitions = buildServiceRegistryDefinitions(
+      this.getFilePath('locallink.services.yml'),
+      servicesContent,
+      env,
+    );
+    const trialDefinitions = await loadTrialDefinitions(this.root, env);
     const ecosystemPath = this.getFilePath('ecosystem.config.js');
     const ecosystemContent = await readFileOrEmpty(ecosystemPath);
     const ecosystemDefinitions = buildEcosystemDefinitions(ecosystemPath, ecosystemContent, env);
     const composeDefinitions = buildComposeDefinitions(composeContent, env);
+    const definitions = mergeDefinitionsByIdentity([
+      ...trialDefinitions,
+      ...servicesDefinitions,
+      ...ecosystemDefinitions,
+      ...composeDefinitions,
+    ]);
 
     logDebug('Loaded workspace model.', {
       root: this.root,
       envCount: Object.keys(env).length,
+      serviceRegistryServices: servicesDefinitions.length,
+      trialServices: trialDefinitions.length,
       ecosystemServices: ecosystemDefinitions.length,
       composeServices: composeDefinitions.length,
-      totalServices: ecosystemDefinitions.length + composeDefinitions.length,
+      totalServices: definitions.length,
     });
 
     return {
       env,
-      definitions: [...ecosystemDefinitions, ...composeDefinitions],
+      definitions,
     };
   }
 

@@ -1,9 +1,19 @@
-export const TARGET_FILES = ['.env', '.env.example', 'docker-compose.yml', 'ecosystem.config.js', 'mcp-registry.json'] as const;
+export const TARGET_FILES = [
+  '.env',
+  '.env.example',
+  'docker-compose.yml',
+  'locallink.services.yml',
+  'locallink.lock.json',
+  'locallink.extensions.yml',
+  'ecosystem.config.js',
+  'mcp-registry.json',
+] as const;
 
 export type TargetFile = (typeof TARGET_FILES)[number];
 export type ServiceGroup = 'docker' | 'pm2' | 'windows' | 'pwa';
 export type TaskRuntime = 'docker' | 'pm2' | 'taskfile';
 export type TaskAction = 'start' | 'stop' | 'restart' | 'up';
+export type WorkspaceLifecycleAction = 'up' | 'down';
 export type StatusTone = 'healthy' | 'warn' | 'off';
 export type LogLevel = 'info' | 'warn' | 'error';
 export type DiagnosticStatus = 'ok' | 'warn' | 'error';
@@ -72,11 +82,17 @@ export interface ServiceDefinition {
   name: string;
   kind: string;
   group: ServiceGroup;
+  definitionSource?: 'compose' | 'services' | 'ecosystem' | 'trial';
   runtime?: TaskRuntime;
   runtimeName?: string;
   taskName?: string;
   cwd?: string;
   script?: string;
+  args?: string | string[];
+  toolSource?: ToolSource;
+  version?: ToolVersionRequest;
+  lifecycleState?: ToolLifecycleState;
+  trialId?: string;
   dockerfilePath?: string;
   portEnv?: string;
   port?: string;
@@ -99,6 +115,92 @@ export interface ServiceRecord extends ServiceDefinition {
   cpu: string;
   memory: string;
   uptime: string;
+}
+
+export type ToolLifecycleState = 'active' | 'trial' | 'disabled' | 'retired';
+export type ToolSourceType = 'docker-image' | 'npm' | 'git' | 'local-binary' | 'taskfile' | 'manual';
+
+export interface ToolSource {
+  type: ToolSourceType;
+  ref: string;
+}
+
+export interface ToolVersionRequest {
+  desired?: string;
+  policy?: 'manual' | 'notify' | 'auto-minor';
+}
+
+export interface ToolLockEntry {
+  source?: ToolSource;
+  resolvedVersion?: string;
+  latestVersion?: string;
+  resolvedAt?: string;
+  artifact?: {
+    kind?: string;
+    ref?: string;
+    integrity?: string;
+    checksum?: string;
+  };
+  ports?: string[];
+  trialId?: string;
+}
+
+export interface ToolVersionStatus {
+  serviceName: string;
+  runtime?: TaskRuntime;
+  lifecycleState: ToolLifecycleState;
+  source?: ToolSource;
+  desiredVersion: string;
+  resolvedVersion: string;
+  latestVersion: string;
+  policy: string;
+  status: 'current' | 'update_available' | 'unlocked' | 'unknown' | 'trial' | 'error';
+  detail: string;
+  checkedAt?: string;
+}
+
+export interface ToolTrialRecord {
+  trialId: string;
+  serviceName: string;
+  runtime?: TaskRuntime;
+  source?: ToolSource;
+  desiredVersion: string;
+  port?: string;
+  status: 'planned' | 'provisioned' | 'promoted' | 'removed';
+  manifestPath?: string;
+  createdAt?: string;
+  expiresAt?: string;
+}
+
+export interface ToolWorkspace {
+  summary: StatCard[];
+  versions: ToolVersionStatus[];
+  trials: ToolTrialRecord[];
+}
+
+export type ExtensionKind = 'dashboard' | 'reverse-proxy' | 'network-edge' | 'observability' | 'custom';
+export type ExtensionStatus = 'enabled' | 'available' | 'disabled' | 'missing' | 'needs_config';
+
+export interface ExtensionRecord {
+  id: string;
+  name: string;
+  kind: ExtensionKind;
+  enabled: boolean;
+  status: ExtensionStatus;
+  statusLabel: string;
+  detail: string;
+  docsUrl?: string;
+  command?: string;
+  detectedValue?: string;
+  requiredEnv?: string[];
+  missingEnv?: string[];
+  urls?: string[];
+  exposedPorts?: string[];
+}
+
+export interface ExtensionWorkspace {
+  summary: StatCard[];
+  extensions: ExtensionRecord[];
 }
 
 export interface DashboardState {
@@ -132,6 +234,8 @@ export interface DashboardState {
   logs: LogEntry[];
   ports: PortResolution;
   resources: ResourceDashboard;
+  toolWorkspace?: ToolWorkspace;
+  extensions?: ExtensionWorkspace;
   constraints: InfoCard[];
   timeline: InfoCard[];
 }
@@ -277,6 +381,47 @@ export interface TaskExecutionResult {
   exitCode: number | null;
   stdout: string;
   stderr: string;
+}
+
+export interface WorkspaceLifecycleStep {
+  id: string;
+  name: string;
+  kind: 'core' | 'service' | 'extension';
+  action: WorkspaceLifecycleAction;
+  ok: boolean;
+  skipped?: boolean;
+  command?: string;
+  stdout?: string;
+  stderr?: string;
+  detail: string;
+}
+
+export interface WorkspaceLifecycleResult {
+  action: WorkspaceLifecycleAction;
+  workspaceRoot: string;
+  ok: boolean;
+  steps: WorkspaceLifecycleStep[];
+}
+
+export interface WorkspaceStatus {
+  workspaceRoot: string;
+  appRoot: string;
+  systemId: string;
+  api?: ManagedSurfaceStatus;
+  dashboard?: ManagedSurfaceStatus;
+  services: {
+    total: number;
+    running: number;
+    stopped: number;
+    unknown: number;
+  };
+  ports: PortResolution;
+}
+
+export interface ManagedSurfaceStatus {
+  name: string;
+  port?: number;
+  url?: string;
 }
 
 export interface ProjectModel {

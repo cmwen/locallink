@@ -6,17 +6,17 @@
   },
   "hero": {
     "eyebrow": "Phase 1 control plane",
-    "title": "One dashboard for local runtimes, ports, and logs.",
-    "body": "Monitor hybrid services, trigger lifecycle actions, and hand the whole workspace to AI through the same compact surface."
+    "title": "Find the local service you need.",
+    "body": "Launch running services, inspect their connection targets, and use Edge extension exports without remembering ports or paths."
   },
   "snapshot": {
-    "value": "6 services",
+    "value": "5 services",
     "detail": "rehydrated from Docker, PM2, PWA dev servers, and Windows process probes"
   },
   "stats": [
     {
       "label": "Tracked services",
-      "value": "6",
+      "value": "5",
       "detail": "Docker + PM2 + Windows"
     },
     {
@@ -96,21 +96,6 @@
       "tags": "docker · db · stable"
     },
     {
-      "name": "Vite PWA UI",
-      "kind": "PWA / Dev Server",
-      "group": "pwa",
-      "status": "running",
-      "statusLabel": "Up",
-      "statusTone": "healthy",
-      "port": "5173",
-      "cpu": "14%",
-      "memory": "230 MB",
-      "uptime": "28m",
-      "notes": "Local dashboard shell.",
-      "detail": "Fast-refresh frontend used for the PWA dashboard and installable shell.",
-      "tags": "pwa · hot reload · ui"
-    },
-    {
       "name": "Queue Worker",
       "kind": "PM2",
       "group": "pm2",
@@ -158,26 +143,196 @@
   ],
   "tools": [
     {
-      "name": "read_infra_config",
+      "name": "read_workspace_blueprint",
       "input": "None",
-      "detail": "Reads .env, docker-compose.yml, and ecosystem.config.js as a structural snapshot."
+      "detail": "Reads .env, docker-compose.yml, locallink.services.yml, locallink.lock.json, locallink.extensions.yml, optional ecosystem.config.js, and mcp-registry.json as a structural snapshot."
     },
     {
-      "name": "write_infra_config",
+      "name": "patch_workspace_blueprint",
       "input": "target_file + content or patch",
       "detail": "Safely mutates the selected infrastructure file without flattening comments or formatting."
     },
     {
-      "name": "get_available_port",
+      "name": "allocate_system_port",
       "input": "start_from optional",
       "detail": "Scans sequentially for the next completely open local port."
     },
     {
-      "name": "execute_task",
+      "name": "orchestrate_service",
       "input": "runtime + service_name + action",
       "detail": "Runs docker, pm2, or taskfile lifecycle commands and streams the terminal output."
+    },
+    {
+      "name": "read_extension_workspace",
+      "input": "None",
+      "detail": "Returns optional dashboard, proxy, network edge, and observability extension status."
+    },
+    {
+      "name": "read_tool_workspace",
+      "input": "None",
+      "detail": "Returns version lock status and temporary trial services."
+    },
+    {
+      "name": "update_tool_version",
+      "input": "service_name + target_version + dry_run",
+      "detail": "Plans or applies a version lock update."
     }
   ],
+  "toolWorkspace": {
+    "summary": [
+      {
+        "label": "Versioned tools",
+        "value": "3",
+        "detail": "tracked in LocalLink"
+      },
+      {
+        "label": "Updates",
+        "value": "1",
+        "detail": "available after latest checks"
+      },
+      {
+        "label": "Trials",
+        "value": "1",
+        "detail": "temporary services"
+      }
+    ],
+    "versions": [
+      {
+        "serviceName": "LocalLink MCP Core",
+        "runtime": "pm2",
+        "lifecycleState": "active",
+        "source": {
+          "type": "npm",
+          "ref": "locallink"
+        },
+        "desiredVersion": "0.1.0",
+        "resolvedVersion": "0.1.0",
+        "latestVersion": "0.1.0",
+        "policy": "manual",
+        "status": "current",
+        "detail": "Resolved version is locked."
+      },
+      {
+        "serviceName": "Queue Worker",
+        "runtime": "pm2",
+        "lifecycleState": "active",
+        "source": {
+          "type": "manual",
+          "ref": "./scripts/mock-worker.js"
+        },
+        "desiredVersion": "0.1.0",
+        "resolvedVersion": "0.1.0",
+        "latestVersion": "unknown",
+        "policy": "manual",
+        "status": "current",
+        "detail": "Resolved version is locked."
+      },
+      {
+        "serviceName": "Example MCP Trial",
+        "runtime": "pm2",
+        "lifecycleState": "trial",
+        "source": {
+          "type": "npm",
+          "ref": "example-mcp"
+        },
+        "desiredVersion": "latest",
+        "resolvedVersion": "unresolved",
+        "latestVersion": "unknown",
+        "policy": "manual",
+        "status": "trial",
+        "detail": "Temporary service; promote it to persist version state."
+      }
+    ],
+    "trials": [
+      {
+        "trialId": "trial-example-mcp-1234abcd",
+        "serviceName": "Example MCP Trial",
+        "runtime": "pm2",
+        "source": {
+          "type": "npm",
+          "ref": "example-mcp"
+        },
+        "desiredVersion": "latest",
+        "port": "5007",
+        "status": "provisioned"
+      }
+    ]
+  },
+  "extensions": {
+    "summary": [
+      {
+        "label": "Enabled extensions",
+        "value": "0",
+        "detail": "active optional capabilities"
+      },
+      {
+        "label": "Available",
+        "value": "1",
+        "detail": "detected but not enabled"
+      },
+      {
+        "label": "Needs attention",
+        "value": "0",
+        "detail": "missing command or config"
+      }
+    ],
+    "extensions": [
+      {
+        "id": "dashboard",
+        "name": "Dashboard",
+        "kind": "dashboard",
+        "enabled": false,
+        "status": "disabled",
+        "statusLabel": "Disabled",
+        "detail": "Dashboard is kept out of the default control-plane process. Run locallink dashboard or enable this extension.",
+        "urls": ["http://127.0.0.1:4011"],
+        "exposedPorts": ["4011"]
+      },
+      {
+        "id": "caddy",
+        "name": "Caddy Reverse Proxy",
+        "kind": "reverse-proxy",
+        "enabled": false,
+        "status": "available",
+        "statusLabel": "Available",
+        "detail": "Caddy is installed and can be enabled as a reverse-proxy extension.",
+        "command": "caddy",
+        "detectedValue": "v2.8.4",
+        "urls": ["app.localhost"],
+        "exposedPorts": ["4010"],
+        "docsUrl": "https://caddyserver.com/docs/"
+      },
+      {
+        "id": "tailscale",
+        "name": "Tailscale Network Edge",
+        "kind": "network-edge",
+        "enabled": true,
+        "status": "enabled",
+        "statusLabel": "Enabled",
+        "detail": "Tailscale is active on local-dev.tailnet.ts.net and exports service ports for private access.",
+        "command": "tailscale",
+        "detectedValue": "1.78.1",
+        "urls": ["https://local-dev.tailnet.ts.net", "http://100.101.102.103"],
+        "docsUrl": "https://tailscale.com/kb"
+      },
+      {
+        "id": "openobserve",
+        "name": "OpenObserve OTEL",
+        "kind": "observability",
+        "enabled": false,
+        "status": "disabled",
+        "statusLabel": "Disabled",
+        "detail": "OpenObserve OTEL is optional. Enable it when central logs and traces are wanted.",
+        "requiredEnv": [
+          "OPENOBSERVE_ENDPOINT",
+          "OPENOBSERVE_ORGANIZATION",
+          "OPENOBSERVE_STREAM",
+          "OPENOBSERVE_TOKEN"
+        ],
+        "docsUrl": "https://openobserve.ai/docs/"
+      }
+    ]
+  },
   "logs": [
     {
       "time": "18:04",

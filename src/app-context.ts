@@ -3,17 +3,21 @@ import { createHttpServer } from './http/server';
 import { LogBroker } from './logs/broker';
 import { PortAllocator } from './ports/allocator';
 import { verifyBlueprintCompliance } from './runtime/lego';
+import { buildExtensionWorkspace } from './runtime/extensions';
 import { inspectProcess, terminateProcess } from './runtime/resources';
 import { RuntimeResolver } from './runtime/snapshot';
+import { readWorkspaceRuntimeState } from './runtime/workspace-state';
 import { StartupDiagnosticsService } from './startup/diagnostics';
 import { resolvePaths } from './shared/paths';
 import { logDebug, logInfo, mirrorBrokerEntry } from './shared/logger';
 import { normalizeLoopbackBindHost } from './shared/network';
 import { startStreamingCommand, type StreamingCommandHandle } from './shared/utils';
 import { TaskExecutor } from './tasks/executor';
+import { ToolManager, type ToolTrialInput } from './tools/manager';
 import type {
   DashboardState,
   ExecuteTaskInput,
+  ExtensionWorkspace,
   InfraConfigView,
   ProcessInspection,
   ProcessTerminationResult,
@@ -21,6 +25,9 @@ import type {
   ServiceCompliance,
   StartupDiagnostics,
   TaskExecutionResult,
+  ToolWorkspace,
+  WorkspaceStatus,
+  WorkspaceLifecycleResult,
   WriteInfraConfigInput,
   WriteInfraConfigResult,
 } from './shared/contracts';
@@ -38,6 +45,8 @@ export class AppContext {
   readonly runtimeResolver;
 
   readonly taskExecutor;
+
+  readonly toolManager;
 
   readonly startupDiagnosticsService;
 
@@ -61,7 +70,8 @@ export class AppContext {
       this.portAllocator,
       this.logs,
     );
-    this.taskExecutor = new TaskExecutor(this.paths.root, this.configRepository, this.logs);
+    this.taskExecutor = new TaskExecutor(this.paths.root, this.configRepository, this.logs, undefined, this.paths.appRoot);
+    this.toolManager = new ToolManager(this.paths.root, this.configRepository);
     this.startupDiagnosticsService = new StartupDiagnosticsService({
       workspaceRoot: this.paths.root,
       appRoot: this.paths.appRoot,
@@ -118,6 +128,61 @@ export class AppContext {
     return this.configRepository.readInfraConfig();
   }
 
+  async readToolWorkspace(): Promise<ToolWorkspace> {
+    return this.toolManager.readWorkspace();
+  }
+
+  async readExtensionWorkspace(): Promise<ExtensionWorkspace> {
+    await this.configRepository.hydrateProcessEnv();
+    const model = await this.configRepository.loadProjectModel();
+    return buildExtensionWorkspace(this.paths.root, model.env);
+  }
+
+  async checkToolVersion(serviceName: string) {
+    const result = await this.toolManager.checkLatestVersion(serviceName);
+    this.logs.append(`${serviceName}: latest version check completed.`, 'Lifecycle');
+    return result;
+  }
+
+  async updateToolVersion(serviceName: string, targetVersion: string, dryRun = true) {
+    const result = await this.toolManager.updateVersion(serviceName, targetVersion, dryRun);
+    this.logs.append(result.summary, 'Lifecycle', dryRun ? 'info' : 'warn');
+    return result;
+  }
+
+  planToolTrial(input: ToolTrialInput) {
+    const result = this.toolManager.planTrial(input);
+    this.logs.append(`${result.serviceName}: trial plan ${result.planId} prepared.`, 'Lifecycle');
+    return result;
+  }
+
+  async provisionToolTrial(planId: string) {
+    const result = await this.toolManager.provisionTrial(planId);
+    this.logs.append(`${result.trial.serviceName}: trial ${result.trial.trialId} provisioned.`, 'Lifecycle', 'warn');
+    return {
+      ...result,
+      snapshot: await this.readState(),
+    };
+  }
+
+  async promoteToolTrial(trialId: string, serviceName?: string) {
+    const result = await this.toolManager.promoteTrial(trialId, serviceName);
+    this.logs.append(`${result.serviceName}: trial ${trialId} promoted to persistent service.`, 'Lifecycle', 'warn');
+    return {
+      ...result,
+      snapshot: await this.readState(),
+    };
+  }
+
+  async removeToolService(serviceName: string, mode: 'trial' | 'persistent', dryRun = true) {
+    const result = await this.toolManager.removeService(serviceName, mode, dryRun);
+    this.logs.append(result.summary, 'Lifecycle', dryRun ? 'info' : 'warn');
+    return {
+      ...result,
+      snapshot: dryRun ? undefined : await this.readState(),
+    };
+  }
+
   async writeInfraConfig(input: WriteInfraConfigInput): Promise<WriteInfraConfigResult> {
     const result = await this.configRepository.writeInfraConfig(input);
     this.logs.append(`${input.targetFile} updated.`, 'Lifecycle');
@@ -148,6 +213,59 @@ export class AppContext {
     return { result, snapshot };
   }
 
+  async executeWorkspaceLifecycle(action: 'up' | 'down'): Promise<WorkspaceLifecycleResult> {
+    const result = await this.taskExecutor.executeWorkspaceLifecycle(action);
+    for (const step of result.steps) {
+      this.logs.append(`${step.name}: ${step.detail}`, step.ok ? 'Lifecycle' : 'Alerts', step.ok ? 'info' : 'error');
+    }
+    return result;
+  }
+
+  async readWorkspaceStatus(): Promise<WorkspaceStatus> {
+    await this.configRepository.hydrateProcessEnv();
+    const model = await this.configRepository.loadProjectModel();
+    const runtime = await readWorkspaceRuntimeState(this.paths.root);
+    const snapshot = await this.readState();
+    return {
+      workspaceRoot: this.paths.root,
+      appRoot: this.paths.appRoot,
+      systemId: model.env.LOCALLINK_SYSTEM_ID || runtime?.systemId || this.paths.root.split('/').pop() || 'system',
+      api: runtime?.processes.api,
+      dashboard: runtime?.processes.dashboard,
+      services: {
+        total: snapshot.services.length,
+        running: snapshot.services.filter((service) => service.status === 'running').length,
+        stopped: snapshot.services.filter((service) => service.status === 'stopped').length,
+        unknown: snapshot.services.filter((service) => service.status === 'unknown').length,
+      },
+      ports: snapshot.ports,
+    };
+  }
+
+  async readAiManifest() {
+    const status = await this.readWorkspaceStatus();
+    return {
+      name: 'LocalLink',
+      purpose: 'Local-first control plane for workspace services, ports, extensions, versions, and trials.',
+      workspaceRoot: this.paths.root,
+      runtimeStateFile: `${this.paths.root}/.locallink/runtime.json`,
+      jsonOutput: {
+        flag: '--json',
+        env: 'LOCALLINK_JSON=true',
+      },
+      recommendedWorkflow: ['status --json', 'up --json', 'snapshot', 'down --json'],
+      commands: [
+        { command: 'ai --json', purpose: 'Describe agent-facing CLI capabilities.' },
+        { command: 'status --json', purpose: 'Read assigned ports, URLs, and service counts.' },
+        { command: 'up --json', purpose: 'Start API, active services, and enabled extensions.' },
+        { command: 'down --json', purpose: 'Stop enabled extensions, active services, and API.' },
+        { command: 'snapshot', purpose: 'Return full dashboard state as JSON.' },
+        { command: 'doctor --json', purpose: 'Return startup diagnostics.' },
+      ],
+      currentStatus: status,
+    };
+  }
+
   async verifyServiceCompliance(serviceName: string): Promise<{ serviceName: string; compliance: ServiceCompliance; dockerfilePath?: string }> {
     await this.configRepository.hydrateProcessEnv();
     const model = await this.configRepository.loadProjectModel();
@@ -174,11 +292,13 @@ export class AppContext {
     return { result, snapshot };
   }
 
-  async getBinding(): Promise<{ host: string; port: number }> {
+  async getBinding(surface: 'api' | 'dashboard' = 'api'): Promise<{ host: string; port: number }> {
     const model = await this.configRepository.loadProjectModel();
+    const apiPort = model.env.LOCALLINK_API_PORT || model.env.LOCALLINK_WEB_PORT || '4010';
+    const dashboardPort = model.env.LOCALLINK_DASHBOARD_PORT || model.env.LOCALLINK_WEB_PORT || apiPort;
     return {
       host: normalizeLoopbackBindHost(model.env.LOCALLINK_BIND_HOST),
-      port: Number(model.env.LOCALLINK_WEB_PORT || '4010'),
+      port: Number(surface === 'dashboard' ? dashboardPort : apiPort),
     };
   }
 
@@ -198,6 +318,7 @@ export class AppContext {
 
     this.dockerTail = startStreamingCommand('docker', ['compose', 'logs', '--tail', '20', '-f'], {
       cwd: this.paths.root,
+      captureOutput: false,
       onStdoutLine: (line) => this.logs.append(line, 'Docker'),
       onStderrLine: (line) => this.logs.append(line, 'Docker', 'warn'),
     });
@@ -209,6 +330,7 @@ export class AppContext {
 
     this.pm2Tail = startStreamingCommand('pm2', ['logs', '--lines', '20', '--raw'], {
       cwd: this.paths.root,
+      captureOutput: false,
       onStdoutLine: (line) => this.logs.append(line, 'PM2'),
       onStderrLine: (line) => this.logs.append(line, 'PM2', 'warn'),
     });
@@ -231,7 +353,7 @@ export class AppContext {
     this.pm2Tail = undefined;
   }
 
-  createServer() {
-    return createHttpServer(this);
+  createServer(options?: { dashboardEnabled?: boolean }) {
+    return createHttpServer(this, options);
   }
 }

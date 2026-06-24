@@ -115,33 +115,67 @@
         <div class="grid two">
           <div class="card">
             <strong>Use the current repository</strong>
-            <pre><code>pnpm install
-pnpm build
-pnpm start
-pnpm mcp
+	            <pre><code>pnpm install
+	pnpm build
+	pnpm up:smoke
+	pnpm status:smoke
+	pnpm ai:smoke
+	pnpm down:smoke
+	pnpm up
+	pnpm status
+	pnpm down
+	pnpm start
+	pnpm mcp
 pnpm doctor
 pnpm snapshot</code></pre>
           </div>
           <div class="card">
             <strong>Scaffold a new LocalLink workspace</strong>
             <pre><code>locallink init my-local-infra
-cd my-local-infra
-locallink web
-locallink mcp</code></pre>
+	cd my-local-infra
+	locallink api
+	locallink dashboard
+	locallink mcp</code></pre>
           </div>
         </div>
         <p class="note">Startup diagnostics run on boot and through <code>locallink doctor</code>. Missing PM2, Docker, Task, shell assets, or runtime dependencies are surfaced with install guidance.</p>
       </section>
 
+      <section id="ai-cli" class="section">
+        <h2>AI-aware CLI</h2>
+        <p>LocalLink exposes a small machine-readable CLI surface so coding agents can orient themselves without scraping human console text. The same status and guidance are also available through MCP.</p>
+        <div class="grid two">
+          <div class="card">
+            <strong>Agent manifest</strong>
+            <small><code>locallink ai --json</code> returns the selected workspace, ignored runtime state file, supported JSON commands, recommended lifecycle flow, and current status.</small>
+          </div>
+          <div class="card">
+            <strong>Workspace status</strong>
+            <small><code>locallink status --json</code> returns assigned API/dashboard URLs, service counts, and the next available port. Agents should read this before assuming a port.</small>
+          </div>
+          <div class="card">
+            <strong>Idempotent lifecycle</strong>
+            <small><code>locallink up --json</code> and <code>locallink down --json</code> return structured step results and tolerate already-running or already-stopped LocalLink-managed PM2 processes.</small>
+          </div>
+          <div class="card">
+            <strong>Runtime assignment file</strong>
+            <small><code>.locallink/runtime.json</code> records the real ports and PM2 names assigned by <code>up</code>. It is ignored runtime state, not committed desired state.</small>
+          </div>
+        </div>
+      </section>
+
       <section id="workspace" class="section">
         <h2>Workspace scaffold</h2>
-        <p>The CLI generator supports both <code>locallink init</code> and <code>locallink init &lt;workspace-name&gt;</code>. It creates a safe starter workspace without overwriting existing files. If a README already exists, LocalLink writes <code>README.locallink.md</code> instead.</p>
+        <p>The CLI generator supports both <code>locallink init</code> and <code>locallink init &lt;workspace-name&gt;</code>. Runtime contracts live in system workspace folders, not in the app source root. The repository fixture at <code>examples/systems/local-dev</code> is safe local test data.</p>
         <pre><code>my-local-infra/
 ├── .env
 ├── .env.example
 ├── .gitignore
 ├── Taskfile.yml
 ├── docker-compose.yml
+├── locallink.services.yml
+├── locallink.lock.json
+├── locallink.extensions.yml
 ├── ecosystem.config.js
 ├── mcp-registry.json
 ├── README.md (or README.locallink.md)
@@ -149,7 +183,11 @@ locallink mcp</code></pre>
         <div class="grid two">
           <div class="card">
             <strong>Scaffolded defaults</strong>
-            <small>LocalLink writes empty but valid starter configuration stubs for Docker, PM2, Task, registry, env templates, and agent instructions.</small>
+            <small>LocalLink writes empty but valid starter configuration stubs for Docker, neutral service metadata, extensions, optional PM2-native config, Task, registry, env templates, and agent instructions.</small>
+          </div>
+          <div class="card">
+            <strong>Multi-system isolation</strong>
+            <small>Use unique <code>LOCALLINK_SYSTEM_ID</code>, <code>COMPOSE_PROJECT_NAME</code>, <code>PM2_HOME</code>, runtime names, and port blocks for each workspace. Preferred API/dashboard ports are probed before launch and reassigned when occupied.</small>
           </div>
           <div class="card">
             <strong>Private workspace ready</strong>
@@ -176,7 +214,7 @@ locallink mcp</code></pre>
               </tr>
               <tr>
                 <td>Scaffolding conventions</td>
-                <td>Docker services belong in <code>docker-compose.yml</code>; PM2 or task-backed services belong in <code>ecosystem.config.js</code>; optional metadata should be declared alongside each service.</td>
+                <td>Docker services belong in <code>docker-compose.yml</code>; PM2, PWA, Windows, and task-backed services belong in <code>locallink.services.yml</code>; <code>ecosystem.config.js</code> is reserved for PM2-native options.</td>
               </tr>
               <tr>
                 <td>Network isolation</td>
@@ -209,12 +247,12 @@ locallink mcp</code></pre>
               </tr>
               <tr>
                 <td><code>CMD</code> / <code>ENTRYPOINT</code></td>
-                <td>Provides the static launch contract that LocalLink can expose to the dashboard and the blueprint compliance checker.</td>
+                <td>Provides the static launch contract that LocalLink can expose to the dashboard, adapt to PM2, and verify through the blueprint compliance checker.</td>
               </tr>
             </tbody>
           </table>
         </div>
-        <p>For multi-service repos, LocalLink supports an explicit <code>locallink.dockerfile</code> metadata path in <code>ecosystem.config.js</code>, so each PM2 service can point to its own blueprint file.</p>
+        <p>For multi-service repos, LocalLink supports an explicit <code>blueprint</code> path in <code>locallink.services.yml</code>, so each PM2 or task-backed service can point to its own Dockerfile-style blueprint. Legacy <code>locallink.dockerfile</code> entries in <code>ecosystem.config.js</code> are still read for compatibility.</p>
       </section>
 
       <section id="metadata" class="section">
@@ -226,7 +264,7 @@ locallink mcp</code></pre>
               <tr>
                 <th>Field</th>
                 <th>Compose label</th>
-                <th>Ecosystem metadata</th>
+                <th>Service registry field</th>
                 <th>Purpose</th>
               </tr>
             </thead>
@@ -258,24 +296,26 @@ locallink mcp</code></pre>
               <tr>
                 <td>Dockerfile blueprint</td>
                 <td>n/a (compose services already live in Docker)</td>
-                <td><code>dockerfile</code></td>
+                <td><code>blueprint</code></td>
                 <td>Explicit path to the Dockerfile blueprint for native PM2 / task-backed services.</td>
               </tr>
             </tbody>
           </table>
         </div>
-        <pre><code>// ecosystem.config.js
-locallink: {
-  name: 'Queue Worker',
-  group: 'pm2',
-  runtime: 'pm2',
-  dockerfile: './blueprints/queue-worker.Dockerfile',
-  portEnv: 'QUEUE_WORKER_PORT',
-  dependsOn: ['Postgres Compose'],
-  downstream: ['LocalLink Dashboard UI'],
-  envVars: ['QUEUE_WORKER_PORT', 'POSTGRES_PORT'],
-  docsUrl: 'https://pm2.keymetrics.io/docs/usage/application-declaration/',
-}</code></pre>
+        <pre><code># locallink.services.yml
+services:
+  - name: Queue Worker
+    group: pm2
+    runtime: pm2
+    runtimeName: queue-worker
+    blueprint: ./blueprints/queue-worker.Dockerfile
+    portEnv: QUEUE_WORKER_PORT
+    dependsOn:
+      - Postgres Compose
+    envVars:
+      - QUEUE_WORKER_PORT
+      - POSTGRES_PORT
+    docsUrl: https://pm2.keymetrics.io/docs/usage/application-declaration/</code></pre>
       </section>
 
       <section id="dashboard" class="section">
@@ -334,11 +374,11 @@ locallink: {
         <div class="grid two">
           <div class="card">
             <strong>Daily local workflow</strong>
-            <small>Run <code>locallink doctor</code> when setup feels wrong, <code>locallink web</code> for the dashboard, and <code>locallink snapshot</code> when you need a JSON view for debugging or agent handoff.</small>
+            <small>Run <code>locallink doctor</code> when setup feels wrong, <code>locallink up</code> to start configured services and enabled extensions, <code>locallink down</code> to stop initiated services, and <code>locallink snapshot</code> when you need a JSON handoff.</small>
           </div>
           <div class="card">
             <strong>Adding a PM2 service</strong>
-            <small>Add the app to <code>ecosystem.config.js</code>, include <code>locallink</code> metadata, point <code>dockerfile</code> at its blueprint, and use env variables instead of hardcoded ports or URLs.</small>
+            <small>Add the service to <code>locallink.services.yml</code>, point <code>blueprint</code> at its Dockerfile-style contract, and use env variables instead of hardcoded ports or URLs.</small>
           </div>
           <div class="card">
             <strong>Adding a Docker service</strong>
@@ -346,10 +386,10 @@ locallink: {
           </div>
           <div class="card">
             <strong>Adding a Taskfile service</strong>
-            <small>Add an ecosystem entry with <code>runtime: 'taskfile'</code> and <code>taskName</code>, then provide tasks like <code>name:start</code>, <code>name:stop</code>, <code>name:restart</code>, or <code>name:up</code>.</small>
+            <small>Add a <code>locallink.services.yml</code> entry with <code>runtime: taskfile</code> and <code>taskName</code>, then provide tasks like <code>name:start</code>, <code>name:stop</code>, <code>name:restart</code>, or <code>name:up</code>.</small>
           </div>
         </div>
-        <p class="note">Lifecycle actions are declaration-first. LocalLink only runs actions for services declared in <code>docker-compose.yml</code> or <code>ecosystem.config.js</code>, which keeps agent-triggered operations bounded to the workspace contract.</p>
+        <p class="note">Lifecycle actions are declaration-first. LocalLink only runs actions for services declared in <code>docker-compose.yml</code>, <code>locallink.services.yml</code>, or legacy <code>ecosystem.config.js</code>, which keeps agent-triggered operations bounded to the workspace contract.</p>
       </section>
 
       <section id="phase2" class="section">
@@ -385,8 +425,20 @@ LOCALLINK_PHASE2_PREFERRED_EDGE=auto</code></pre>
                 <td>Scaffold a starter LocalLink workspace in the current directory or in a named child folder.</td>
               </tr>
               <tr>
-                <td><code>locallink web</code></td>
-                <td>Start the local PWA dashboard server on the configured loopback host and port.</td>
+                <td><code>locallink up</code></td>
+                <td>Start the LocalLink API, declared active services, and enabled extensions for the selected workspace.</td>
+              </tr>
+              <tr>
+                <td><code>locallink down</code></td>
+                <td>Stop enabled extensions, declared services, and the LocalLink API process initiated by LocalLink.</td>
+              </tr>
+              <tr>
+                <td><code>locallink api</code></td>
+                <td>Start the headless local API control plane on the configured loopback host and port.</td>
+              </tr>
+              <tr>
+                <td><code>locallink dashboard</code></td>
+                <td>Start the optional local dashboard UI plus API on the configured loopback host and port.</td>
               </tr>
               <tr>
                 <td><code>locallink mcp</code></td>
@@ -444,9 +496,59 @@ LOCALLINK_PHASE2_PREFERRED_EDGE=auto</code></pre>
             </thead>
             <tbody>
               <tr>
+                <td><code>read_ai_manifest</code></td>
+                <td>n/a</td>
+                <td>Returns agent-facing CLI guidance, supported JSON commands, runtime state path, and current status.</td>
+              </tr>
+              <tr>
+                <td><code>read_workspace_status</code></td>
+                <td>n/a</td>
+                <td>Returns assigned API/dashboard ports, URLs, service counts, and next available port.</td>
+              </tr>
+              <tr>
                 <td><code>read_workspace_blueprint</code></td>
                 <td><code>read_infra_config</code></td>
                 <td>Returns the structural view of the workspace blueprint files.</td>
+              </tr>
+              <tr>
+                <td><code>read_extension_workspace</code></td>
+                <td>n/a</td>
+                <td>Returns optional dashboard, Caddy, Tailscale, OpenObserve, and custom extension status.</td>
+              </tr>
+              <tr>
+                <td><code>read_tool_workspace</code></td>
+                <td>n/a</td>
+                <td>Returns version lock status and active temporary trials.</td>
+              </tr>
+              <tr>
+                <td><code>check_tool_version</code></td>
+                <td>n/a</td>
+                <td>Checks the latest available version for a declared tool when LocalLink can inspect its source.</td>
+              </tr>
+              <tr>
+                <td><code>update_tool_version</code></td>
+                <td>n/a</td>
+                <td>Plans or applies a version change for a declared service.</td>
+              </tr>
+              <tr>
+                <td><code>plan_tool_trial</code></td>
+                <td>n/a</td>
+                <td>Builds a dry-run plan for a temporary tool service before provisioning.</td>
+              </tr>
+              <tr>
+                <td><code>provision_tool_trial</code></td>
+                <td>n/a</td>
+                <td>Writes an approved temporary trial manifest under <code>.locallink/trials</code>.</td>
+              </tr>
+              <tr>
+                <td><code>promote_tool_trial</code></td>
+                <td>n/a</td>
+                <td>Promotes a temporary trial into persistent workspace configuration.</td>
+              </tr>
+              <tr>
+                <td><code>remove_tool_service</code></td>
+                <td>n/a</td>
+                <td>Plans or removes a trial or persistent service with dry-run support.</td>
               </tr>
               <tr>
                 <td><code>patch_workspace_blueprint</code></td>
@@ -488,7 +590,10 @@ LOCALLINK_PHASE2_PREFERRED_EDGE=auto</code></pre>
               <tr><td><code>.env</code></td><td>Active local runtime values.</td></tr>
               <tr><td><code>.env.example</code></td><td>Shareable defaults for collaborators and scaffolded workspaces.</td></tr>
               <tr><td><code>docker-compose.yml</code></td><td>Docker services and LocalLink service labels.</td></tr>
-              <tr><td><code>ecosystem.config.js</code></td><td>PM2 and task-backed service topology plus LocalLink metadata.</td></tr>
+              <tr><td><code>locallink.services.yml</code></td><td>PM2, PWA, Windows, and task-backed service metadata plus blueprint paths.</td></tr>
+              <tr><td><code>locallink.lock.json</code></td><td>Resolved tool and service artifact versions.</td></tr>
+              <tr><td><code>locallink.extensions.yml</code></td><td>Optional dashboard, proxy, edge, observability, and custom extensions.</td></tr>
+              <tr><td><code>ecosystem.config.js</code></td><td>Optional PM2-native escape hatch and legacy metadata source.</td></tr>
               <tr><td><code>mcp-registry.json</code></td><td>Optional registry for local-build MCP servers and external volume mappings.</td></tr>
               <tr><td><code>Taskfile.yml</code></td><td>Shared task orchestration entrypoints for workspace-level commands.</td></tr>
               <tr><td><code>AGENTS.md</code></td><td>Permanent AI guardrails and conventions for the workspace.</td></tr>
@@ -539,12 +644,12 @@ LOCALLINK_PHASE2_PREFERRED_EDGE=auto</code></pre>
               <tr>
                 <td>Blueprint compliance warning</td>
                 <td>A PM2 or task-backed service lacks a readable Dockerfile blueprint.</td>
-                <td>Add <code>locallink.dockerfile</code> in <code>ecosystem.config.js</code> and include <code>EXPOSE</code>, <code>ENV</code>, and <code>CMD</code> / <code>ENTRYPOINT</code> where useful.</td>
+                <td>Add <code>blueprint</code> in <code>locallink.services.yml</code> and include <code>EXPOSE</code>, <code>ENV</code>, and <code>CMD</code> / <code>ENTRYPOINT</code> where useful.</td>
               </tr>
               <tr>
                 <td>Dashboard will not start</td>
                 <td>The configured host/port is unavailable or invalid.</td>
-                <td>Check <code>LOCALLINK_BIND_HOST</code> and <code>LOCALLINK_WEB_PORT</code> in <code>.env</code>, or stop the process already using that port.</td>
+                <td>Check <code>LOCALLINK_BIND_HOST</code>, <code>LOCALLINK_API_PORT</code>, and <code>LOCALLINK_DASHBOARD_PORT</code> in <code>.env</code>, or stop the process already using that port.</td>
               </tr>
             </tbody>
           </table>

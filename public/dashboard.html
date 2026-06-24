@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f4f7fa">
-  <meta name="description" content="LocalLink dashboard for local runtimes, logs, ports, and PWA readiness.">
+  <meta name="description" content="LocalLink dashboard for finding and launching local services, ports, and Edge extension exports.">
   <meta name="application-name" content="LocalLink">
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./assets/icons/icon.svg" type="image/svg+xml">
@@ -24,7 +24,7 @@
       </div>
       <div class="header-actions">
         <label class="sr-only" for="dashboard-search">Search dashboard state</label>
-        <input id="dashboard-search" class="search" type="search" placeholder="Filter services, ports, logs" aria-label="Search dashboard state" data-search>
+        <input id="dashboard-search" class="search" type="search" placeholder="Search services, links, ports" aria-label="Search dashboard state" data-search>
         <button class="ghost" type="button" data-theme-toggle aria-pressed="false">Dark mode</button>
         <button class="ghost" type="button" data-refresh>Refresh snapshot</button>
         <a class="primary action-link" href="./index.html">Open launcher</a>
@@ -34,14 +34,23 @@
     <div class="status-banner" data-status-banner hidden aria-live="polite"></div>
     <noscript><div class="status-banner" data-tone="warn">JavaScript is required to render the live dashboard.</div></noscript>
 
-    <section class="hero">
+    <nav class="view-nav" aria-label="Dashboard sections">
+      <button class="tab is-active" type="button" data-panel="overview">Overview</button>
+      <button class="tab" type="button" data-panel="services">Services</button>
+      <button class="tab" type="button" data-panel="edge">Edge</button>
+      <button class="tab" type="button" data-panel="tools">Tools</button>
+      <button class="tab" type="button" data-panel="troubleshooting">Troubleshooting</button>
+      <button class="tab" type="button" data-panel="ports">Ports</button>
+    </nav>
+
+    <section class="hero" data-shell-panel="overview">
       <div class="panel hero-copy" data-shell-panel="overview">
         <div class="eyebrow" data-hero-eyebrow>Phase 1 control plane</div>
-        <h2 data-hero-title>One dashboard for local runtimes, ports, and logs.</h2>
-        <p data-hero-body>Monitor hybrid services, trigger lifecycle actions, and hand the whole workspace to AI through the same compact surface.</p>
+        <h2 data-hero-title>Find the local service you need.</h2>
+        <p data-hero-body>Launch running services, inspect their connection targets, and use Edge extension exports without remembering ports or paths.</p>
         <div class="hero-row">
-          <button class="primary" type="button" data-focus="services">Open service matrix</button>
-          <button class="ghost" type="button" data-focus="logs">Tail logs</button>
+          <button class="primary" type="button" data-focus="services">Browse services</button>
+          <button class="ghost" type="button" data-focus="edge">View Edge exports</button>
           <div class="inline-meta" data-hero-pills></div>
         </div>
       </div>
@@ -56,12 +65,112 @@
 
     <section class="summary-grid" data-shell-panel="overview" data-summary-grid></section>
 
+    <section class="panel section connection-hub" data-shell-panel="overview">
+      <div class="section-head">
+        <div>
+          <h3>Connection hub</h3>
+          <p>Use LocalLink as the entry point for the ports, URLs, and Edge-routed services available in this workspace.</p>
+        </div>
+        <div class="action-row">
+          <button class="ghost" type="button" data-focus="services">All services</button>
+          <button class="ghost" type="button" data-focus="edge">Edge status</button>
+        </div>
+      </div>
+      <div class="connection-layout">
+        <div>
+          <div class="empty-state" data-connections-empty hidden>No service links match the current search.</div>
+          <div class="connection-grid" data-connection-grid></div>
+        </div>
+        <aside class="edge-summary" data-edge-summary></aside>
+      </div>
+    </section>
+
+    <section class="panel section" data-shell-panel="tools">
+      <div class="section-head">
+        <div>
+          <h3>Tool workbench</h3>
+          <p>Inspect desired, locked, and latest versions; stage upgrades; and trial temporary services before promoting them.</p>
+        </div>
+      </div>
+      <div class="summary-grid summary-grid-inline" data-tool-summary></div>
+      <div class="tool-workbench">
+        <div class="tool-column">
+          <div class="section-head">
+            <div>
+              <h3>Version manager</h3>
+              <p>Declared service versions and lock-file state.</p>
+            </div>
+          </div>
+          <div class="empty-state" data-tool-versions-empty hidden>No versioned tools match the current search.</div>
+          <div class="tool-version-list" data-tool-version-list></div>
+        </div>
+        <div class="tool-column">
+          <div class="section-head">
+            <div>
+              <h3>Temporary trials</h3>
+              <p>Create a disposable service, inspect it, then promote or remove it.</p>
+            </div>
+          </div>
+          <form class="trial-form" data-trial-form>
+            <label>
+              <span>Name</span>
+              <input type="text" name="serviceName" placeholder="Example MCP Tool" required>
+            </label>
+            <label>
+              <span>Source type</span>
+              <select name="sourceType">
+                <option value="npm">npm</option>
+                <option value="docker-image">Docker image</option>
+                <option value="git">Git</option>
+                <option value="taskfile">Taskfile</option>
+                <option value="manual">Manual</option>
+              </select>
+            </label>
+            <label>
+              <span>Source ref</span>
+              <input type="text" name="sourceRef" placeholder="package-name or image:tag">
+            </label>
+            <label>
+              <span>Version</span>
+              <input type="text" name="version" placeholder="latest">
+            </label>
+            <label>
+              <span>Runtime</span>
+              <select name="runtime">
+                <option value="pm2">PM2</option>
+                <option value="taskfile">Taskfile</option>
+                <option value="docker">Docker</option>
+              </select>
+            </label>
+            <div class="card-actions">
+              <button class="primary" type="submit">Plan trial</button>
+              <button class="ghost" type="button" data-provision-planned-trial disabled>Provision plan</button>
+            </div>
+          </form>
+          <div class="empty-state" data-tool-trials-empty hidden>No temporary trials are active.</div>
+          <div class="tool-trial-list" data-tool-trial-list></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel section" data-shell-panel="edge">
+      <div class="section-head">
+        <div>
+          <h3>Edge and extension exports</h3>
+          <p>Optional dashboard, proxy, network edge, and observability layers that expose service links outside the core API.</p>
+        </div>
+      </div>
+      <div class="summary-grid summary-grid-inline" data-extension-summary></div>
+      <div class="empty-state" data-extensions-empty hidden>No extensions match the current search.</div>
+      <div class="extension-grid" data-extension-list></div>
+    </section>
+
     <section class="main-grid">
       <div class="panel section" data-shell-panel="services">
         <div class="section-head">
           <div>
-            <h3>Service matrix</h3>
-            <p>Declared services and their latest runtime state from Docker, PM2, and host probes.</p>
+            <h3>Services</h3>
+            <p>Declared services and their current state. Open a service for runtime details, dependencies, links, and troubleshooting actions.</p>
           </div>
           <div class="filter-row" data-filter-row></div>
         </div>
@@ -82,11 +191,11 @@
       </aside>
     </section>
 
-    <section class="panel section terminal" data-shell-panel="logs">
+    <section class="panel section terminal" data-shell-panel="troubleshooting">
       <div class="section-head">
         <div>
-          <h3>Log streamer</h3>
-          <p>Terminal-style output for container logs, PM2 events, and local process lifecycle changes.</p>
+          <h3>Troubleshooting logs</h3>
+          <p>Signal-first output for alerts and lifecycle changes, with the full stream available when something needs investigation.</p>
         </div>
         <div class="action-row">
           <button class="ghost" type="button" data-open-log-viewer>Open detailed viewer</button>
@@ -164,7 +273,7 @@
       </div>
     </section>
 
-    <section class="main-grid" data-shell-panel="resources">
+    <section class="main-grid" data-shell-panel="troubleshooting">
       <div class="panel section">
         <div class="section-head">
           <div>
@@ -191,6 +300,20 @@
       </aside>
     </section>
 
+    <section class="service-drawer-overlay" data-service-drawer hidden aria-hidden="true">
+      <div class="service-drawer" role="dialog" aria-modal="true" aria-labelledby="service-drawer-title">
+        <div class="service-drawer-header">
+          <div>
+            <p class="eyebrow">Service details</p>
+            <h3 id="service-drawer-title" data-service-drawer-title>Service</h3>
+            <p data-service-drawer-subtitle>Select a service to inspect runtime details and connection targets.</p>
+          </div>
+          <button class="ghost" type="button" data-close-service-drawer>Close</button>
+        </div>
+        <div class="service-drawer-body" data-service-drawer-body></div>
+      </div>
+    </section>
+
     <div class="footer-rail">
       <div class="footer-note" data-footer-note>LocalLink Phase 1 is designed as a local-only control plane: no public proxy, no cloud dependency, and no machine-specific absolute paths in the configuration model.</div>
     </div>
@@ -198,9 +321,10 @@
     <nav class="mobile-nav" aria-label="Dashboard panels">
       <button class="tab is-active" type="button" data-panel="overview">Overview</button>
       <button class="tab" type="button" data-panel="services">Services</button>
-      <button class="tab" type="button" data-panel="logs">Logs</button>
+      <button class="tab" type="button" data-panel="edge">Edge</button>
+      <button class="tab" type="button" data-panel="tools">Tools</button>
+      <button class="tab" type="button" data-panel="troubleshooting">Fix</button>
       <button class="tab" type="button" data-panel="ports">Ports</button>
-      <button class="tab" type="button" data-panel="resources">Resources</button>
     </nav>
   </div>
 

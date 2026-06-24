@@ -116,7 +116,7 @@ export async function verifyBlueprintCompliance(definition: ServiceDefinition): 
     return {
       status: 'warn',
       summary: 'No Dockerfile blueprint is declared for this service.',
-      issues: ['Declare locallink.dockerfile so LocalLink can surface a Dockerfile blueprint for this service.'],
+      issues: ['Declare blueprint in locallink.services.yml so LocalLink can surface a Dockerfile blueprint for this service.'],
     };
   }
 

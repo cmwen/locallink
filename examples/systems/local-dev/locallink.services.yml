@@ -1,0 +1,89 @@
+services:
+  - name: LocalLink MCP Core
+    group: pm2
+    runtime: pm2
+    runtimeName: locallink-local-dev-mcp-core
+    cwd: .
+    script: ../../../bin/locallink.js
+    args:
+      - mcp
+      - --workspace
+      - .
+    source:
+      type: npm
+      ref: locallink
+    version:
+      desired: 0.1.0
+      policy: manual
+    blueprint: ./blueprints/locallink-mcp-core.Dockerfile
+    docsUrl: https://modelcontextprotocol.io
+    notes: Stdio bridge for AI agents.
+    detail: Exposes read/write lifecycle control and structural config tools to local assistants.
+    tags:
+      - stdio
+      - ai
+      - config
+
+  - name: Queue Worker
+    group: pm2
+    runtime: pm2
+    runtimeName: locallink-local-dev-queue-worker
+    cwd: .
+    source:
+      type: manual
+      ref: ./scripts/mock-worker.js
+    version:
+      desired: 0.1.0
+      policy: manual
+    blueprint: ./blueprints/queue-worker.Dockerfile
+    portEnv: QUEUE_WORKER_PORT
+    dependsOn:
+      - Postgres Compose
+    envVars:
+      - QUEUE_WORKER_PORT
+      - POSTGRES_PORT
+    docsUrl: https://pm2.keymetrics.io/docs/usage/application-declaration/
+    notes: Background task runner.
+    detail: Consumes local jobs and emits terminal logs for the dashboard tailer.
+    tags:
+      - pm2
+      - worker
+      - jobs
+
+  - name: Windows File Indexer
+    group: windows
+    runtime: taskfile
+    taskName: windows-file-indexer
+    source:
+      type: taskfile
+      ref: windows-file-indexer
+    version:
+      desired: placeholder
+      policy: manual
+    windowsProcessName: SearchIndexer.exe
+    docsUrl: https://learn.microsoft.com/windows/win32/search/-search-3x-wds-overview
+    notes: Local file watcher bridge.
+    detail: Detects desktop-side changes and keeps the orchestrator aware of host activity.
+    tags:
+      - windows
+      - watcher
+      - fs
+
+  - name: AgentGateway Proxy
+    group: windows
+    runtime: taskfile
+    taskName: agentgateway-proxy
+    source:
+      type: taskfile
+      ref: agentgateway-proxy
+    version:
+      desired: placeholder
+      policy: manual
+    windowsProcessName: AgentGateway.exe
+    docsUrl: https://tailscale.com/kb
+    notes: Phase 2 bridge placeholder.
+    detail: Kept visible as a future network edge component without implying it is active in Phase 1.
+    tags:
+      - future
+      - gateway
+      - off

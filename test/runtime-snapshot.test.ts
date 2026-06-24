@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -161,6 +162,55 @@ test('RuntimeResolver marks declared Docker and PM2 services down when managers 
   assert.equal(services.get('Postgres Compose')?.statusLabel, 'Down');
   assert.equal(services.get('Queue Worker')?.status, 'stopped');
   assert.equal(services.get('Queue Worker')?.statusLabel, 'Down');
+});
+
+test('RuntimeResolver treats declared services as up when their port is reachable', async () => {
+  const root = await createTempProject();
+  const server = net.createServer((socket) => socket.end());
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  await fs.appendFile(path.join(root, '.env'), `REACHABLE_SERVICE_PORT=${address.port}\n`, 'utf8');
+  await fs.writeFile(
+    path.join(root, 'locallink.services.yml'),
+    [
+      'services:',
+      '  - name: Reachable API',
+      '    group: pm2',
+      '    runtime: pm2',
+      '    runtimeName: reachable-api',
+      '    portEnv: REACHABLE_SERVICE_PORT',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const commandRunner: CommandRunner = async (command, args) => {
+    if (command === 'ps') {
+      return commandResult();
+    }
+    if (command === 'docker' && args[0] === 'compose') {
+      return commandResult({ stdout: '' });
+    }
+    if (command === 'docker' && args[0] === 'stats') {
+      return commandResult({ stdout: '' });
+    }
+    if (command === 'pm2') {
+      return commandResult({ stdout: '[]' });
+    }
+    return commandResult();
+  };
+
+  try {
+    const state = await buildState(root, commandRunner);
+    const services = new Map(state.services.map((service) => [service.name, service]));
+
+    assert.equal(services.get('Reachable API')?.status, 'running');
+    assert.equal(services.get('Reachable API')?.statusLabel, 'Up');
+    assert.equal(services.get('Reachable API')?.statusTone, 'healthy');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
 
 test('RuntimeResolver keeps building state when port scanning is unavailable', async () => {

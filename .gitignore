@@ -2,6 +2,8 @@ dist
 node_modules
 npm-debug.log*
 test-results/
+.locallink/
 .env
 .env.local
 .env.*.local
+!examples/systems/**/.env

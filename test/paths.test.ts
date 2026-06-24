@@ -6,24 +6,25 @@ import test from 'node:test';
 
 import { resolvePaths, resolveProjectRoot } from '../src/shared/paths';
 
-test('resolveProjectRoot uses the launch directory even when LOCALLINK_ROOT is set', async () => {
+test('resolveProjectRoot uses explicit or LOCALLINK_WORKSPACE system workspace paths', async () => {
   const originalCwd = process.cwd();
-  const originalRootEnv = process.env.LOCALLINK_ROOT;
+  const originalWorkspaceEnv = process.env.LOCALLINK_WORKSPACE;
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'locallink-paths-workspace-'));
   const overriddenRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'locallink-paths-override-'));
 
   try {
-    process.env.LOCALLINK_ROOT = overriddenRoot;
+    process.env.LOCALLINK_WORKSPACE = overriddenRoot;
     process.chdir(workspaceRoot);
 
-    assert.equal(resolveProjectRoot(), workspaceRoot);
-    assert.equal(resolvePaths().root, workspaceRoot);
+    assert.equal(resolveProjectRoot(), overriddenRoot);
+    assert.equal(resolveProjectRoot(workspaceRoot), workspaceRoot);
+    assert.equal(resolvePaths(workspaceRoot).root, workspaceRoot);
   } finally {
     process.chdir(originalCwd);
-    if (originalRootEnv === undefined) {
-      delete process.env.LOCALLINK_ROOT;
+    if (originalWorkspaceEnv === undefined) {
+      delete process.env.LOCALLINK_WORKSPACE;
     } else {
-      process.env.LOCALLINK_ROOT = originalRootEnv;
+      process.env.LOCALLINK_WORKSPACE = originalWorkspaceEnv;
     }
 
     await fs.rm(workspaceRoot, { recursive: true, force: true });

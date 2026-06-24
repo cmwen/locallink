@@ -80,7 +80,7 @@ test('verifyBlueprintCompliance warns when no Dockerfile blueprint is declared',
   const result = await verifyBlueprintCompliance(definition);
   assert.equal(result.status, 'warn');
   assert.match(result.summary, /dockerfile blueprint/i);
-  assert.match(result.issues.join(' '), /Declare locallink\.dockerfile/i);
+  assert.match(result.issues.join(' '), /Declare blueprint in locallink\.services\.yml/i);
 });
 
 test('verifyBlueprintCompliance warns when the declared Dockerfile blueprint path is missing', async () => {

@@ -17,6 +17,8 @@ test('initializeWorkspace scaffolds starter files without overwriting an existin
   assert.ok(result.created.includes(path.join(root, '.gitignore')));
   assert.ok(result.created.includes(path.join(root, 'Taskfile.yml')));
   assert.ok(result.created.includes(path.join(root, 'docker-compose.yml')));
+  assert.ok(result.created.includes(path.join(root, 'locallink.services.yml')));
+  assert.ok(result.created.includes(path.join(root, 'locallink.lock.json')));
   assert.ok(result.created.includes(path.join(root, 'ecosystem.config.js')));
   assert.ok(result.created.includes(path.join(root, 'mcp-registry.json')));
   assert.ok(result.created.includes(path.join(root, 'AGENTS.md')));
@@ -25,5 +27,6 @@ test('initializeWorkspace scaffolds starter files without overwriting an existin
   const generatedReadme = await fs.readFile(result.readmePath, 'utf8');
   assert.match(generatedReadme, /locallink init/i);
   assert.match(generatedReadme, /AGENTS\.md/i);
+  assert.match(generatedReadme, /locallink\.services\.yml/i);
   assert.match(generatedReadme, /dependsOn/i);
 });

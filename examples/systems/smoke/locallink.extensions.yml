@@ -1,0 +1,7 @@
+extensions:
+  - id: dashboard
+    name: Dashboard
+    kind: dashboard
+    enabled: true
+    exposedPorts:
+      - "${LOCALLINK_DASHBOARD_PORT:-4211}"

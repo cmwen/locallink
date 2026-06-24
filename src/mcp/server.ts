@@ -24,16 +24,32 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
     },
     {
       instructions:
-        'LocalLink exposes local-only workspace blueprints, port allocation, and lifecycle controls for docker-compose, PM2, and taskfile-backed workflows.',
+        'LocalLink exposes local-only workspace blueprints, neutral service metadata, optional extension discovery, tool version management, trial provisioning, port allocation, and lifecycle controls for docker-compose, PM2, and taskfile-backed workflows.',
     },
   );
 
   const readWorkspaceBlueprint = async () => textResponse(JSON.stringify(await context.readInfraConfig(), null, 2));
 
   server.registerTool(
+    'read_ai_manifest',
+    {
+      description: 'Return agent-facing LocalLink CLI and workspace guidance, including JSON commands, runtime state path, and current status.',
+    },
+    async () => textResponse(JSON.stringify(await context.readAiManifest(), null, 2)),
+  );
+
+  server.registerTool(
+    'read_workspace_status',
+    {
+      description: 'Return assigned LocalLink API/dashboard ports, URLs, service counts, and next available port for this workspace.',
+    },
+    async () => textResponse(JSON.stringify(await context.readWorkspaceStatus(), null, 2)),
+  );
+
+  server.registerTool(
     'read_workspace_blueprint',
     {
-      description: 'Return a structural view of .env, docker-compose.yml, ecosystem.config.js, and mcp-registry.json.',
+      description: 'Return a structural view of .env, docker-compose.yml, locallink.services.yml, locallink.lock.json, locallink.extensions.yml, optional ecosystem.config.js, and mcp-registry.json.',
     },
     readWorkspaceBlueprint,
   );
@@ -69,7 +85,7 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
   server.registerTool(
     'patch_workspace_blueprint',
     {
-      description: 'Safely update .env, .env.example, docker-compose.yml, ecosystem.config.js, or mcp-registry.json with raw content or a structured patch.',
+      description: 'Safely update .env, .env.example, docker-compose.yml, locallink.services.yml, locallink.lock.json, locallink.extensions.yml, optional ecosystem.config.js, or mcp-registry.json with raw content or a structured patch.',
       inputSchema: z
         .object({
           target_file: z.enum(TARGET_FILES),
@@ -168,6 +184,135 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
       }),
     },
     orchestrateService,
+  );
+
+  server.registerTool(
+    'read_tool_workspace',
+    {
+      description: 'Return version status, lock-state summary, and temporary trial services managed by LocalLink.',
+    },
+    async () => textResponse(JSON.stringify(await context.readToolWorkspace(), null, 2)),
+  );
+
+  server.registerTool(
+    'read_extension_workspace',
+    {
+      description: 'Return optional extension status for dashboard, Caddy, Tailscale, OpenObserve OTEL, and custom workspace extensions without exposing secret values.',
+    },
+    async () => textResponse(JSON.stringify(await context.readExtensionWorkspace(), null, 2)),
+  );
+
+  server.registerTool(
+    'check_tool_version',
+    {
+      description: 'Resolve the latest available version for a declared tool when LocalLink can inspect its source.',
+      inputSchema: z.object({
+        service_name: z.string().min(1),
+      }),
+    },
+    async ({ service_name }) => textResponse(JSON.stringify(await context.checkToolVersion(service_name), null, 2)),
+  );
+
+  server.registerTool(
+    'update_tool_version',
+    {
+      description: 'Plan or apply a version change for a declared service. Defaults to dry-run.',
+      inputSchema: z.object({
+        service_name: z.string().min(1),
+        target_version: z.string().min(1),
+        dry_run: z.boolean().optional(),
+      }),
+    },
+    async ({ service_name, target_version, dry_run }) =>
+      textResponse(
+        JSON.stringify(
+          await context.updateToolVersion(service_name, target_version, dry_run !== false),
+          null,
+          2,
+        ),
+      ),
+  );
+
+  const toolSourceSchema = z
+    .object({
+      type: z.enum(['docker-image', 'npm', 'git', 'local-binary', 'taskfile', 'manual']),
+      ref: z.string().min(1),
+    })
+    .optional();
+
+  server.registerTool(
+    'plan_tool_trial',
+    {
+      description: 'Create a dry-run plan for a temporary tool service before provisioning it.',
+      inputSchema: z.object({
+        service_name: z.string().min(1),
+        tool_source: toolSourceSchema,
+        version: z.string().optional(),
+        runtime: z.enum(['docker', 'pm2', 'taskfile']).optional(),
+        port: z.string().optional(),
+        ttl_hours: z.number().int().positive().optional(),
+      }),
+    },
+    async ({ service_name, tool_source, version, runtime, port, ttl_hours }) =>
+      textResponse(
+        JSON.stringify(
+          context.planToolTrial({
+            serviceName: service_name,
+            toolSource: tool_source,
+            version,
+            runtime,
+            port,
+            ttlHours: ttl_hours,
+          }),
+          null,
+          2,
+        ),
+      ),
+  );
+
+  server.registerTool(
+    'provision_tool_trial',
+    {
+      description: 'Provision a previously approved temporary tool trial under .locallink/trials.',
+      inputSchema: z.object({
+        approved_plan_id: z.string().min(1),
+      }),
+    },
+    async ({ approved_plan_id }) =>
+      textResponse(JSON.stringify(await context.provisionToolTrial(approved_plan_id), null, 2)),
+  );
+
+  server.registerTool(
+    'promote_tool_trial',
+    {
+      description: 'Promote a temporary tool trial into persistent LocalLink service configuration.',
+      inputSchema: z.object({
+        trial_id: z.string().min(1),
+        service_name: z.string().min(1).optional(),
+      }),
+    },
+    async ({ trial_id, service_name }) =>
+      textResponse(JSON.stringify(await context.promoteToolTrial(trial_id, service_name), null, 2)),
+  );
+
+  server.registerTool(
+    'remove_tool_service',
+    {
+      description: 'Plan or perform removal of a trial or persistent service. Defaults to dry-run.',
+      inputSchema: z.object({
+        service_name: z.string().min(1),
+        mode: z.enum(['trial', 'persistent']),
+        dry_run: z.boolean().optional(),
+      }),
+    },
+    async ({ service_name, mode, dry_run }) =>
+      textResponse(
+        JSON.stringify(
+          await context.removeToolService(service_name, mode, dry_run !== false),
+          null,
+          2,
+        ),
+      ),
   );
   server.registerTool(
     'execute_task',

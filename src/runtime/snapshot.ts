@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -6,6 +7,8 @@ import { ConfigRepository } from '../config/files';
 import { LogBroker } from '../logs/broker';
 import { enrichServiceDefinition } from './lego';
 import { PortAllocator } from '../ports/allocator';
+import { ToolManager } from '../tools/manager';
+import { buildExtensionWorkspace } from './extensions';
 import { buildPhase2Advisor } from './phase2';
 import { selectPm2Row, type Pm2Row } from './pm2';
 import { buildResourceDashboard } from './resources';
@@ -90,6 +93,15 @@ function runningRuntimeState(cpu: string, memory: string, uptime: string): Runti
   };
 }
 
+function portReachableRuntimeState(current: RuntimeState): RuntimeState {
+  return {
+    ...current,
+    status: 'running',
+    statusLabel: 'Up',
+    statusTone: 'healthy',
+  };
+}
+
 async function fileExists(filePath: string): Promise<boolean> {
   try {
     await fs.access(filePath);
@@ -105,6 +117,39 @@ function lineOrDefault(value: string | undefined, fallback: string): string {
 
 function isRestartingState(value: string | undefined): boolean {
   return /restart|launch|starting|stopping|initializing/i.test(value ?? '');
+}
+
+function parsePort(value: string | undefined): number | undefined {
+  if (!value || value === '—') {
+    return undefined;
+  }
+
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    return undefined;
+  }
+
+  return port;
+}
+
+function isTcpPortReachable(host: string, port: number, timeoutMs = 350): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host, port });
+    let settled = false;
+    const finish = (reachable: boolean) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      socket.destroy();
+      resolve(reachable);
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+  });
 }
 
 async function collectDockerStates(
@@ -329,6 +374,46 @@ async function collectWindowsStates(
   return stateMap;
 }
 
+async function applyPortReachability(
+  services: ServiceRecord[],
+  bindHost: string,
+): Promise<ServiceRecord[]> {
+  const candidates = services
+    .map((service) => ({ service, port: parsePort(service.port) }))
+    .filter((entry): entry is { service: ServiceRecord; port: number } => {
+      return (
+        entry.port !== undefined &&
+        (entry.service.status === 'stopped' || entry.service.status === 'unknown')
+      );
+    });
+
+  if (candidates.length === 0) {
+    return services;
+  }
+
+  const reachable = new Set<string>();
+  await Promise.all(
+    candidates.map(async ({ service, port }) => {
+      if (await isTcpPortReachable(bindHost, port)) {
+        reachable.add(service.id);
+      }
+    }),
+  );
+
+  if (reachable.size === 0) {
+    return services;
+  }
+
+  return services.map((service) =>
+    reachable.has(service.id)
+      ? {
+          ...service,
+          ...portReachableRuntimeState(service),
+        }
+      : service,
+  );
+}
+
 export class RuntimeResolver {
   constructor(
     private readonly root: string,
@@ -337,21 +422,25 @@ export class RuntimeResolver {
     private readonly portAllocator: PortAllocator,
     private readonly logs: LogBroker,
     private readonly commandRunner: CommandRunner = runCommand,
+    private readonly toolManager: ToolManager = new ToolManager(root, configRepository, commandRunner),
   ) {}
 
   async buildDashboardState(diagnostics: StartupDiagnostics): Promise<DashboardState> {
     await this.configRepository.hydrateProcessEnv();
     const model = await this.configRepository.loadProjectModel();
     const definitions = await Promise.all(model.definitions.map((definition) => enrichServiceDefinition(definition)));
-    const [dockerStates, pm2States, windowsStates, phase2, resources] = await Promise.all([
+    const [dockerStates, pm2States, windowsStates, phase2, resources, extensions] = await Promise.all([
       collectDockerStates(this.root, definitions, this.commandRunner),
       collectPm2States(definitions, this.commandRunner),
       collectWindowsStates(definitions, this.commandRunner),
       buildPhase2Advisor(model.env),
       buildResourceDashboard(this.commandRunner),
+      buildExtensionWorkspace(this.root, model.env, this.commandRunner),
     ]);
+    const toolWorkspace = await this.toolManager.readWorkspace();
+    const bindHost = normalizeLoopbackBindHost(model.env.LOCALLINK_BIND_HOST);
 
-    const services = definitions.map<ServiceRecord>((definition) => {
+    const runtimeServices = definitions.map<ServiceRecord>((definition) => {
       const runtimeState =
         dockerStates.get(definition.id) ??
         pm2States.get(definition.id) ??
@@ -364,6 +453,7 @@ export class RuntimeResolver {
         ...runtimeState,
       };
     });
+    const services = await applyPortReachability(runtimeServices, bindHost);
 
     logDebug('Resolved runtime states for services.', {
       workspaceRoot: this.root,
@@ -398,7 +488,6 @@ export class RuntimeResolver {
     const trackedServices = services.length;
     const healthyServices = services.filter((service) => service.status === 'running').length;
     const alerts = services.filter((service) => service.status !== 'running').length;
-    const bindHost = normalizeLoopbackBindHost(model.env.LOCALLINK_BIND_HOST);
 
     if (logs.length === 0) {
       this.logs.seed([
@@ -415,8 +504,8 @@ export class RuntimeResolver {
       },
       hero: {
         eyebrow: 'Phase 1 control plane',
-        title: 'One dashboard for local runtimes, ports, and logs.',
-        body: 'Monitor hybrid services, trigger lifecycle actions, and hand the whole workspace to AI through the same compact surface.',
+        title: 'Find the local service you need.',
+        body: 'Launch running services, inspect their connection targets, and use Edge extension exports without remembering ports or paths.',
       },
       snapshot: {
         value: `${trackedServices} services`,
@@ -464,7 +553,7 @@ export class RuntimeResolver {
         {
           name: 'read_workspace_blueprint',
           input: 'None',
-          detail: 'Reads .env, docker-compose.yml, ecosystem.config.js, and mcp-registry.json as a structural snapshot.',
+          detail: 'Reads .env, docker-compose.yml, locallink.services.yml, locallink.lock.json, locallink.extensions.yml, optional ecosystem.config.js, and mcp-registry.json as a structural snapshot.',
         },
         {
           name: 'patch_workspace_blueprint',
@@ -486,6 +575,21 @@ export class RuntimeResolver {
           input: 'service_name',
           detail: 'Checks whether a declared local service has a readable Dockerfile blueprint.',
         },
+        {
+          name: 'read_tool_workspace',
+          input: 'None',
+          detail: 'Returns version lock status, latest-check results, and temporary trial services.',
+        },
+        {
+          name: 'update_tool_version',
+          input: 'service_name + target_version + dry_run',
+          detail: 'Plans or applies a version change and updates locallink.lock.json.',
+        },
+        {
+          name: 'plan_tool_trial',
+          input: 'tool_source + version + runtime',
+          detail: 'Creates a dry-run plan for a temporary service before provisioning.',
+        },
       ],
       logs: this.logs.list(),
       ports: {
@@ -497,6 +601,8 @@ export class RuntimeResolver {
         recent,
       },
       resources,
+      toolWorkspace,
+      extensions,
       constraints: [
         {
           title: 'Loopback only',

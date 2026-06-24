@@ -5,6 +5,7 @@ export interface CommandOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  captureOutput?: boolean;
   onStdoutLine?: (line: string) => void;
   onStderrLine?: (line: string) => void;
 }
@@ -179,16 +180,21 @@ export function startStreamingCommand(
 
   let stdout = '';
   let stderr = '';
+  const captureOutput = options.captureOutput ?? true;
   let timedOut = false;
   let settled = false;
   let timeout: NodeJS.Timeout | undefined;
 
   attachLineReader(child.stdout, (line) => {
-    stdout += `${line}\n`;
+    if (captureOutput) {
+      stdout += `${line}\n`;
+    }
     options.onStdoutLine?.(line);
   });
   attachLineReader(child.stderr, (line) => {
-    stderr += `${line}\n`;
+    if (captureOutput) {
+      stderr += `${line}\n`;
+    }
     options.onStderrLine?.(line);
   });
 
@@ -213,7 +219,9 @@ export function startStreamingCommand(
     }
 
     child.on('error', (error) => {
-      stderr += `${error.message}\n`;
+      if (captureOutput) {
+        stderr += `${error.message}\n`;
+      }
       options.onStderrLine?.(error.message);
       finish({
         ok: false,

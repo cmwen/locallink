@@ -4,4 +4,4 @@ WORKDIR /workspace
 
 ENV LOCALLINK_MCP_MODE=stdio
 
-CMD ["node", "./bin/locallink.js", "mcp"]
+CMD ["node", "../../../bin/locallink.js", "mcp", "--workspace", "."]

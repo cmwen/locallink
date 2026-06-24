@@ -71,6 +71,10 @@ export function logError(message: string, details?: Record<string, unknown>): vo
 }
 
 export function mirrorBrokerEntry(entry: Pick<LogEntry, 'stream' | 'level' | 'message'>): void {
+  if (entry.stream === 'Docker' || entry.stream === 'PM2') {
+    return;
+  }
+
   if (entry.level === 'error') {
     logError(`[${entry.stream}] ${entry.message}`);
     return;

@@ -129,6 +129,50 @@ test('ConfigRepository loads optional service metadata from ecosystem and compos
   assert.equal(postgres.docsUrl, 'https://example.com/postgres');
 });
 
+test('ConfigRepository prefers locallink.services.yml over legacy ecosystem metadata', async () => {
+  const root = await createTempProject();
+  await fs.writeFile(path.join(root, '.env'), 'API_PORT=7123\n', 'utf8');
+  await fs.writeFile(path.join(root, 'docker-compose.yml'), 'services: {}\n', 'utf8');
+  await fs.writeFile(
+    path.join(root, 'locallink.services.yml'),
+    [
+      'services:',
+      '  - name: API Service',
+      '    group: pm2',
+      '    runtime: pm2',
+      '    runtimeName: api-service',
+      '    cwd: .',
+      '    blueprint: ./Dockerfile',
+      '    portEnv: API_PORT',
+      '    dependsOn:',
+      '      - Postgres Compose',
+      '    envVars:',
+      '      - API_PORT',
+      '    docsUrl: https://example.com/api',
+      '    tags:',
+      '      - api',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  await fs.writeFile(
+    path.join(root, 'ecosystem.config.js'),
+    "module.exports = {\n  apps: [\n    {\n      name: 'legacy-api',\n      script: './api.js',\n      locallink: {\n        name: 'API Service',\n        group: 'pm2',\n        runtime: 'pm2',\n        portEnv: 'OLD_API_PORT',\n      },\n    },\n  ],\n};\n",
+    'utf8',
+  );
+
+  const repository = new ConfigRepository(root);
+  const model = await repository.loadProjectModel();
+  const apiServices = model.definitions.filter((definition) => definition.name === 'API Service');
+
+  assert.equal(apiServices.length, 1);
+  assert.equal(apiServices[0].definitionSource, 'services');
+  assert.equal(apiServices[0].runtimeName, 'api-service');
+  assert.equal(apiServices[0].port, '7123');
+  assert.deepEqual(apiServices[0].dependsOn, ['Postgres Compose']);
+  assert.deepEqual(apiServices[0].envVars, ['API_PORT']);
+});
+
 test('ConfigRepository loads CommonJS ecosystem configs that use require', async () => {
   const root = await createTempProject();
   await fs.writeFile(path.join(root, '.env'), 'API_PORT=7123\n', 'utf8');
@@ -220,6 +264,102 @@ test('ConfigRepository prefers explicit process env over .env defaults', async (
       delete process.env.API_PORT;
     } else {
       process.env.API_PORT = previousApiPort;
+    }
+  }
+});
+
+test('ConfigRepository replaces LocalLink-hydrated env values between workspaces', async () => {
+  const firstRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'locallink-config-first-'));
+  const secondRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'locallink-config-second-'));
+  const previousSystemId = process.env.LOCALLINK_SYSTEM_ID;
+  const previousPostgresPort = process.env.POSTGRES_PORT;
+
+  try {
+    delete process.env.LOCALLINK_SYSTEM_ID;
+    delete process.env.POSTGRES_PORT;
+    await fs.writeFile(path.join(firstRoot, '.env'), 'LOCALLINK_SYSTEM_ID=first\nPOSTGRES_PORT=55432\n', 'utf8');
+    await fs.writeFile(path.join(secondRoot, '.env'), 'LOCALLINK_SYSTEM_ID=second\nPOSTGRES_PORT=55433\n', 'utf8');
+
+    await new ConfigRepository(firstRoot).hydrateProcessEnv();
+    assert.equal(process.env.LOCALLINK_SYSTEM_ID, 'first');
+    assert.equal(process.env.POSTGRES_PORT, '55432');
+
+    await new ConfigRepository(secondRoot).hydrateProcessEnv();
+    assert.equal(process.env.LOCALLINK_SYSTEM_ID, 'second');
+    assert.equal(process.env.POSTGRES_PORT, '55433');
+  } finally {
+    if (previousSystemId === undefined) {
+      delete process.env.LOCALLINK_SYSTEM_ID;
+    } else {
+      process.env.LOCALLINK_SYSTEM_ID = previousSystemId;
+    }
+    if (previousPostgresPort === undefined) {
+      delete process.env.POSTGRES_PORT;
+    } else {
+      process.env.POSTGRES_PORT = previousPostgresPort;
+    }
+    await fs.rm(firstRoot, { recursive: true, force: true });
+    await fs.rm(secondRoot, { recursive: true, force: true });
+  }
+});
+
+test('ConfigRepository resolves relative PM2_HOME against the workspace root', async () => {
+  const root = await createTempProject();
+  const previousPm2Home = process.env.PM2_HOME;
+
+  try {
+    await fs.writeFile(path.join(root, '.env'), 'PM2_HOME=.locallink/pm2/example\n', 'utf8');
+
+    const repository = new ConfigRepository(root);
+    process.env.PM2_HOME = '.locallink/pm2/example';
+    await repository.hydrateProcessEnv();
+    const model = await repository.loadProjectModel();
+
+    assert.equal(process.env.PM2_HOME, path.join(root, '.locallink/pm2/example'));
+    assert.equal(model.env.PM2_HOME, path.join(root, '.locallink/pm2/example'));
+  } finally {
+    if (previousPm2Home === undefined) {
+      delete process.env.PM2_HOME;
+    } else {
+      process.env.PM2_HOME = previousPm2Home;
+    }
+  }
+});
+
+test('ConfigRepository loads the local-dev example system workspace fixture', async () => {
+  const root = path.resolve('examples/systems/local-dev');
+  const previousSystemId = process.env.LOCALLINK_SYSTEM_ID;
+  const previousApiPort = process.env.LOCALLINK_API_PORT;
+  const previousPostgresPort = process.env.POSTGRES_PORT;
+
+  try {
+    delete process.env.LOCALLINK_SYSTEM_ID;
+    delete process.env.LOCALLINK_API_PORT;
+    delete process.env.POSTGRES_PORT;
+    const model = await new ConfigRepository(root).loadProjectModel();
+    const services = new Map(model.definitions.map((definition) => [definition.name, definition]));
+
+    assert.equal(model.env.LOCALLINK_SYSTEM_ID, 'local-dev');
+    assert.equal(model.env.LOCALLINK_API_PORT, '4110');
+    assert.equal(model.env.POSTGRES_PORT, '55432');
+    assert.equal(services.get('LocalLink MCP Core')?.runtimeName, 'locallink-local-dev-mcp-core');
+    assert.equal(services.get('Queue Worker')?.runtimeName, 'locallink-local-dev-queue-worker');
+    assert.equal(services.get('Postgres Compose')?.port, '55432');
+  } finally {
+    if (previousSystemId === undefined) {
+      delete process.env.LOCALLINK_SYSTEM_ID;
+    } else {
+      process.env.LOCALLINK_SYSTEM_ID = previousSystemId;
+    }
+    if (previousApiPort === undefined) {
+      delete process.env.LOCALLINK_API_PORT;
+    } else {
+      process.env.LOCALLINK_API_PORT = previousApiPort;
+    }
+    if (previousPostgresPort === undefined) {
+      delete process.env.POSTGRES_PORT;
+    } else {
+      process.env.POSTGRES_PORT = previousPostgresPort;
     }
   }
 });

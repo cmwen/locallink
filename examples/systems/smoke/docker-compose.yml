@@ -1,0 +1,3 @@
+name: ${COMPOSE_PROJECT_NAME:-locallink_smoke}
+
+services: {}
