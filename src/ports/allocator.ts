@@ -24,6 +24,8 @@ async function canBind(host: string, port: number): Promise<boolean> {
 }
 
 export class PortAllocator {
+  private readonly reservations = new Map<number, net.Server>();
+
   async isPortAvailable(port: number): Promise<boolean> {
     if (!Number.isInteger(port) || port < 1024 || port > 65535) {
       return false;
@@ -56,6 +58,25 @@ export class PortAllocator {
     throw new Error(
       `No available port found from ${Math.max(1024, Math.floor(startFrom))} to ${lastPort}. Check LOCALLINK_DEFAULT_PORT_START or stop a process using those ports.`,
     );
+  }
+
+  async reservePort(port: number): Promise<void> {
+    if (this.reservations.has(port)) return;
+    const server = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', (error) => {
+        server.close(() => reject(error));
+      });
+      server.listen(port, '127.0.0.1', () => resolve());
+    });
+    this.reservations.set(port, server);
+  }
+
+  releasePort(port: number): void {
+    const server = this.reservations.get(port);
+    if (!server) return;
+    server.close();
+    this.reservations.delete(port);
   }
 
   buildRecentEntries(definitions: ServiceDefinition[], scan: PortScanResult, includeSuggestion = true) {

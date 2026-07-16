@@ -50,6 +50,11 @@ test('HTTP server exposes the dashboard state endpoint', async () => {
   assert.ok(Array.isArray(payload.services));
   assert.equal(payload.pwa.manifest, 'Valid');
   assert.ok(Array.isArray(payload.diagnostics.checks));
+  assert.ok(payload.resources.system.cpuPercent >= 0);
+  assert.ok(payload.resources.system.memoryPercent >= 0);
+  assert.ok(Array.isArray(payload.resources.history));
+  assert.ok(Array.isArray(payload.resources.topCpu));
+  assert.ok(Array.isArray(payload.resources.topMemory));
 
   await server.close();
 });
@@ -67,6 +72,65 @@ test('HTTP server exposes static project docs', async () => {
 
   assert.equal(response.statusCode, 200);
   assert.match(response.body, /LocalLink Documentation/);
+
+  await server.close();
+});
+
+test('HTTP server exposes direct workspace shell routes', async () => {
+  const root = await createTempProject();
+  const context = new AppContext(root);
+  await context.initialize();
+  const server = context.createServer();
+
+  for (const url of ['/dashboard', '/current', '/extensions', '/external', '/resources']) {
+    const response = await server.inject({
+      method: 'GET',
+      url,
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(response.body, /<title>LocalLink - Dashboard<\/title>|<title>ok<\/title>/);
+  }
+
+  await server.close();
+});
+
+test('HTTP server persists workspace workflows', async () => {
+  const root = await createTempProject();
+  const context = new AppContext(root);
+  await context.initialize();
+  const server = context.createServer();
+
+  const preferences = await server.inject({
+    method: 'PATCH',
+    url: '/api/workspace/settings',
+    payload: { edgeEnabled: true },
+  });
+  assert.equal(preferences.statusCode, 200);
+  assert.equal(preferences.json().edgeEnabled, true);
+
+  const runtime = await server.inject({
+    method: 'POST',
+    url: '/api/workspace/runtimes',
+    payload: { name: 'Temp API', type: 'Docker', port: 6080, command: 'docker run api' },
+  });
+  assert.equal(runtime.statusCode, 200);
+  assert.equal(runtime.json().temporaryRuntimes[0].status, 'planned');
+
+  const update = await server.inject({
+    method: 'POST',
+    url: '/api/workspace/updates',
+    payload: { from: '0.12.4', to: '0.13.0' },
+  });
+  assert.equal(update.statusCode, 200);
+  assert.equal(update.json().versionUpdates[0].status, 'queued');
+
+  const missingIdentity = await server.inject({
+    method: 'POST',
+    url: '/api/processes/999999/terminate',
+    payload: { signal: 'SIGTERM' },
+  });
+  assert.equal(missingIdentity.statusCode, 400);
 
   await server.close();
 });

@@ -348,7 +348,7 @@ export class RuntimeResolver {
       collectPm2States(definitions, this.commandRunner),
       collectWindowsStates(definitions, this.commandRunner),
       buildPhase2Advisor(model.env),
-      buildResourceDashboard(this.commandRunner),
+      buildResourceDashboard(this.commandRunner, definitions),
     ]);
 
     const services = definitions.map<ServiceRecord>((definition) => {
@@ -358,10 +358,18 @@ export class RuntimeResolver {
         windowsStates.get(definition.id) ??
         unknownRuntimeState();
 
+      const reviewReasons = [
+        runtimeState.status === 'unknown' ? 'Runtime status could not be verified' : null,
+        runtimeState.status === 'degraded' ? 'Runtime is restarting or degraded' : null,
+        definition.compliance?.status === 'warn' ? definition.compliance.summary : null,
+        !definition.docsUrl ? 'No service documentation link' : null,
+      ].filter((reason): reason is string => Boolean(reason));
+
       return {
         ...definition,
         port: definition.port || '—',
         ...runtimeState,
+        reviewReasons,
       };
     });
 

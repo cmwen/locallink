@@ -7,8 +7,8 @@
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait-primary",
-  "background_color": "#f4f7fa",
-  "theme_color": "#f4f7fa",
+  "background_color": "#101721",
+  "theme_color": "#101721",
   "categories": ["developer", "productivity", "utilities"],
   "icons": [
     {
@@ -41,13 +41,19 @@
       "name": "Dashboard",
       "short_name": "Dashboard",
       "url": "./dashboard",
-      "description": "Open the canonical LocalLink product dashboard."
+      "description": "Open the LocalLink workspace dashboard."
     },
     {
-      "name": "Template preview",
-      "short_name": "Template",
-      "url": "./template",
-      "description": "Open the static composition contract preview."
+      "name": "Resources",
+      "short_name": "Resources",
+      "url": "./resources",
+      "description": "Open LocalLink resource pressure, process, port, and log controls."
+    },
+    {
+      "name": "Extensions",
+      "short_name": "Extensions",
+      "url": "./extensions",
+      "description": "Open LocalLink extension and local edge configuration."
     }
   ]
 }

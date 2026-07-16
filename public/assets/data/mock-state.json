@@ -72,13 +72,20 @@
       "status": "running",
       "statusLabel": "Up",
       "statusTone": "healthy",
+      "runtime": "pm2",
+      "runtimeName": "locallink-mcp",
+      "cwd": "/workspace/locallink",
+      "script": "dist/cli.js mcp",
       "port": "4010",
       "cpu": "8%",
       "memory": "182 MB",
       "uptime": "14m",
       "notes": "Stdio bridge for AI agents.",
       "detail": "Exposes read/write lifecycle control and structural config tools to local assistants.",
-      "tags": "stdio · ai · config"
+      "tags": "stdio · ai · config",
+      "envVars": ["LOCALLINK_BIND_HOST", "LOCALLINK_WEB_PORT"],
+      "downstream": ["Vite PWA UI"],
+      "docsUrl": "https://modelcontextprotocol.io"
     },
     {
       "name": "Postgres Compose",
@@ -87,13 +94,18 @@
       "status": "running",
       "statusLabel": "Up",
       "statusTone": "healthy",
+      "runtime": "docker",
+      "runtimeName": "postgres",
       "port": "5432",
       "cpu": "2%",
       "memory": "128 MB",
       "uptime": "4h",
       "notes": "Persistent state for local services.",
       "detail": "Keeps database dependencies visible without leaving the local workspace.",
-      "tags": "docker · db · stable"
+      "tags": "docker · db · stable",
+      "envVars": ["POSTGRES_PORT", "POSTGRES_DB"],
+      "downstream": ["Queue Worker"],
+      "docsUrl": "https://hub.docker.com/_/postgres"
     },
     {
       "name": "Vite PWA UI",
@@ -102,13 +114,20 @@
       "status": "running",
       "statusLabel": "Up",
       "statusTone": "healthy",
+      "runtime": "pm2",
+      "runtimeName": "locallink-dashboard",
+      "cwd": "/workspace/locallink",
+      "script": "pnpm dev:frontend",
       "port": "5173",
       "cpu": "14%",
       "memory": "230 MB",
       "uptime": "28m",
       "notes": "Local dashboard shell.",
       "detail": "Fast-refresh frontend used for the PWA dashboard and installable shell.",
-      "tags": "pwa · hot reload · ui"
+      "tags": "pwa · hot reload · ui",
+      "dependsOn": ["LocalLink MCP Core", "Queue Worker"],
+      "envVars": ["LOCALLINK_WEB_PORT"],
+      "docsUrl": "https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps"
     },
     {
       "name": "Queue Worker",
@@ -117,13 +136,21 @@
       "status": "running",
       "statusLabel": "Up",
       "statusTone": "healthy",
+      "runtime": "pm2",
+      "runtimeName": "queue-worker",
+      "cwd": "/workspace/locallink",
+      "script": "dist/worker.js",
       "port": "6012",
       "cpu": "6%",
       "memory": "97 MB",
       "uptime": "1h 12m",
       "notes": "Background task runner.",
       "detail": "Consumes local jobs and emits terminal logs for the dashboard tailer.",
-      "tags": "pm2 · worker · jobs"
+      "tags": "pm2 · worker · jobs",
+      "dependsOn": ["Postgres Compose"],
+      "downstream": ["Vite PWA UI"],
+      "envVars": ["QUEUE_WORKER_PORT", "POSTGRES_PORT"],
+      "docsUrl": "https://pm2.keymetrics.io/docs/usage/application-declaration/"
     },
     {
       "name": "Windows File Indexer",
@@ -132,13 +159,17 @@
       "status": "running",
       "statusLabel": "Up",
       "statusTone": "healthy",
+      "runtime": "taskfile",
+      "taskName": "windows-file-indexer",
+      "windowsProcessName": "SearchIndexer.exe",
       "port": "—",
       "cpu": "3%",
       "memory": "64 MB",
       "uptime": "47m",
       "notes": "Local file watcher bridge.",
       "detail": "Detects desktop-side changes and keeps the orchestrator aware of host activity.",
-      "tags": "windows · watcher · fs"
+      "tags": "windows · watcher · fs",
+      "docsUrl": "https://learn.microsoft.com/windows/win32/search/-search-3x-wds-overview"
     },
     {
       "name": "AgentGateway Proxy",
@@ -147,13 +178,17 @@
       "status": "unknown",
       "statusLabel": "Unknown",
       "statusTone": "warn",
+      "runtime": "taskfile",
+      "taskName": "agentgateway-proxy",
+      "windowsProcessName": "AgentGateway.exe",
       "port": "—",
       "cpu": "—",
       "memory": "—",
       "uptime": "—",
       "notes": "Phase 2 bridge placeholder.",
       "detail": "Kept visible as a future network edge component until a trustworthy runtime probe exists.",
-      "tags": "future · gateway · off"
+      "tags": "future · gateway · off",
+      "docsUrl": "https://tailscale.com/kb"
     }
   ],
   "tools": [
@@ -247,6 +282,121 @@
         "service": "next open port",
         "port": "5006",
         "status": "suggested"
+      }
+    ]
+  },
+  "resources": {
+    "summary": [],
+    "system": {
+      "cpuPercent": 42.8,
+      "cpuCores": 12,
+      "loadAverage": [3.1, 2.8, 2.4],
+      "memoryUsedMb": 11840,
+      "memoryTotalMb": 32768,
+      "memoryPercent": 36.1,
+      "processCount": 184,
+      "flaggedCount": 2,
+      "updatedAt": "2026-07-09T04:18:30.000Z",
+      "sampleIntervalSeconds": 5
+    },
+    "history": [
+      { "timestamp": "2026-07-09T04:17:35.000Z", "cpuPercent": 24.1, "memoryPercent": 34.8 },
+      { "timestamp": "2026-07-09T04:17:40.000Z", "cpuPercent": 27.4, "memoryPercent": 34.9 },
+      { "timestamp": "2026-07-09T04:17:45.000Z", "cpuPercent": 35.8, "memoryPercent": 35.1 },
+      { "timestamp": "2026-07-09T04:17:50.000Z", "cpuPercent": 31.2, "memoryPercent": 35.3 },
+      { "timestamp": "2026-07-09T04:17:55.000Z", "cpuPercent": 48.6, "memoryPercent": 35.5 },
+      { "timestamp": "2026-07-09T04:18:00.000Z", "cpuPercent": 56.3, "memoryPercent": 35.7 },
+      { "timestamp": "2026-07-09T04:18:05.000Z", "cpuPercent": 51.7, "memoryPercent": 35.8 },
+      { "timestamp": "2026-07-09T04:18:10.000Z", "cpuPercent": 39.9, "memoryPercent": 35.9 },
+      { "timestamp": "2026-07-09T04:18:15.000Z", "cpuPercent": 33.5, "memoryPercent": 36.0 },
+      { "timestamp": "2026-07-09T04:18:20.000Z", "cpuPercent": 45.2, "memoryPercent": 36.0 },
+      { "timestamp": "2026-07-09T04:18:25.000Z", "cpuPercent": 47.9, "memoryPercent": 36.1 },
+      { "timestamp": "2026-07-09T04:18:30.000Z", "cpuPercent": 42.8, "memoryPercent": 36.1 }
+    ],
+    "processes": [
+      {
+        "pid": 8421,
+        "name": "node",
+        "command": "node dist/cli.js web",
+        "cpu": "38.6%",
+        "cpuPercent": 38.6,
+        "memory": "612 MB",
+        "memoryMb": 612,
+        "uptime": "42m",
+        "tone": "warn",
+        "reason": "High RAM"
+      },
+      {
+        "pid": 9184,
+        "name": "vite",
+        "command": "node vite --host 127.0.0.1",
+        "cpu": "24.8%",
+        "cpuPercent": 24.8,
+        "memory": "428 MB",
+        "memoryMb": 428,
+        "uptime": "28m",
+        "tone": "healthy",
+        "reason": "Normal"
+      },
+      {
+        "pid": 7332,
+        "name": "postgres",
+        "command": "postgres: checkpointer",
+        "cpu": "12.1%",
+        "cpuPercent": 12.1,
+        "memory": "1180 MB",
+        "memoryMb": 1180,
+        "uptime": "4h 18m",
+        "tone": "warn",
+        "reason": "High RAM"
+      },
+      {
+        "pid": 8810,
+        "name": "node",
+        "command": "node dist/worker.js",
+        "cpu": "9.7%",
+        "cpuPercent": 9.7,
+        "memory": "286 MB",
+        "memoryMb": 286,
+        "uptime": "1h 12m",
+        "tone": "healthy",
+        "reason": "Normal"
+      },
+      {
+        "pid": 6620,
+        "name": "dockerd",
+        "command": "/usr/bin/dockerd -H fd://",
+        "cpu": "6.4%",
+        "cpuPercent": 6.4,
+        "memory": "364 MB",
+        "memoryMb": 364,
+        "uptime": "7h 3m",
+        "tone": "healthy",
+        "reason": "Normal"
+      },
+      {
+        "pid": 10220,
+        "name": "tsx",
+        "command": "tsx src/cli.ts web",
+        "cpu": "4.8%",
+        "cpuPercent": 4.8,
+        "memory": "344 MB",
+        "memoryMb": 344,
+        "uptime": "16m",
+        "tone": "healthy",
+        "reason": "Normal"
+      },
+      {
+        "pid": 4112,
+        "name": "code",
+        "command": "/usr/share/code/code --type=renderer",
+        "cpu": "3.2%",
+        "cpuPercent": 3.2,
+        "memory": "820 MB",
+        "memoryMb": 820,
+        "uptime": "2h 31m",
+        "tone": "warn",
+        "reason": "High RAM"
       }
     ]
   },

@@ -8,6 +8,8 @@ export interface ProjectPaths {
   appRoot: string;
   publicDir: string;
   docsDir: string;
+  stateDir: string;
+  workspaceStateFile: string;
 }
 
 export function resolveProjectRoot(): string {
@@ -36,6 +38,8 @@ export function resolvePaths(root = resolveProjectRoot()): ProjectPaths {
     appRoot,
     publicDir: resolvePublicDir(root, appRoot),
     docsDir: path.join(appRoot, 'docs'),
+    stateDir: path.join(root, '.locallink'),
+    workspaceStateFile: path.join(root, '.locallink', 'workspace-state.json'),
   };
 }
 

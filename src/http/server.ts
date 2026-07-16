@@ -21,6 +21,8 @@ const writeConfigSchema = z
 
 const portSchema = z.object({
   startFrom: z.number().int().min(1024).max(65535).optional(),
+  reserve: z.boolean().optional(),
+  service: z.string().min(1).optional(),
 });
 
 const taskSchema = z.object({
@@ -35,7 +37,25 @@ const processParamsSchema = z.object({
 
 const processTerminateSchema = z.object({
   signal: z.enum(['SIGTERM', 'SIGKILL']).optional(),
+  identityToken: z.string().min(1),
+  reason: z.string().max(500).optional(),
 });
+
+const preferencesSchema = z.object({
+  dashboardEnabled: z.boolean().optional(),
+  proxyEnabled: z.boolean().optional(),
+  edgeEnabled: z.boolean().optional(),
+});
+
+const temporaryRuntimeSchema = z.object({
+  name: z.string().min(1),
+  type: z.string().min(1),
+  port: z.number().int().min(1024).max(65535),
+  command: z.string().min(1),
+});
+
+const versionUpdateSchema = z.object({ from: z.string().min(1), to: z.string().min(1) });
+const portReservationSchema = z.object({ service: z.string().min(1), port: z.number().int().min(1024).max(65535) });
 
 function toErrorPayload(error: unknown) {
   if (isAppError(error)) {
@@ -97,6 +117,59 @@ export function createHttpServer(context: AppContext) {
     return context.readState();
   });
 
+  app.get('/api/workspace/settings', async (_request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    return context.workspaceState.read();
+  });
+
+  app.patch('/api/workspace/settings', async (request, reply) => {
+    const parsed = preferencesSchema.safeParse(request.body ?? {});
+    if (!parsed.success) throw new AppError('INVALID_BODY', parsed.error.issues[0]?.message || 'Invalid body.', 400);
+    reply.header('Cache-Control', 'no-store');
+    return context.workspaceState.updatePreferences(parsed.data);
+  });
+
+  app.post('/api/workspace/runtimes', async (request, reply) => {
+    const parsed = temporaryRuntimeSchema.safeParse(request.body);
+    if (!parsed.success) throw new AppError('INVALID_BODY', parsed.error.issues[0]?.message || 'Invalid body.', 400);
+    const runtime = { id: `temp-${Date.now()}`, ...parsed.data, createdAt: new Date().toISOString(), status: 'planned' as const };
+    reply.header('Cache-Control', 'no-store');
+    return context.workspaceState.addTemporaryRuntime(runtime);
+  });
+
+  app.delete('/api/workspace/runtimes/:id', async (request, reply) => {
+    const id = z.object({ id: z.string().min(1) }).parse(request.params).id;
+    reply.header('Cache-Control', 'no-store');
+    return context.workspaceState.removeTemporaryRuntime(id);
+  });
+
+  app.post('/api/workspace/updates', async (request, reply) => {
+    const parsed = versionUpdateSchema.safeParse(request.body);
+    if (!parsed.success) throw new AppError('INVALID_BODY', parsed.error.issues[0]?.message || 'Invalid body.', 400);
+    const update = { id: `update-${Date.now()}`, ...parsed.data, status: 'queued' as const, createdAt: new Date().toISOString() };
+    reply.header('Cache-Control', 'no-store');
+    return context.workspaceState.addVersionUpdate(update);
+  });
+
+  app.delete('/api/workspace/updates/:id', async (request, reply) => {
+    const id = z.object({ id: z.string().min(1) }).parse(request.params).id;
+    reply.header('Cache-Control', 'no-store');
+    return context.workspaceState.cancelVersionUpdate(id);
+  });
+
+  app.post('/api/ports/reservations', async (request, reply) => {
+    const parsed = portReservationSchema.safeParse(request.body);
+    if (!parsed.success) throw new AppError('INVALID_BODY', parsed.error.issues[0]?.message || 'Invalid body.', 400);
+    reply.header('Cache-Control', 'no-store');
+    return context.reservePort(parsed.data.service, parsed.data.port);
+  });
+
+  app.delete('/api/ports/reservations/:id', async (request, reply) => {
+    const id = z.object({ id: z.string().min(1) }).parse(request.params).id;
+    reply.header('Cache-Control', 'no-store');
+    return context.releasePortReservation(id);
+  });
+
   app.get('/api/configs', async (_request, reply) => {
     reply.header('Cache-Control', 'no-store');
     return context.readInfraConfig();
@@ -119,7 +192,7 @@ export function createHttpServer(context: AppContext) {
     }
 
     reply.header('Cache-Control', 'no-store');
-    return context.getAvailablePort(parsed.data.startFrom);
+    return context.getAvailablePort(parsed.data.startFrom, parsed.data.reserve, parsed.data.service);
   });
 
   app.post('/api/tasks', async (request, reply) => {
@@ -142,6 +215,13 @@ export function createHttpServer(context: AppContext) {
     return context.inspectProcess(parsed.data.pid);
   });
 
+  app.get('/api/processes/:pid/termination-review', async (request, reply) => {
+    const parsed = processParamsSchema.safeParse(request.params);
+    if (!parsed.success) throw new AppError('INVALID_PARAMS', parsed.error.issues[0]?.message || 'Invalid params.', 400);
+    reply.header('Cache-Control', 'no-store');
+    return context.reviewProcessTermination(parsed.data.pid);
+  });
+
   app.post('/api/processes/:pid/terminate', async (request, reply) => {
     const params = processParamsSchema.safeParse(request.params);
     if (!params.success) {
@@ -154,7 +234,7 @@ export function createHttpServer(context: AppContext) {
     }
 
     reply.header('Cache-Control', 'no-store');
-    return context.terminateProcess(params.data.pid, body.data.signal);
+    return context.terminateProcess(params.data.pid, body.data.signal, body.data.identityToken, body.data.reason);
   });
 
   app.get('/api/logs/stream', async (request, reply) => {
@@ -191,6 +271,10 @@ export function createHttpServer(context: AppContext) {
 
   app.get('/', async (_request, reply) => reply.sendFile('index.html'));
   app.get('/dashboard', async (_request, reply) => reply.sendFile('dashboard.html'));
+  app.get('/current', async (_request, reply) => reply.sendFile('dashboard.html'));
+  app.get('/external', async (_request, reply) => reply.sendFile('dashboard.html'));
+  app.get('/extensions', async (_request, reply) => reply.sendFile('dashboard.html'));
+  app.get('/resources', async (_request, reply) => reply.sendFile('dashboard.html'));
   app.get('/template', async (_request, reply) => reply.sendFile('template.html'));
   app.get('/docs', async (_request, reply) => reply.redirect('/docs/'));
 

@@ -1,14 +1,18 @@
-const CACHE_NAME = 'locallink-shell-v2';
+const CACHE_NAME = 'locallink-shell-v3';
 const SHELL_ASSETS = [
   './',
   './dashboard',
+  './current',
+  './external',
+  './extensions',
+  './resources',
   './template',
   './index.html',
   './dashboard.html',
   './template.html',
   './manifest.webmanifest',
-  './assets/styles/app.css',
-  './assets/scripts/app.js',
+  './assets/app/main.css',
+  './assets/app/main.js',
   './assets/data/mock-state.json',
   './assets/icons/icon.svg',
   './assets/icons/icon-192.png',
@@ -19,6 +23,10 @@ const NAV_ROUTES = new Map([
   ['/index.html', './index.html'],
   ['/dashboard', './dashboard.html'],
   ['/dashboard.html', './dashboard.html'],
+  ['/current', './dashboard.html'],
+  ['/external', './dashboard.html'],
+  ['/extensions', './dashboard.html'],
+  ['/resources', './dashboard.html'],
   ['/template', './template.html'],
   ['/template.html', './template.html']
 ]);
