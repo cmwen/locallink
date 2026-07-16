@@ -3,7 +3,8 @@ import { createHttpServer } from './http/server';
 import { LogBroker } from './logs/broker';
 import { PortAllocator } from './ports/allocator';
 import { verifyBlueprintCompliance } from './runtime/lego';
-import { inspectProcess, terminateProcess } from './runtime/resources';
+import { inspectProcess, reviewProcessTermination, terminateProcess } from './runtime/resources';
+import { WorkspaceStateRepository } from './state/workspace-state';
 import { RuntimeResolver } from './runtime/snapshot';
 import { StartupDiagnosticsService } from './startup/diagnostics';
 import { resolvePaths } from './shared/paths';
@@ -23,6 +24,7 @@ import type {
   TaskExecutionResult,
   WriteInfraConfigInput,
   WriteInfraConfigResult,
+  WorkspaceState,
 } from './shared/contracts';
 import { AppError } from './shared/errors';
 
@@ -40,6 +42,8 @@ export class AppContext {
   readonly taskExecutor;
 
   readonly startupDiagnosticsService;
+
+  readonly workspaceState;
 
   private liveLogSubscribers = 0;
 
@@ -67,6 +71,7 @@ export class AppContext {
       appRoot: this.paths.appRoot,
       publicDir: this.paths.publicDir,
     });
+    this.workspaceState = new WorkspaceStateRepository(this.paths.workspaceStateFile);
   }
 
   async initialize(): Promise<void> {
@@ -76,6 +81,17 @@ export class AppContext {
       publicDir: this.paths.publicDir,
     });
     await this.configRepository.hydrateProcessEnv();
+    await this.workspaceState.load();
+    for (const reservation of this.workspaceState.read().portReservations.filter((entry) => entry.status === 'reserved')) {
+      try {
+        // Reclaim persisted advisory reservations when the control plane restarts.
+        await this.portAllocator.reservePort(reservation.port);
+      } catch {
+        await this.workspaceState.update({
+          portReservations: this.workspaceState.read().portReservations.map((entry) => entry.id === reservation.id ? { ...entry, status: 'conflict' } : entry),
+        });
+      }
+    }
     this.startupDiagnostics = await this.startupDiagnosticsService.inspect();
     const pwaCheck = this.startupDiagnostics.checks.find((check) => check.id === 'pwa-assets');
     this.logs.seed([
@@ -124,22 +140,45 @@ export class AppContext {
     return result;
   }
 
-  async getAvailablePort(startFrom?: number): Promise<PortResolution> {
+  async getAvailablePort(startFrom?: number, reserve = false, service = 'workspace allocation'): Promise<PortResolution> {
     const state = await this.readState();
-    if (!startFrom || startFrom === state.ports.startFrom) {
+    const requestedStart = startFrom || state.ports.startFrom;
+    if (!reserve && (!startFrom || startFrom === state.ports.startFrom)) {
       return state.ports;
     }
 
-    const scan = await this.portAllocator.findNextAvailablePort(startFrom);
+    const scan = await this.portAllocator.findNextAvailablePort(requestedStart);
     const recent = this.portAllocator.buildRecentEntries(state.services, scan);
-    return {
-      startFrom,
+    const resolution = {
+      startFrom: requestedStart,
       nextFree: scan.nextFree,
       busy: scan.busy,
       busyText: scan.busy.length > 0 ? scan.busy.join(', ') : 'None',
-      rule: `First free port above ${startFrom}`,
+      rule: `First free port above ${requestedStart}`,
       recent,
     };
+    if (reserve) {
+      await this.reservePort(service, resolution.nextFree);
+      resolution.recent = [{ service, port: String(resolution.nextFree), status: 'reserved' }, ...resolution.recent];
+    }
+    return resolution;
+  }
+
+  async reservePort(service: string, port: number): Promise<WorkspaceState> {
+    await this.portAllocator.reservePort(port);
+    return this.workspaceState.addPortReservation({
+      id: `port-${Date.now()}`,
+      service,
+      port,
+      status: 'reserved',
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  async releasePortReservation(id: string): Promise<WorkspaceState> {
+    const reservation = this.workspaceState.read().portReservations.find((entry) => entry.id === id);
+    if (reservation) this.portAllocator.releasePort(reservation.port);
+    return this.workspaceState.releasePortReservation(id);
   }
 
   async executeTask(input: ExecuteTaskInput): Promise<{ result: TaskExecutionResult; snapshot: DashboardState }> {
@@ -167,9 +206,13 @@ export class AppContext {
     return inspectProcess(pid);
   }
 
-  async terminateProcess(pid: number, signal?: string): Promise<{ result: ProcessTerminationResult; snapshot: DashboardState }> {
-    const result = await terminateProcess(pid, signal);
-    this.logs.append(result.message, 'Lifecycle', result.ok ? 'warn' : 'error');
+  async reviewProcessTermination(pid: number) {
+    return reviewProcessTermination(pid);
+  }
+
+  async terminateProcess(pid: number, signal?: string, identityToken?: string, reason?: string): Promise<{ result: ProcessTerminationResult; snapshot: DashboardState }> {
+    const result = await terminateProcess(pid, signal, identityToken);
+    this.logs.append(`${result.message}${reason ? ` Reason: ${reason}` : ''}`, 'Lifecycle', result.ok ? 'warn' : 'error');
     const snapshot = await this.readState();
     return { result, snapshot };
   }

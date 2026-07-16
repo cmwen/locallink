@@ -6,10 +6,12 @@ LocalLink Phase 1 is a local-first orchestration MVP for a single developer work
 
 - Node + TypeScript backend/control plane
 - Local-only HTTP dashboard server, bound to a loopback host in Phase 1
-- Static frontend/PWA assets in `public/`
+- React + TypeScript frontend in `frontend/`, built with Vite into `public/`
+  - `public/` is the generated/static browser shell served by Fastify
   - `/` launcher
   - `/dashboard` dashboard
-  - `/template` template preview
+  - `/current`, `/extensions`, `/external`, `/resources` direct workspace routes
+  - `/template` dashboard template surface
   - `/docs` static project documentation
   - `manifest.webmanifest` + `sw.js`
 - MCP stdio server with four tools:
@@ -63,6 +65,8 @@ cp .env.example .env
 pnpm build
 ```
 
+The build runs the React/Vite frontend first, then compiles the Node + TypeScript control plane, then copies `public/` into `dist/public`.
+
 ### Run the packaged CLI
 
 ```bash
@@ -97,7 +101,10 @@ Open:
 
 - `http://127.0.0.1:4010/` - launcher
 - `http://127.0.0.1:4010/dashboard` - dashboard
-- `http://127.0.0.1:4010/template` - static template preview
+- `http://127.0.0.1:4010/current` - current workspace
+- `http://127.0.0.1:4010/extensions` - extensions workspace
+- `http://127.0.0.1:4010/resources` - resources workspace
+- `http://127.0.0.1:4010/template` - dashboard template surface
 - `http://127.0.0.1:4010/docs` - static project documentation
 
 For a deeper implementation and operations guide, open [docs/index.html](docs/index.html) directly or use the dashboard docs route after starting the web server.
@@ -135,6 +142,7 @@ The generated starter config includes the Dockerfile blueprint convention, optio
 
 ```bash
 pnpm dev
+pnpm dev:frontend
 pnpm dev:mcp
 pnpm test
 ```
@@ -151,13 +159,21 @@ All dashboard APIs are local-only and served from the same process as the UI.
 | `POST` | `/api/ports/next` | Returns the next free local port, optionally starting from a supplied number. |
 | `POST` | `/api/tasks` | Executes a lifecycle action for a declared service and returns the result plus a fresh snapshot. |
 | `GET` | `/api/processes/:pid` | Inspect one local process with CPU, RAM, uptime, parent PID, and full command. |
+| `GET` | `/api/processes/:pid/termination-review` | Review process identity, parent/child relationships, and open bindings before termination. |
 | `POST` | `/api/processes/:pid/terminate` | Send `SIGTERM` or `SIGKILL` to a selected local process, then refresh the dashboard snapshot. |
+| `GET` | `/api/workspace/settings` | Read persisted extension preferences, temporary runtime plans, version queues, and port reservations. |
+| `PATCH` | `/api/workspace/settings` | Persist extension preferences for the current workspace. |
+| `POST` | `/api/workspace/runtimes` | Persist a temporary runtime plan without claiming that it has been launched. |
+| `POST` | `/api/workspace/updates` | Queue a version update plan. |
+| `DELETE` | `/api/workspace/updates/:id` | Cancel a queued version update plan. |
+| `POST` | `/api/ports/reservations` | Bind and persist a loopback port reservation. |
+| `DELETE` | `/api/ports/reservations/:id` | Release a port reservation. |
 | `GET` | `/api/logs/stream` | Server-sent events stream of lifecycle, Docker, and PM2 log lines. |
 
 HTTP request bodies use camelCase:
 
 - `/api/configs`: `{ "targetFile": "...", "content"?: "...", "patch"?: { ... } }`
-- `/api/ports/next`: `{ "startFrom"?: 5000 }`
+- `/api/ports/next`: `{ "startFrom"?: 5000, "reserve"?: true, "service"?: "new service" }`
 - `/api/tasks`: `{ "runtime": "docker|pm2|taskfile", "serviceName": "...", "action": "start|stop|restart|up" }`
 
 ## MCP tools

@@ -22,7 +22,8 @@
   },
   "scripts": {
     "test": "node --test --import tsx test/**/*.test.ts",
-    "build": "tsc -p tsconfig.json && rm -rf dist/public && mkdir -p dist && cp -r public dist/public",
+    "build": "rm -rf public/assets/app && tsc -p frontend/tsconfig.json && vite build --config frontend/vite.config.ts && tsc -p tsconfig.json && rm -rf dist/public && mkdir -p dist && cp -r public dist/public",
+    "build:frontend": "rm -rf public/assets/app && tsc -p frontend/tsconfig.json && vite build --config frontend/vite.config.ts",
     "prepack": "pnpm build",
     "start": "node ./bin/locallink.js web",
     "web": "node ./bin/locallink.js web",
@@ -31,6 +32,7 @@
     "doctor": "node ./bin/locallink.js doctor",
     "snapshot": "node ./bin/locallink.js snapshot",
     "dev": "tsx src/cli.ts web",
+    "dev:frontend": "vite --config frontend/vite.config.ts",
     "dev:mcp": "tsx src/cli.ts mcp",
     "dev:doctor": "tsx src/cli.ts doctor"
   },
@@ -43,13 +45,19 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "fastify": "^5.8.5",
     "locallink": "link:",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "recast": "^0.23.11",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
     "tsx": "^4.22.4",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vite": "^8.1.3"
   }
 }

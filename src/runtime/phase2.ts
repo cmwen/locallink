@@ -88,18 +88,17 @@ export async function buildPhase2Advisor(
     };
   } else {
     const status = parseJsonOutput<TailscaleStatus>(tailscaleResult.stdout)[0];
-    const tailnet = status?.CurrentTailnet?.Name || status?.MagicDNSSuffix || 'active tailnet';
-    const ipAddress = status?.Self?.TailscaleIPs?.[0];
+    const connected = !status?.BackendState || status.BackendState.toLowerCase() === 'running';
     tailscaleOption = {
       id: 'tailscale',
       title: 'Tailscale private network',
-      detail: ipAddress
-        ? `Connected to ${tailnet} and reachable on ${ipAddress}. LocalLink can offer a private Phase 2 edge without a public reverse proxy.`
-        : `Connected to ${tailnet}. LocalLink can offer a private Phase 2 edge without a public reverse proxy.`,
-      status: 'available',
+      detail: connected
+        ? 'Private network connection detected. LocalLink can offer a private Phase 2 edge without a public reverse proxy.'
+        : 'Private network tooling is installed. Confirm the node connection before enabling a Phase 2 edge.',
+      status: connected ? 'available' : 'optional',
       recommended: preferredEdge === 'auto' || preferredEdge === 'tailscale',
       docsUrl: 'https://tailscale.com/kb',
-      detectedValue: ipAddress,
+      detectedValue: 'Private network detected; address hidden',
     };
   }
 
