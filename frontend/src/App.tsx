@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   executeServiceAction,
@@ -21,9 +21,18 @@ import type {
   ProcessInspection,
   ProcessTerminationReview,
   ResourceProcess,
+  ResourceScope,
   ServiceRecord,
   TaskAction,
 } from './types';
+import {
+  filterServices,
+  matchesWorkspaceQuery,
+  selectVisibleService,
+  serviceMatchReason,
+  serviceNeedsAttention,
+  type ServiceHealthFilter,
+} from './view-model';
 
 type View = 'current' | 'extensions' | 'resources';
 type Theme = 'dark' | 'light';
@@ -32,9 +41,9 @@ type KillTarget = { type: 'service'; service: ServiceRecord } | { type: 'process
 
 const THEME_KEY = 'locallink-theme';
 const VIEW_LABELS: Record<View, string> = {
-  current: 'Current',
-  extensions: 'Extensions',
-  resources: 'Resources',
+  current: 'Services',
+  extensions: 'Connections',
+  resources: 'System',
 };
 const VIEW_PATHS: Record<View, string> = {
   current: '/current',
@@ -61,37 +70,9 @@ function actionLevel(action: TaskAction): LogEntry['level'] {
   return action === 'stop' || action === 'restart' ? 'warn' : 'info';
 }
 
-function serviceMatches(service: ServiceRecord, query: string): boolean {
-  if (!query) return true;
-  return [
-    service.name,
-    service.kind,
-    service.group,
-    service.status,
-    service.statusLabel,
-    service.port,
-    service.notes,
-    service.detail,
-    service.tags,
-    ...(service.dependsOn || []),
-    ...(service.downstream || []),
-    ...(service.envVars || []),
-    service.docsUrl || '',
-    service.blueprint?.command || '',
-    service.compliance?.summary || '',
-  ]
-    .join(' ')
-    .toLowerCase()
-    .includes(query);
-}
-
 function formatPort(port: string | undefined): string {
   if (!port || port === '-') return '-';
   return port.startsWith(':') ? port : `:${port}`;
-}
-
-function docsCount(services: ServiceRecord[]): number {
-  return services.filter((service) => service.docsUrl).length;
 }
 
 function formatPercent(value: number): string {
@@ -138,13 +119,14 @@ export function App() {
   const [source, setSource] = useState<Source>('mock');
   const [view, setView] = useState<View>(() => viewFromPath());
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark'));
-  const [query, setQuery] = useState('');
-  const [healthFilter, setHealthFilter] = useState<'all' | 'review' | 'running'>('all');
+  const [queries, setQueries] = useState<Record<View, string>>({ current: '', extensions: '', resources: '' });
+  const [healthFilter, setHealthFilter] = useState<ServiceHealthFilter>('all');
   const [selectedServiceId, setSelectedServiceId] = useState('');
   const [mobileServiceDetail, setMobileServiceDetail] = useState(false);
   const [pendingServices, setPendingServices] = useState<Set<string>>(() => new Set());
   const [liveLogs, setLiveLogs] = useState<LogEntry[]>([]);
   const [status, setStatus] = useState('Loading workspace snapshot...');
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const [loading, setLoading] = useState(true);
   const [addTempOpen, setAddTempOpen] = useState(false);
   const [tempServices, setTempServices] = useState<ServiceRecord[]>([]);
@@ -163,6 +145,11 @@ export function App() {
 
   const services = useMemo(() => [...state.services, ...tempServices], [state.services, tempServices]);
   const logs = useMemo(() => [...liveLogs, ...state.logs].slice(0, 180), [liveLogs, state.logs]);
+  const query = queries[view];
+
+  function setActiveQuery(value: string) {
+    setQueries((current) => ({ ...current, [view]: value }));
+  }
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -182,6 +169,7 @@ export function App() {
         .then((result) => {
           setState(result.state);
           setSource(result.source);
+          setLastUpdatedAt(new Date());
         })
         .catch(() => {
           setStatus('Resource sampling is retrying.');
@@ -202,13 +190,21 @@ export function App() {
     syncWorkspacePath(nextView);
   }
 
+  function openService(serviceId: string) {
+    setQueries((current) => ({ ...current, current: '' }));
+    setHealthFilter('all');
+    setSelectedServiceId(serviceId);
+    setMobileServiceDetail(true);
+    changeView('current');
+  }
+
   useEffect(() => {
     if (selectedServiceId && services.some((service) => service.id === selectedServiceId)) return;
     setSelectedServiceId(services[0]?.id || '');
   }, [selectedServiceId, services]);
 
   useEffect(() => {
-    if (source !== 'api' || pauseLogs || !('EventSource' in window)) return undefined;
+    if (view !== 'resources' || source !== 'api' || pauseLogs || !('EventSource' in window)) return undefined;
 
     const eventSource = new EventSource('./api/logs/stream');
     eventSource.onmessage = (event) => {
@@ -224,7 +220,7 @@ export function App() {
     };
 
     return () => eventSource.close();
-  }, [source, pauseLogs]);
+  }, [source, pauseLogs, view]);
 
   async function refreshState() {
     setLoading(true);
@@ -268,6 +264,7 @@ export function App() {
       } else {
         setState(result.state);
       }
+      setLastUpdatedAt(new Date());
       setStatus(result.source === 'mock' ? 'Live API unavailable; showing sample workspace data.' : 'Snapshot refreshed.');
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Unable to read dashboard state.');
@@ -448,6 +445,7 @@ export function App() {
         await updateWorkspacePreferences({ [preferenceKey]: next });
         setStatus('Extension preference persisted to this workspace.');
       } catch (error) {
+        setExtensionState((current) => ({ ...current, [key]: !next }));
         setStatus(error instanceof Error ? error.message : 'Extension preference could not be persisted.');
       }
     } else {
@@ -464,6 +462,7 @@ export function App() {
         setQueuedVersionId(workspace.versionUpdates.find((update) => update.status === 'queued')?.id || '');
         setStatus('Version update plan queued in the workspace.');
       } catch (error) {
+        setExtensionState((current) => ({ ...current, updateQueued: false }));
         setStatus(error instanceof Error ? error.message : 'Version update could not be queued.');
       }
     } else if (source === 'api' && queuedVersionId) {
@@ -472,6 +471,7 @@ export function App() {
         setQueuedVersionId('');
         setStatus('Version update plan cancelled in the workspace.');
       } catch (error) {
+        setExtensionState((current) => ({ ...current, updateQueued: true }));
         setStatus(error instanceof Error ? error.message : 'Version update could not be cancelled.');
       }
     } else {
@@ -485,20 +485,14 @@ export function App() {
     setStatus('Visible logs copied.');
   }
 
-  const selectedService = services.find((service) => service.id === selectedServiceId) || services[0];
-  const reviewItems = services.filter((service) => service.statusTone !== 'healthy' || service.compliance?.status === 'warn');
-  const queryText = query.trim().toLowerCase();
-  const filteredServices = services.filter((service) => {
-    const healthMatch =
-      healthFilter === 'all' ||
-      (healthFilter === 'review' && reviewItems.some((item) => item.id === service.id)) ||
-      (healthFilter === 'running' && service.status === 'running');
-    return healthMatch && serviceMatches(service, queryText);
-  });
-  const visibleLogs = logs.filter((log) => {
+  const attentionItems = useMemo(() => services.filter(serviceNeedsAttention), [services]);
+  const filteredServices = useMemo(() => filterServices(services, healthFilter, queries.current), [healthFilter, queries.current, services]);
+  const selectedService = selectVisibleService(filteredServices, selectedServiceId);
+  const queryText = queries.resources.trim().toLowerCase();
+  const visibleLogs = useMemo(() => logs.filter((log) => {
     if (!queryText) return true;
     return `${log.time} ${log.stream} ${log.level} ${log.message}`.toLowerCase().includes(queryText);
-  });
+  }), [logs, queryText]);
 
   return (
     <div className="app-shell">
@@ -506,7 +500,7 @@ export function App() {
         view={view}
         theme={theme}
         query={query}
-        setQuery={setQuery}
+        setQuery={setActiveQuery}
         setView={changeView}
         setTheme={setTheme}
         refreshState={refreshState}
@@ -514,18 +508,28 @@ export function App() {
         copyLogs={copyVisibleLogs}
       />
 
-      {status ? <div className="status-banner">{status}</div> : null}
+      {status ? (
+        <output className="status-banner" aria-live="polite">
+          <span>{status}</span>
+          <span className="status-meta mono">
+            {source === 'api' ? 'Live API' : 'Sample data'}
+            {lastUpdatedAt ? (
+              <> / <time dateTime={lastUpdatedAt.toISOString()}>{lastUpdatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time></>
+            ) : null}
+          </span>
+        </output>
+      ) : null}
 
       {view === 'current' ? (
         <CurrentWorkspace
           services={services}
           filteredServices={filteredServices}
           selectedService={selectedService}
+          query={queries.current}
           loading={loading}
           healthFilter={healthFilter}
-          reviewCount={reviewItems.length}
+          attentionCount={attentionItems.length}
           portsHeld={state.ports.recent.length || state.ports.busy.length}
-          docsLinked={docsCount(services)}
           pendingServices={pendingServices}
           setHealthFilter={setHealthFilter}
           selectService={(id) => {
@@ -534,7 +538,7 @@ export function App() {
           }}
           mobileServiceDetail={mobileServiceDetail}
           showServiceList={() => setMobileServiceDetail(false)}
-          setQuery={setQuery}
+          setResourceQuery={(value) => setQueries((current) => ({ ...current, resources: value }))}
           runServiceAction={runServiceAction}
           openSafeStop={(service) => void openSafeStop({ type: 'service', service })}
           setView={changeView}
@@ -546,11 +550,10 @@ export function App() {
           state={state}
           services={services}
           extensionState={extensionState}
+          query={queries.extensions}
           updateExtension={updateExtension}
           queueUpdate={queueUpdate}
-          setStatus={setStatus}
-          setView={changeView}
-          selectService={setSelectedServiceId}
+          openService={openService}
         />
       ) : null}
 
@@ -567,6 +570,7 @@ export function App() {
           inspectProcess={inspect}
           openSafeStop={(process) => void openSafeStop({ type: 'process', process })}
           copyLogs={copyVisibleLogs}
+          openService={openService}
         />
       ) : null}
 
@@ -603,10 +607,10 @@ interface TopbarProps {
 function Topbar({ view, theme, query, setQuery, setView, setTheme, refreshState, openTemp, copyLogs }: TopbarProps) {
   const placeholder =
     view === 'current'
-      ? 'Search current services, docs, ports...'
+      ? 'Search services, docs, ports...'
       : view === 'extensions'
-        ? 'Search extensions, config, ports...'
-        : 'Filter resource logs...';
+        ? 'Filter connections, config, ports...'
+        : 'Filter activity logs...';
 
   return (
     <header className="topbar">
@@ -616,19 +620,19 @@ function Topbar({ view, theme, query, setQuery, setView, setTheme, refreshState,
         </div>
         <div>
           <strong>LocalLink</strong>
-          <div className="muted mono">workspace {view}</div>
+          <div className="muted mono">{VIEW_LABELS[view].toLowerCase()} workspace</div>
         </div>
       </div>
       <div className="search">
-        <input className="input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={placeholder} aria-label={placeholder} />
+        <input className="input" type="search" enterKeyHint="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={placeholder} aria-label={placeholder} />
         {view === 'current' ? (
           <button className="btn primary" type="button" onClick={openTemp}>
-            Add temp app
+            Create runtime plan
           </button>
         ) : null}
         {view === 'extensions' ? (
           <button className="btn primary" type="button" onClick={() => setView('current')}>
-            Back to current
+            Back to services
           </button>
         ) : null}
         {view === 'resources' ? (
@@ -639,7 +643,7 @@ function Topbar({ view, theme, query, setQuery, setView, setTheme, refreshState,
       </div>
       <nav className="actions" aria-label="Workspace navigation">
         {(['current', 'extensions', 'resources'] as View[]).map((item) => (
-          <button key={item} className={`btn ${view === item ? 'active' : ''}`} type="button" onClick={() => setView(item)}>
+          <button key={item} className={`btn ${view === item ? 'active' : ''}`} type="button" aria-current={view === item ? 'page' : undefined} onClick={() => setView(item)}>
             {VIEW_LABELS[item]}
           </button>
         ))}
@@ -658,17 +662,17 @@ interface CurrentWorkspaceProps {
   services: ServiceRecord[];
   filteredServices: ServiceRecord[];
   selectedService?: ServiceRecord;
+  query: string;
   loading: boolean;
-  healthFilter: 'all' | 'review' | 'running';
-  reviewCount: number;
+  healthFilter: ServiceHealthFilter;
+  attentionCount: number;
   portsHeld: number;
-  docsLinked: number;
   pendingServices: Set<string>;
-  setHealthFilter: (filter: 'all' | 'review' | 'running') => void;
+  setHealthFilter: (filter: ServiceHealthFilter) => void;
   selectService: (id: string) => void;
   mobileServiceDetail: boolean;
   showServiceList: () => void;
-  setQuery: (value: string) => void;
+  setResourceQuery: (value: string) => void;
   runServiceAction: (service: ServiceRecord, action: TaskAction) => Promise<void>;
   openSafeStop: (service: ServiceRecord) => void;
   setView: (view: View) => void;
@@ -678,17 +682,17 @@ function CurrentWorkspace({
   services,
   filteredServices,
   selectedService,
+  query,
   loading,
   healthFilter,
-  reviewCount,
+  attentionCount,
   portsHeld,
-  docsLinked,
   pendingServices,
   setHealthFilter,
   selectService,
   mobileServiceDetail,
   showServiceList,
-  setQuery,
+  setResourceQuery,
   runServiceAction,
   openSafeStop,
   setView,
@@ -698,12 +702,12 @@ function CurrentWorkspace({
       <div className="pane-head">
         <div>
           <div className="label">Health</div>
-          <h1>Workspace current</h1>
+          <h1>Service health</h1>
         </div>
-        <div className="actions">
-          {(['all', 'review', 'running'] as const).map((filter) => (
-            <button key={filter} className={`btn ${healthFilter === filter ? 'active' : ''}`} type="button" onClick={() => setHealthFilter(filter)}>
-              {filter}
+        <div className="actions" aria-label="Filter services by health">
+          {(['all', 'attention', 'running', 'stopped'] as const).map((filter) => (
+            <button key={filter} className={`btn ${healthFilter === filter ? 'active' : ''}`} type="button" aria-pressed={healthFilter === filter} onClick={() => setHealthFilter(filter)}>
+              {filter === 'attention' ? 'needs attention' : filter}
             </button>
           ))}
         </div>
@@ -711,9 +715,9 @@ function CurrentWorkspace({
       <div className="pane-body">
         <section className="summary" aria-label="Current workspace summary">
           <Metric value={loading && services.length === 0 ? '...' : String(services.length)} label="services" tone="ok" />
-          <Metric value={loading && services.length === 0 ? '...' : String(reviewCount)} label="review items" tone={reviewCount > 0 ? 'warn' : 'ok'} />
+          <Metric value={loading && services.length === 0 ? '...' : String(attentionCount)} label="need attention" tone={attentionCount > 0 ? 'warn' : 'ok'} />
+          <Metric value={loading && services.length === 0 ? '...' : String(services.filter((service) => service.status === 'running').length)} label="running" tone="ok" />
           <Metric value={loading && services.length === 0 ? '...' : String(portsHeld)} label="ports held" tone="info" />
-          <Metric value={loading && services.length === 0 ? '...' : String(docsLinked)} label="docs linked" />
         </section>
 
         <section className={`screen-grid ${mobileServiceDetail ? 'mobile-detail' : ''}`}>
@@ -725,20 +729,32 @@ function CurrentWorkspace({
                 <span className="pill warn">pending</span>
               </div>
             ) : null}
-            {filteredServices.map((service) => (
-              <button
-                key={service.id}
-                className={`service ${selectedService?.id === service.id ? 'active' : ''}`}
-                type="button"
-                onClick={() => selectService(service.id)}
-              >
-                <strong>{service.name}</strong>
-                <span className="mono">
-                  {service.kind} / {formatPort(service.port)}
-                </span>
-                <span className={`pill ${toneClass(service.statusTone)}`}>{service.statusLabel.toLowerCase()}</span>
-              </button>
-            ))}
+            {filteredServices.map((service) => {
+              const matchReason = query ? serviceMatchReason(service, query) : null;
+              return (
+                <button
+                  key={service.id}
+                  className={`service ${selectedService?.id === service.id ? 'active' : ''}`}
+                  type="button"
+                  aria-pressed={selectedService?.id === service.id}
+                  onClick={() => selectService(service.id)}
+                >
+                  <strong>{service.name}</strong>
+                  <span className="mono">
+                    {service.kind} / {formatPort(service.port)}
+                  </span>
+                  <span className={`pill ${toneClass(service.statusTone)}`}>{service.statusLabel.toLowerCase()}</span>
+                  {serviceNeedsAttention(service) ? <span className="service-reason">{service.reviewReasons?.[0] || 'Operational state needs attention'}</span> : null}
+                  {matchReason && matchReason !== 'name' ? <span className="match-reason">Matched in {matchReason}</span> : null}
+                </button>
+              );
+            })}
+            {!loading && filteredServices.length === 0 ? (
+              <div className="service empty-service">
+                <strong>No matching services</strong>
+                <span>Clear search or choose another health filter.</span>
+              </div>
+            ) : null}
           </aside>
 
           {selectedService ? (
@@ -751,7 +767,7 @@ function CurrentWorkspace({
               openSafeStop={openSafeStop}
               setView={setView}
               showServiceList={showServiceList}
-              setQuery={setQuery}
+              setResourceQuery={setResourceQuery}
             />
           ) : (
             <article className="detail-grid empty-panel">{loading ? 'Loading workspace snapshot...' : 'No service selected.'}</article>
@@ -771,7 +787,7 @@ function ServiceDetail({
   openSafeStop,
   setView,
   showServiceList,
-  setQuery,
+  setResourceQuery,
 }: {
   service: ServiceRecord;
   services: ServiceRecord[];
@@ -781,12 +797,13 @@ function ServiceDetail({
   openSafeStop: (service: ServiceRecord) => void;
   setView: (view: View) => void;
   showServiceList: () => void;
-  setQuery: (value: string) => void;
+  setResourceQuery: (value: string) => void;
 }) {
   const plannedRuntime = service.id.startsWith('temp-');
   const runtimeIdentity = service.runtimeName || service.taskName || service.windowsProcessName || service.kind;
   const runtimeLabel = service.runtime ? `${service.runtime.toUpperCase()} / ${runtimeIdentity}` : runtimeIdentity;
   const compliance = service.compliance?.summary || (service.blueprint ? 'Blueprint parsed' : 'No blueprint check');
+  const attentionReasons = (service.reviewReasons || []).filter((reason) => !/^No service documentation/i.test(reason));
 
   function serviceLink(name: string) {
     const target = services.find((candidate) => candidate.name === name);
@@ -813,14 +830,14 @@ function ServiceDetail({
         </div>
       </div>
 
-      <div className="action-row">
+      <div className="action-row" aria-label={`${service.name} lifecycle actions`}>
         <button className="btn primary" type="button" disabled={pending || plannedRuntime} onClick={() => void runServiceAction(service, 'start')}>
           Start
         </button>
         <button className="btn" type="button" disabled={pending || plannedRuntime} onClick={() => void runServiceAction(service, 'restart')}>
           Restart
         </button>
-        <button className="btn" type="button" onClick={() => { setQuery(service.name); setView('resources'); }}>
+        <button className="btn" type="button" onClick={() => { setResourceQuery(service.name); setView('resources'); }}>
           Logs
         </button>
         <button className="btn danger" type="button" disabled={pending || plannedRuntime} onClick={() => openSafeStop(service)}>
@@ -838,25 +855,21 @@ function ServiceDetail({
         <Fact label="Compliance" value={service.compliance?.status || 'Not checked'} />
       </div>
 
-      <div className="subgrid">
-        <InfoCard title="Entry" value={service.blueprint?.command || service.script || service.runtimeName || service.runtime || 'Runtime command pending'} mono />
-        <InfoCard title="Runtime identity" value={runtimeLabel} mono />
-        <InfoCard title="Working directory" value={service.cwd || service.dockerfilePath || 'Workspace root'} mono />
+      {attentionReasons.length > 0 ? (
+        <div className="cardlet review-card">
+          <strong>Needs attention</strong>
+          <div className="review-list">
+            {attentionReasons.map((reason) => <span className="review-warning" key={reason}>{reason}</span>)}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="subgrid essential-details">
         <InfoCard
           title="Port binding"
           value={service.portEnv ? `${service.portEnv} = ${service.port || 'not resolved'}` : formatPort(service.port)}
           mono
         />
-        <InfoCard title="Environment" value={(service.envVars || []).join(' / ') || service.portEnv || 'No variables declared'} mono />
-        <InfoCard title="Blueprint" value={compliance} />
-        {service.reviewReasons && service.reviewReasons.length > 0 ? (
-          <div className="cardlet review-card">
-            <strong>Why this needs review</strong>
-            <div className="review-list">
-              {service.reviewReasons.map((reason) => <span className="review-warning" key={reason}>{reason}</span>)}
-            </div>
-          </div>
-        ) : null}
         <div className="cardlet docs-card">
           <strong>Documentation</strong>
           {service.docsUrl ? (
@@ -885,6 +898,17 @@ function ServiceDetail({
           </div>
         </div>
       </div>
+
+      <details className="advanced-details">
+        <summary>Advanced runtime details</summary>
+        <div className="subgrid">
+          <InfoCard title="Entry" value={service.blueprint?.command || service.script || service.runtimeName || service.runtime || 'Runtime command pending'} mono />
+          <InfoCard title="Runtime identity" value={runtimeLabel} mono />
+          <InfoCard title="Working directory" value={service.cwd || service.dockerfilePath || 'Workspace root'} mono />
+          <InfoCard title="Environment" value={(service.envVars || []).join(' / ') || service.portEnv || 'No variables declared'} mono />
+          <InfoCard title="Blueprint" value={compliance} />
+        </div>
+      </details>
     </article>
   );
 }
@@ -893,23 +917,33 @@ function ExtensionsWorkspace({
   state,
   services,
   extensionState,
+  query,
   updateExtension,
   queueUpdate,
-  setStatus,
-  setView,
-  selectService,
+  openService,
 }: {
   state: DashboardState;
   services: ServiceRecord[];
   extensionState: { dashboard: boolean; proxy: boolean; edge: boolean; updateQueued: boolean };
+  query: string;
   updateExtension: (key: 'dashboard' | 'proxy' | 'edge') => Promise<void>;
   queueUpdate: () => Promise<void>;
-  setStatus: (value: string) => void;
-  setView: (view: View) => void;
-  selectService: (id: string) => void;
+  openService: (id: string) => void;
 }) {
   const edgeOption = state.phase2.options.find((option) => option.id === 'tailscale' || option.id === 'reverse-proxy');
-  const ports = state.ports.recent.slice(0, 5);
+  const extensions = [
+    { key: 'dashboard' as const, title: 'Dashboard', detail: 'Local command center.', enabled: extensionState.dashboard, warn: false },
+    { key: 'proxy' as const, title: 'Proxy', detail: 'Stable URLs for local services.', enabled: extensionState.proxy, warn: false },
+    { key: 'edge' as const, title: 'Network edge', detail: edgeOption?.title || 'Temporary share workflow.', enabled: extensionState.edge, warn: true },
+  ];
+  const visibleExtensions = extensions.filter((extension) => matchesWorkspaceQuery(query, extension.title, extension.detail, extension.enabled ? 'on enabled' : 'off disabled'));
+  const ports = state.ports.recent
+    .filter((entry) => matchesWorkspaceQuery(query, entry.service, entry.port, entry.status, 'port'))
+    .slice(0, 5);
+  const showConfig = matchesWorkspaceQuery(query, 'extension config', 'dashboard', 'proxy', 'network edge', state.phase2.summary);
+  const showPorts = ports.length > 0 || matchesWorkspaceQuery(query, 'port list', 'configured ports', 'next open port');
+  const showVersion = matchesWorkspaceQuery(query, 'version workflow', 'CLI 0.12.4 0.13.0', 'schedule update', 'cancel update');
+  const hasResults = visibleExtensions.length > 0 || showConfig || showPorts || showVersion;
 
   function toggle(key: 'dashboard' | 'proxy' | 'edge') {
     void updateExtension(key);
@@ -919,20 +953,22 @@ function ExtensionsWorkspace({
     <main className="pane">
       <div className="pane-head">
         <div>
-          <div className="label">External workspace</div>
-          <h1>Extensions and config</h1>
+          <div className="label">Connections workspace</div>
+          <h1>Connections and config</h1>
         </div>
-        <span className="pill ok">local-first</span>
+        <span className="pill ok">changes save immediately</span>
       </div>
       <div className="pane-body stack">
-        <section className="extension-row" aria-label="Extensions">
-          <ExtensionButton title="Dashboard" detail="Local command center." enabled={extensionState.dashboard} onClick={() => toggle('dashboard')} />
-          <ExtensionButton title="Proxy" detail="Stable URLs for local services." enabled={extensionState.proxy} onClick={() => toggle('proxy')} />
-          <ExtensionButton title="Network edge" detail={edgeOption?.title || 'Temporary share workflow.'} enabled={extensionState.edge} warn onClick={() => toggle('edge')} />
-        </section>
+        {visibleExtensions.length > 0 ? (
+          <section className="extension-row" aria-label="Connections">
+            {visibleExtensions.map((extension) => (
+              <ExtensionButton key={extension.key} title={extension.title} detail={extension.detail} enabled={extension.enabled} warn={extension.warn} onChange={() => toggle(extension.key)} />
+            ))}
+          </section>
+        ) : null}
 
-        <section className="config-stack">
-          <article className="config-card">
+        {showConfig || showPorts ? <section className="config-stack">
+          {showConfig ? <article className="config-card">
             <strong>Extension config</strong>
             <p>
               Dashboard and proxy preferences are persisted per workspace. Network edge remains opt-in until it is explicitly confirmed.
@@ -942,9 +978,9 @@ function ExtensionsWorkspace({
               <ConfigLine label="Proxy" value={`host: *.localhost / tls: off / target: active service port`} />
               <ConfigLine label="Network edge" value={edgeOption?.detail || state.phase2.summary || 'No edge tooling detected yet.'} />
             </div>
-          </article>
+          </article> : null}
 
-          <article className="config-card">
+          {showPorts ? <article className="config-card">
             <strong>Port list</strong>
             <div className="port-list table-like">
               {ports.length > 0 ? (
@@ -958,8 +994,7 @@ function ExtensionsWorkspace({
                         type="button"
                         onClick={() => {
                           if (service) {
-                            selectService(service.id);
-                            setView('current');
+                            openService(service.id);
                           }
                         }}
                       >
@@ -973,13 +1008,14 @@ function ExtensionsWorkspace({
                 <p>No ports are listed in the current snapshot.</p>
               )}
             </div>
-          </article>
-        </section>
+          </article> : null}
+        </section> : null}
 
-        <section className="subgrid single">
+        {showVersion ? <section className="subgrid single">
           <article className="cardlet">
             <strong>Version workflow</strong>
             <p className="mono">CLI 0.12.4 -&gt; 0.13.0</p>
+            <p>Schedules a workspace update plan only. Nothing is installed until the plan is explicitly applied.</p>
             <button
               className="btn"
               type="button"
@@ -987,10 +1023,17 @@ function ExtensionsWorkspace({
                 void queueUpdate();
               }}
             >
-              {extensionState.updateQueued ? 'Queued' : 'Queue update'}
+              {extensionState.updateQueued ? 'Cancel scheduled update' : 'Schedule update'}
             </button>
           </article>
-        </section>
+        </section> : null}
+
+        {!hasResults ? (
+          <section className="empty-search" aria-live="polite">
+            <strong>No matching connections or configuration</strong>
+            <p>Clear the search to see all connection settings, ports, and update plans.</p>
+          </section>
+        ) : null}
       </div>
     </main>
   );
@@ -1008,6 +1051,7 @@ function ResourcesWorkspace({
   inspectProcess,
   openSafeStop,
   copyLogs,
+  openService,
 }: {
   state: DashboardState;
   source: Source;
@@ -1020,9 +1064,23 @@ function ResourcesWorkspace({
   inspectProcess: (process: ResourceProcess) => Promise<void>;
   openSafeStop: (process: ResourceProcess | ProcessInspection) => void;
   copyLogs: () => Promise<void>;
+  openService: (id: string) => void;
 }) {
-  const { system, history, topCpu, topMemory } = state.resources;
-  const processCount = state.resources.hostProcesses.length;
+  const [resourceScope, setResourceScope] = useState<ResourceScope>('workspace');
+  const { system, history } = state.resources;
+  const scopedProcesses = resourceScope === 'workspace' ? state.resources.workspaceProcesses : state.resources.hostProcesses;
+  const topCpu = [...scopedProcesses].sort((left, right) => right.cpuPercent - left.cpuPercent).slice(0, 5);
+  const topMemory = [...scopedProcesses].sort((left, right) => right.memoryMb - left.memoryMb).slice(0, 5);
+  const processCount = scopedProcesses.length;
+  const scopedCpu = resourceScope === 'workspace'
+    ? scopedProcesses.reduce((total, process) => total + process.cpuPercent, 0)
+    : system.cpuPercent;
+  const scopedMemoryMb = resourceScope === 'workspace'
+    ? scopedProcesses.reduce((total, process) => total + process.memoryMb, 0)
+    : system.memoryUsedMb;
+  const scopedMemoryPercent = (scopedMemoryMb / Math.max(1, system.memoryTotalMb)) * 100;
+  const scopedAttention = scopedProcesses.filter((process) => process.tone === 'warn').length;
+  const visibleSelectedProcess = selectedProcess && scopedProcesses.some((process) => process.pid === selectedProcess.pid) ? selectedProcess : null;
   const sampledAt = Date.parse(system.updatedAt) > 0
     ? new Date(system.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     : 'waiting';
@@ -1032,39 +1090,52 @@ function ResourcesWorkspace({
       <section className="pane resource-pane">
         <div className="pane-head">
           <div>
-            <div className="label">Resources</div>
-            <h1>Host pressure</h1>
+            <div className="label">System workspace</div>
+            <h1>{resourceScope === 'workspace' ? 'Workspace resources' : 'Host resources'}</h1>
           </div>
-          <div className="sample-status">
-            <span className={`live-dot ${source === 'api' ? '' : 'sample'}`} />
-            <span>{source === 'api' ? `Live / ${system.sampleIntervalSeconds}s` : 'Sample data'}</span>
+          <div className="resource-head-actions">
+            <div className="actions resource-scope-toggle" aria-label="Resource scope">
+              {(['workspace', 'host'] as ResourceScope[]).map((scope) => (
+                <button className={`btn ${resourceScope === scope ? 'active' : ''}`} type="button" key={scope} aria-pressed={resourceScope === scope} onClick={() => setResourceScope(scope)}>
+                  {scope === 'workspace' ? 'Workspace' : 'Host'}
+                </button>
+              ))}
+            </div>
+            <div className="sample-status">
+              <span className={`live-dot ${source === 'api' ? '' : 'sample'}`} aria-hidden="true" />
+              <span>{source === 'api' ? `Live / ${system.sampleIntervalSeconds}s` : 'Sample data'}</span>
+            </div>
           </div>
         </div>
         <div className="pane-body resource-dashboard">
-          <p className="scope-note">{state.resources.scopeNote}</p>
-          <section className="pressure-summary" aria-label="Host pressure summary">
+          <p className="scope-note">
+            {resourceScope === 'workspace'
+              ? 'Showing processes attributed to services in this workspace. Switch to Host for every visible process.'
+              : state.resources.scopeNote}
+          </p>
+          <section className="pressure-summary" aria-label={`${resourceScope} resource summary`}>
             <PressureMetric
               label="CPU"
-              value={loading && history.length === 0 ? '...' : formatPercent(system.cpuPercent)}
-              detail={`${system.cpuCores} logical cores`}
-              tone={system.cpuPercent >= 80 ? 'bad' : system.cpuPercent >= 60 ? 'warn' : 'ok'}
+              value={loading && history.length === 0 ? '...' : formatPercent(scopedCpu)}
+              detail={resourceScope === 'workspace' ? `${processCount} attributed processes` : `${system.cpuCores} logical cores`}
+              tone={scopedCpu >= 80 ? 'bad' : scopedCpu >= 60 ? 'warn' : 'ok'}
             />
             <PressureMetric
               label="Memory"
-              value={loading && history.length === 0 ? '...' : formatPercent(system.memoryPercent)}
-              detail={`${formatMemoryMb(system.memoryUsedMb)} / ${formatMemoryMb(system.memoryTotalMb)}`}
-              tone={system.memoryPercent >= 90 ? 'bad' : system.memoryPercent >= 75 ? 'warn' : 'info'}
+              value={loading && history.length === 0 ? '...' : formatMemoryMb(scopedMemoryMb)}
+              detail={`${formatPercent(scopedMemoryPercent)} of host memory`}
+              tone={scopedMemoryPercent >= 90 ? 'bad' : scopedMemoryPercent >= 75 ? 'warn' : 'info'}
             />
-            <PressureMetric label="Processes" value={String(processCount)} detail="visible on host" />
+            <PressureMetric label="Processes" value={String(processCount)} detail={resourceScope === 'workspace' ? 'attributed to workspace' : 'visible on host'} />
             <PressureMetric
-              label="Review"
-              value={String(system.flaggedCount)}
+              label="Attention"
+              value={String(scopedAttention)}
               detail="above pressure thresholds"
-              tone={system.flaggedCount > 0 ? 'warn' : 'ok'}
+              tone={scopedAttention > 0 ? 'warn' : 'ok'}
             />
           </section>
 
-          <section className="trend-grid" aria-label="Resource usage trends">
+          {resourceScope === 'host' ? <section className="trend-grid" aria-label="Host resource usage trends">
             <TrendCard
               title="CPU usage"
               value={system.cpuPercent}
@@ -1083,7 +1154,7 @@ function ResourcesWorkspace({
               intervalSeconds={system.sampleIntervalSeconds}
               tone="memory"
             />
-          </section>
+          </section> : null}
 
           <section className="process-rankings" aria-label="Highest resource consumers">
             <ProcessRanking
@@ -1091,7 +1162,7 @@ function ResourcesWorkspace({
               processes={topCpu}
               mode="cpu"
               totalMemoryMb={system.memoryTotalMb}
-              selectedPid={selectedProcess?.pid}
+              selectedPid={visibleSelectedProcess?.pid}
               inspectProcess={inspectProcess}
             />
             <ProcessRanking
@@ -1099,38 +1170,45 @@ function ResourcesWorkspace({
               processes={topMemory}
               mode="memory"
               totalMemoryMb={system.memoryTotalMb}
-              selectedPid={selectedProcess?.pid}
+              selectedPid={visibleSelectedProcess?.pid}
               inspectProcess={inspectProcess}
             />
           </section>
 
-          {selectedProcess ? (
+          {visibleSelectedProcess ? (
             <article className="process-inspector">
               <div className="process-inspector-head">
                 <div>
                   <div className="label">Process inspector</div>
-                  <h3>{selectedProcess.name}</h3>
+                  <h3>{visibleSelectedProcess.name}</h3>
                 </div>
-                <button className="btn danger" type="button" onClick={() => openSafeStop(selectedProcess)}>
-                  Review termination
-                </button>
+                <div className="actions">
+                  {visibleSelectedProcess.serviceId ? (
+                    <button className="btn" type="button" onClick={() => openService(visibleSelectedProcess.serviceId || '')}>
+                      Open service
+                    </button>
+                  ) : null}
+                  <button className="btn danger" type="button" onClick={() => openSafeStop(visibleSelectedProcess)}>
+                    Review termination
+                  </button>
+                </div>
               </div>
               <div className="process-facts">
-                <Fact label="PID" value={String(selectedProcess.pid)} mono />
-                <Fact label="Parent PID" value={String(selectedProcess.parentPid || '-')} mono />
-                <Fact label="CPU" value={selectedProcess.cpu} mono />
-                <Fact label="Memory" value={selectedProcess.memory} mono />
-                <Fact label="Uptime" value={selectedProcess.uptime} mono />
-                <Fact label="Started" value={selectedProcess.started} />
+                <Fact label="PID" value={String(visibleSelectedProcess.pid)} mono />
+                <Fact label="Parent PID" value={String(visibleSelectedProcess.parentPid || '-')} mono />
+                <Fact label="CPU" value={visibleSelectedProcess.cpu} mono />
+                <Fact label="Memory" value={visibleSelectedProcess.memory} mono />
+                <Fact label="Uptime" value={visibleSelectedProcess.uptime} mono />
+                <Fact label="Started" value={visibleSelectedProcess.started} />
               </div>
               <div className="command-block">
                 <span className="label">Command</span>
-                <code>{selectedProcess.command}</code>
+                <code>{visibleSelectedProcess.command}</code>
               </div>
             </article>
           ) : null}
           <p className="sample-note">
-            Host-wide sample captured at {sampledAt}. Workspace attribution is shown where available. Select any ranked process for its parent, start time, and full command.
+            Sample captured at {sampledAt}. Select any ranked process for its parent, start time, service attribution, and full command.
           </p>
         </div>
       </section>
@@ -1149,7 +1227,7 @@ function ResourcesWorkspace({
           <div className="summary compact-summary">
             <Metric value={String(state.ports.recent.length || state.ports.busy.length)} label="ports held" tone="info" />
             <Metric value={String(state.ports.nextFree)} label="next free" tone="ok" />
-            <Metric value={String(system.flaggedCount)} label="review" tone={system.flaggedCount > 0 ? 'warn' : 'ok'} />
+            <Metric value={String(system.flaggedCount)} label="host attention" tone={system.flaggedCount > 0 ? 'warn' : 'ok'} />
             <Metric value={String(logs.length)} label="events visible" />
           </div>
 
@@ -1331,9 +1409,7 @@ function ProcessRanking({
               </span>
               <span className="process-usage">
                 <strong className="mono">{value}</strong>
-                <span className="usage-track" aria-hidden="true">
-                  <span style={{ width: `${Math.max(2, percent)}%` }} />
-                </span>
+                <meter className="usage-meter" min="0" max="100" value={Math.max(0, percent)} aria-label={`${title}: ${value}`} />
               </span>
             </button>
           );
@@ -1377,20 +1453,23 @@ function ExtensionButton({
   detail,
   enabled,
   warn,
-  onClick,
+  onChange,
 }: {
   title: string;
   detail: string;
   enabled: boolean;
   warn?: boolean;
-  onClick: () => void;
+  onChange: () => void;
 }) {
   return (
-    <button className="extension" type="button" aria-pressed={enabled} onClick={onClick}>
-      <strong>{title}</strong>
-      <p>{detail}</p>
+    <label className="extension">
+      <span className="extension-copy">
+        <strong>{title}</strong>
+        <span>{detail}</span>
+      </span>
       <span className={`pill ${enabled ? 'ok' : warn ? 'warn' : ''}`}>{enabled ? 'on' : 'off'}</span>
-    </button>
+      <input className="extension-switch" type="checkbox" role="switch" checked={enabled} onChange={onChange} aria-label={`${title}: ${enabled ? 'on' : 'off'}`} />
+    </label>
   );
 }
 
@@ -1407,7 +1486,7 @@ function MobileNav({ view, setView }: { view: View; setView: (view: View) => voi
   return (
     <nav className="mobile-nav" aria-label="Mobile screen navigation">
       {(['current', 'extensions', 'resources'] as View[]).map((item) => (
-        <button key={item} className={view === item ? 'active' : ''} type="button" onClick={() => setView(item)}>
+        <button key={item} className={view === item ? 'active' : ''} type="button" aria-current={view === item ? 'page' : undefined} onClick={() => setView(item)}>
           {VIEW_LABELS[item]}
         </button>
       ))}
@@ -1418,15 +1497,40 @@ function MobileNav({ view, setView }: { view: View; setView: (view: View) => voi
   );
 }
 
+function useNativeDialog(onClose: () => void) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (dialog && !dialog.open) {
+      dialog.showModal();
+      dialog.querySelector<HTMLElement>('[data-initial-focus]')?.focus();
+    }
+  }, []);
+
+  function closeDialog() {
+    dialogRef.current?.close();
+  }
+
+  function handleClose() {
+    onClose();
+    window.requestAnimationFrame(() => returnFocusRef.current?.focus());
+  }
+
+  return { dialogRef, closeDialog, handleClose };
+}
+
 function TempRuntimeModal({ close, submit }: { close: () => void; submit: (input: { type: string; port: string; command: string }) => void }) {
   const [type, setType] = useState('Docker');
   const [port, setPort] = useState('6080');
   const [command, setCommand] = useState('docker run --rm -p 6080:80 local/test-api');
+  const { dialogRef, closeDialog, handleClose } = useNativeDialog(close);
 
   return (
-    <div className="dialog-backdrop">
+    <dialog ref={dialogRef} className="modal-card" aria-labelledby="runtime-plan-title" onClose={handleClose}>
       <form
-        className="modal-card"
         onSubmit={(event) => {
           event.preventDefault();
           submit({ type, port, command });
@@ -1435,17 +1539,18 @@ function TempRuntimeModal({ close, submit }: { close: () => void; submit: (input
         <div className="pane-head">
           <div>
             <div className="label">Temporary runtime</div>
-            <h2>Add temp app</h2>
+            <h2 id="runtime-plan-title">Create runtime plan</h2>
           </div>
-          <button className="btn ghost" type="button" onClick={close}>
+          <button className="btn ghost" type="button" onClick={closeDialog}>
             Close
           </button>
         </div>
         <div className="modal-body">
+          <p>This saves a plan to the workspace. Lifecycle controls stay disabled until a launcher is configured.</p>
           <div className="form-grid">
             <label>
               <span className="label">Type</span>
-              <select className="select" value={type} onChange={(event) => setType(event.target.value)}>
+              <select className="select" value={type} onChange={(event) => setType(event.target.value)} data-initial-focus>
                 <option>Docker</option>
                 <option>PM2</option>
                 <option>MCP server</option>
@@ -1462,11 +1567,11 @@ function TempRuntimeModal({ close, submit }: { close: () => void; submit: (input
             <textarea rows={3} value={command} onChange={(event) => setCommand(event.target.value)} />
           </label>
           <button className="btn primary" type="submit">
-            Add runtime
+            Save runtime plan
           </button>
         </div>
       </form>
-    </div>
+    </dialog>
   );
 }
 
@@ -1486,16 +1591,17 @@ function SafeStopModal({
   confirm: () => Promise<void>;
 }) {
   const title = target.type === 'service' ? target.service.name : `${target.process.name} (${target.process.pid})`;
+  const heading = target.type === 'service' ? 'Review service stop' : 'Review process termination';
+  const { dialogRef, closeDialog, handleClose } = useNativeDialog(close);
 
   return (
-    <div className="dialog-backdrop">
-      <div className="modal-card">
+    <dialog ref={dialogRef} className="modal-card" aria-labelledby="safe-stop-title" onClose={handleClose}>
         <div className="pane-head">
           <div>
             <div className="label">Safe termination</div>
-            <h2>Review process</h2>
+            <h2 id="safe-stop-title">{heading}</h2>
           </div>
-          <button className="btn ghost" type="button" onClick={close}>
+          <button className="btn ghost" type="button" onClick={closeDialog}>
             Close
           </button>
         </div>
@@ -1516,17 +1622,20 @@ function SafeStopModal({
           ) : (
             <p>Stopping {title} will use the configured runtime action and refresh the service snapshot.</p>
           )}
-          <textarea
-            rows={3}
-            placeholder="Reason, for example orphan process after closing the dev server"
-            value={reason}
-            onChange={(event) => setReason(event.target.value)}
-          />
+          <label>
+            <span className="label">Reason (optional)</span>
+            <textarea
+              rows={3}
+              placeholder="For example: orphan process after closing the dev server"
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              data-initial-focus
+            />
+          </label>
           <button className="btn danger" type="button" disabled={target.type === 'process' && (!review || !review.canTerminate)} onClick={() => void confirm()}>
             {target.type === 'service' ? 'Stop service' : review ? 'Terminate reviewed process' : 'Reviewing process...'}
           </button>
         </div>
-      </div>
-    </div>
+    </dialog>
   );
 }
