@@ -129,6 +129,42 @@ test('ConfigRepository loads optional service metadata from ecosystem and compos
   assert.equal(postgres.docsUrl, 'https://example.com/postgres');
 });
 
+test('ConfigRepository loads locallink.services.yml and resolves app-owned Dockerfile.locallink', async () => {
+  const root = await createTempProject();
+  const appRoot = path.join(root, 'apps', 'api');
+  await fs.mkdir(appRoot, { recursive: true });
+  await fs.writeFile(path.join(root, 'docker-compose.yml'), 'services: {}\n', 'utf8');
+  await fs.writeFile(
+    path.join(appRoot, 'Dockerfile.locallink'),
+    'FROM node:24-alpine\nEXPOSE 7123\nCMD ["node", "server.js"]\n',
+    'utf8',
+  );
+  await fs.writeFile(
+    path.join(root, 'locallink.services.yml'),
+    [
+      'services:',
+      '  - name: API Service',
+      '    group: pm2',
+      '    runtime: pm2',
+      '    runtimeName: api-service',
+      '    cwd: ./apps/api',
+      '    portEnv: API_PORT',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  await fs.writeFile(path.join(root, '.env'), 'API_PORT=7123\n', 'utf8');
+
+  const model = await new ConfigRepository(root).loadProjectModel();
+  const apiService = model.definitions.find((definition) => definition.name === 'API Service');
+
+  assert.ok(apiService);
+  assert.equal(apiService.definitionSource, 'services');
+  assert.equal(apiService.cwd, appRoot);
+  assert.equal(apiService.port, '7123');
+  assert.equal(apiService.dockerfilePath, path.join(appRoot, 'Dockerfile.locallink'));
+});
+
 test('ConfigRepository loads CommonJS ecosystem configs that use require', async () => {
   const root = await createTempProject();
   await fs.writeFile(path.join(root, '.env'), 'API_PORT=7123\n', 'utf8');

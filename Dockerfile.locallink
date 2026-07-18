@@ -1,0 +1,11 @@
+FROM node:24-alpine
+
+WORKDIR /workspace
+
+ENV LOCALLINK_BIND_HOST= \
+    LOCALLINK_WEB_PORT= \
+    LOCALLINK_MCP_MODE=stdio
+
+EXPOSE 4011
+
+CMD ["node", "./bin/locallink.js", "web"]

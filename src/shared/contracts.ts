@@ -1,4 +1,11 @@
-export const TARGET_FILES = ['.env', '.env.example', 'docker-compose.yml', 'ecosystem.config.js', 'mcp-registry.json'] as const;
+export const TARGET_FILES = [
+  '.env',
+  '.env.example',
+  'docker-compose.yml',
+  'locallink.services.yml',
+  'ecosystem.config.js',
+  'mcp-registry.json',
+] as const;
 
 export type TargetFile = (typeof TARGET_FILES)[number];
 export type ServiceGroup = 'docker' | 'pm2' | 'windows' | 'pwa';
@@ -76,11 +83,13 @@ export interface ServiceDefinition {
   name: string;
   kind: string;
   group: ServiceGroup;
+  definitionSource?: 'compose' | 'services' | 'ecosystem';
   runtime?: TaskRuntime;
   runtimeName?: string;
   taskName?: string;
   cwd?: string;
   script?: string;
+  args?: string | string[];
   dockerfilePath?: string;
   portEnv?: string;
   port?: string;

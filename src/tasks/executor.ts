@@ -4,7 +4,7 @@ import { getExternalToolSpecForRuntime, probeExternalTool } from '../shared/runt
 import type { CommandRunner } from '../shared/utils';
 import { LogBroker } from '../logs/broker';
 import { ConfigRepository } from '../config/files';
-import { prepareRuntimeIsolation, verifyBlueprintCompliance } from '../runtime/lego';
+import { prepareRuntimeIsolation, readDockerfileBlueprint, verifyBlueprintCompliance } from '../runtime/lego';
 import { runCommand } from '../shared/utils';
 
 function resolveServiceDefinition(
@@ -37,6 +37,56 @@ function taskCandidates(taskName: string, action: TaskAction): string[] {
   }
 
   return [`${taskName}:${action}`, `${action}:${taskName}`];
+}
+
+function normalizePm2Args(args: ServiceDefinition['args']): string[] {
+  if (Array.isArray(args)) {
+    return args.map(String).filter(Boolean);
+  }
+  if (typeof args === 'string') {
+    return args.split(/\s+/).map((entry) => entry.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function splitCommand(command: string): string[] {
+  const trimmed = command.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed.map(String).filter(Boolean);
+      }
+    } catch {
+      return [];
+    }
+  }
+
+  const matches = trimmed.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  return matches.map((part) => part.replace(/^["']|["']$/g, ''));
+}
+
+function pm2LaunchFromCommand(command: string): { script: string; args: string[] } | undefined {
+  const parts = splitCommand(command);
+  if (parts.length === 0) {
+    return undefined;
+  }
+
+  if (/^(node|nodejs)$/i.test(parts[0]) && parts[1]) {
+    return {
+      script: parts[1],
+      args: parts.slice(2),
+    };
+  }
+
+  return {
+    script: parts[0],
+    args: parts.slice(1),
+  };
 }
 
 export class TaskExecutor {
@@ -84,7 +134,11 @@ export class TaskExecutor {
     let lastResult: TaskExecutionResult | undefined;
 
     for (const candidate of candidates) {
-      const result = await this.commandRunner('task', [candidate], { cwd: this.root, timeoutMs: 60_000 });
+      const result = await this.commandRunner('task', [candidate], {
+        cwd: this.root,
+        env: this.buildServiceProcessEnv(),
+        timeoutMs: 60_000,
+      });
       lastResult = {
         ok: result.ok,
         runtime: 'taskfile',
@@ -125,6 +179,7 @@ export class TaskExecutor {
   ): Promise<TaskExecutionResult> {
     const execution = await this.commandRunner(command, args, {
       cwd: this.root,
+      env: this.buildServiceProcessEnv(),
       timeoutMs: 60_000,
       onStdoutLine: (line) => this.logs.append(line, runtime === 'docker' ? 'Docker' : 'PM2'),
       onStderrLine: (line) => this.logs.append(line, 'Alerts', 'warn'),
@@ -146,9 +201,29 @@ export class TaskExecutor {
     const serviceName = definition.runtimeName || definition.name;
     const ecosystemPath = this.configRepository.getFilePath('ecosystem.config.js');
     const startArgs = ['start', ecosystemPath, '--only', serviceName, '--update-env'];
+    const directLaunch = await this.resolveDirectPm2Launch(definition);
+    const directStartArgs = directLaunch
+      ? [
+          'start',
+          directLaunch.script,
+          '--name',
+          serviceName,
+          '--update-env',
+          ...(definition.cwd ? ['--cwd', definition.cwd] : []),
+          ...(directLaunch.args.length > 0 ? ['--', ...directLaunch.args] : []),
+        ]
+      : undefined;
+    const fallbackStartArgs = definition.definitionSource === 'ecosystem' ? startArgs : directStartArgs;
 
     if (action === 'start' || action === 'up') {
-      return this.runLifecycleCommand('pm2', 'pm2', startArgs, action, definition.name);
+      if (!fallbackStartArgs) {
+        throw new AppError(
+          'PM2_LAUNCH_UNAVAILABLE',
+          `Service "${definition.name}" needs either script metadata or a readable Dockerfile blueprint CMD before PM2 can start it.`,
+          400,
+        );
+      }
+      return this.runLifecycleCommand('pm2', 'pm2', fallbackStartArgs, action, definition.name);
     }
 
     const args = [action, serviceName];
@@ -158,8 +233,8 @@ export class TaskExecutor {
 
     const result = await this.runLifecycleCommand('pm2', 'pm2', args, action, definition.name);
     const combinedOutput = `${result.stdout}\n${result.stderr}`;
-    if (action === 'restart' && !result.ok && /not found|does not exist|process or namespace/i.test(combinedOutput)) {
-      return this.runLifecycleCommand('pm2', 'pm2', startArgs, action, definition.name);
+    if (action === 'restart' && !result.ok && fallbackStartArgs && /not found|does not exist|process or namespace/i.test(combinedOutput)) {
+      return this.runLifecycleCommand('pm2', 'pm2', fallbackStartArgs, action, definition.name);
     }
 
     return result;
@@ -168,6 +243,7 @@ export class TaskExecutor {
   async execute(input: ExecuteTaskInput): Promise<TaskExecutionResult> {
     await this.configRepository.hydrateProcessEnv();
     const model = await this.configRepository.loadProjectModel();
+    this.setServiceProcessEnv(model.env);
     const definition = resolveServiceDefinition(model.definitions, input);
     const lifecycleLevel = input.action === 'restart' || input.action === 'stop' ? 'warn' : 'info';
 
@@ -217,6 +293,37 @@ export class TaskExecutor {
     );
 
     return result;
+  }
+
+  private async resolveDirectPm2Launch(
+    definition: ServiceDefinition,
+  ): Promise<{ script: string; args: string[] } | undefined> {
+    if (definition.script) {
+      return {
+        script: definition.script,
+        args: normalizePm2Args(definition.args),
+      };
+    }
+
+    const blueprint = await readDockerfileBlueprint(definition.dockerfilePath);
+    return blueprint?.command ? pm2LaunchFromCommand(blueprint.command) : undefined;
+  }
+
+  private serviceProcessEnv?: Record<string, string>;
+
+  private buildServiceProcessEnv(): Record<string, string> {
+    return this.serviceProcessEnv || Object.fromEntries(
+      Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+    );
+  }
+
+  private setServiceProcessEnv(env: Record<string, string>): void {
+    this.serviceProcessEnv = {
+      ...Object.fromEntries(
+        Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+      ),
+      ...env,
+    };
   }
 
   private buildDockerCommand(definition: ServiceDefinition, action: TaskAction) {

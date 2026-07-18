@@ -252,8 +252,16 @@ export class AppContext {
 
     this.pm2Tail = startStreamingCommand('pm2', ['logs', '--lines', '20', '--raw'], {
       cwd: this.paths.root,
-      onStdoutLine: (line) => this.logs.append(line, 'PM2'),
-      onStderrLine: (line) => this.logs.append(line, 'PM2', 'warn'),
+      onStdoutLine: (line) => {
+        if (!isPm2LogEcho(line)) {
+          this.logs.append(line, 'PM2');
+        }
+      },
+      onStderrLine: (line) => {
+        if (!isPm2LogEcho(line)) {
+          this.logs.append(line, 'PM2', 'warn');
+        }
+      },
     });
     this.pm2Tail.done.then((result) => {
       if (!result.ok && !result.signal && result.stderr) {
@@ -277,4 +285,8 @@ export class AppContext {
   createServer() {
     return createHttpServer(this);
   }
+}
+
+function isPm2LogEcho(line: string): boolean {
+  return /\[WARN\]\s+\[PM2\]/.test(line);
 }

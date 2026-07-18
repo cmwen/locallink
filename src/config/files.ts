@@ -1,3 +1,4 @@
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
@@ -72,18 +73,18 @@ function defaultNotes(group: ServiceGroup, name: string): { notes: string; detai
     case 'pwa':
       return {
         notes: `Dashboard-facing service for ${name}.`,
-        detail: 'Managed through ecosystem.config.js and surfaced as an installable local app surface.',
+        detail: 'Managed through locallink.services.yml and surfaced as an installable local app surface.',
       };
     case 'windows':
       return {
         notes: `Host-side Windows executable for ${name}.`,
-        detail: 'Detected under WSL using an allowlisted Windows process name from ecosystem.config.js.',
+        detail: 'Detected under WSL using an allowlisted Windows process name from locallink.services.yml.',
       };
     case 'pm2':
     default:
       return {
         notes: `PM2 app for ${name}.`,
-        detail: 'Managed through ecosystem.config.js and surfaced in the LocalLink runtime snapshot.',
+        detail: 'Managed through locallink.services.yml and surfaced in the LocalLink runtime snapshot.',
       };
   }
 }
@@ -364,16 +365,18 @@ function buildEcosystemDefinitions(
       name: displayName,
       kind: typeof metadata.kind === 'string' ? metadata.kind : kindLabelForGroup(group),
       group,
+      definitionSource: 'ecosystem',
       runtime,
       runtimeName,
       taskName,
       cwd: resolvedCwd,
       script: typeof app.script === 'string' ? app.script : undefined,
+      args: typeof app.args === 'string' || Array.isArray(app.args) ? app.args : undefined,
       dockerfilePath:
         typeof metadata.dockerfile === 'string'
           ? path.resolve(resolvedCwd, metadata.dockerfile)
           : runtime === 'pm2'
-            ? path.join(resolvedCwd, 'Dockerfile')
+            ? resolveDefaultDockerfileBlueprint(resolvedCwd)
             : undefined,
       windowsProcessName:
         typeof metadata.windowsProcessName === 'string' ? metadata.windowsProcessName : undefined,
@@ -388,6 +391,89 @@ function buildEcosystemDefinitions(
       docsUrl: typeof metadata.docsUrl === 'string' ? metadata.docsUrl : undefined,
     };
   });
+}
+
+function resolveDefaultDockerfileBlueprint(cwd: string): string {
+  const candidates = [
+    path.join(cwd, 'Dockerfile.locallink'),
+    path.join(cwd, '.locallink', 'Dockerfile'),
+    path.join(cwd, 'Dockerfile'),
+  ];
+
+  return candidates.find((candidate) => fsSync.existsSync(candidate)) ?? candidates[candidates.length - 1];
+}
+
+function buildServiceRegistryDefinitions(
+  filePath: string,
+  raw: string,
+  env: Record<string, string>,
+): ServiceDefinition[] {
+  if (!raw.trim()) {
+    return [];
+  }
+
+  const document = parseDocument(raw);
+  const parsed = document.toJS() as { services?: unknown };
+  const services = Array.isArray(parsed?.services) ? parsed.services : [];
+  const baseDir = path.dirname(filePath);
+
+  return services
+    .filter((service): service is Record<string, unknown> => !!service && typeof service === 'object')
+    .map((service) => {
+      const displayName = typeof service.name === 'string' ? service.name : 'Unnamed Service';
+      const group = (service.group as ServiceGroup) || 'pm2';
+      const runtime =
+        (service.runtime as ServiceDefinition['runtime']) || (group === 'windows' ? 'taskfile' : 'pm2');
+      const taskName = typeof service.taskName === 'string' ? service.taskName : undefined;
+      const runtimeName =
+        typeof service.runtimeName === 'string'
+          ? service.runtimeName
+          : runtime === 'taskfile'
+            ? taskName || displayName
+            : slugify(displayName);
+      const resolvedCwd = typeof service.cwd === 'string' ? path.resolve(baseDir, service.cwd) : baseDir;
+      const portEnv = typeof service.portEnv === 'string' ? service.portEnv : undefined;
+      const blueprint =
+        typeof service.blueprint === 'string'
+          ? service.blueprint
+          : typeof service.dockerfile === 'string'
+            ? service.dockerfile
+            : undefined;
+      const defaults = defaultNotes(group, displayName);
+
+      return {
+        id: slugify(displayName),
+        name: displayName,
+        kind: typeof service.kind === 'string' ? service.kind : kindLabelForGroup(group),
+        group,
+        definitionSource: 'services',
+        runtime,
+        runtimeName,
+        taskName,
+        cwd: resolvedCwd,
+        script: typeof service.script === 'string' ? service.script : undefined,
+        args:
+          typeof service.args === 'string' || Array.isArray(service.args)
+            ? (service.args as string | string[])
+            : undefined,
+        dockerfilePath: blueprint
+          ? path.resolve(resolvedCwd, blueprint)
+          : runtime === 'pm2'
+            ? resolveDefaultDockerfileBlueprint(resolvedCwd)
+            : undefined,
+        windowsProcessName:
+          typeof service.windowsProcessName === 'string' ? service.windowsProcessName : undefined,
+        portEnv,
+        port: service.port !== undefined ? String(service.port) : portEnv ? env[portEnv] || '—' : '—',
+        notes: typeof service.notes === 'string' ? service.notes : defaults.notes,
+        detail: typeof service.detail === 'string' ? service.detail : defaults.detail,
+        tags: normalizeTags(service.tags || [group]).join(' · ') || group,
+        dependsOn: normalizeMetadataList(service.dependsOn),
+        downstream: normalizeMetadataList(service.downstream),
+        envVars: normalizeMetadataList(service.envVars),
+        docsUrl: typeof service.docsUrl === 'string' ? service.docsUrl : undefined,
+      };
+    });
 }
 
 function ensureComposeDocument(content: string) {
@@ -652,6 +738,8 @@ function initialContentForTarget(targetFile: TargetFile): string {
       return '';
     case 'docker-compose.yml':
       return 'services: {}\n';
+    case 'locallink.services.yml':
+      return 'services: []\n';
     case 'ecosystem.config.js':
       return 'module.exports = {\n  apps: [],\n};\n';
     case 'mcp-registry.json':
@@ -681,14 +769,21 @@ export class ConfigRepository {
     const envContent = await readFileOrEmpty(this.getFilePath('.env'));
     const env = mergeRuntimeEnv(parseEnvMap(envContent));
     const composeContent = await readFileOrEmpty(this.getFilePath('docker-compose.yml'));
+    const servicesContent = await readFileOrEmpty(this.getFilePath('locallink.services.yml'));
     const ecosystemPath = this.getFilePath('ecosystem.config.js');
     const ecosystemContent = await readFileOrEmpty(ecosystemPath);
+    const serviceDefinitions = buildServiceRegistryDefinitions(
+      this.getFilePath('locallink.services.yml'),
+      servicesContent,
+      env,
+    );
     const ecosystemDefinitions = buildEcosystemDefinitions(ecosystemPath, ecosystemContent, env);
     const composeDefinitions = buildComposeDefinitions(composeContent, env);
 
     logDebug('Loaded workspace model.', {
       root: this.root,
       envCount: Object.keys(env).length,
+      serviceRegistryServices: serviceDefinitions.length,
       ecosystemServices: ecosystemDefinitions.length,
       composeServices: composeDefinitions.length,
       totalServices: ecosystemDefinitions.length + composeDefinitions.length,
@@ -696,7 +791,7 @@ export class ConfigRepository {
 
     return {
       env,
-      definitions: [...ecosystemDefinitions, ...composeDefinitions],
+      definitions: [...serviceDefinitions, ...ecosystemDefinitions, ...composeDefinitions],
     };
   }
 

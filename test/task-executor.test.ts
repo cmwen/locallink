@@ -69,6 +69,46 @@ test('TaskExecutor starts PM2 apps through ecosystem.config.js', async () => {
   });
 });
 
+test('TaskExecutor derives a PM2 launch from an app-owned Dockerfile.locallink', async () => {
+  const root = await createTempProject();
+  await fs.writeFile(path.join(root, 'ecosystem.config.js'), 'module.exports = { apps: [] };\n', 'utf8');
+  await fs.writeFile(
+    path.join(root, 'locallink.services.yml'),
+    [
+      'services:',
+      '  - name: Direct Worker',
+      '    group: pm2',
+      '    runtime: pm2',
+      '    runtimeName: direct-worker',
+      '    cwd: .',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const calls: Array<{ command: string; args: string[] }> = [];
+  const commandRunner: CommandRunner = async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'pm2' && args[0] === '--version') {
+      return commandResult({ stdout: '7.0.1' });
+    }
+    return commandResult({ stdout: 'started' });
+  };
+
+  const executor = new TaskExecutor(root, new ConfigRepository(root), new LogBroker(), commandRunner);
+  const result = await executor.execute({
+    runtime: 'pm2',
+    serviceName: 'Direct Worker',
+    action: 'start',
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls[1], {
+    command: 'pm2',
+    args: ['start', './worker.js', '--name', 'direct-worker', '--update-env', '--cwd', root],
+  });
+});
+
 test('TaskExecutor falls back to ecosystem startup when PM2 restart target is missing', async () => {
   const root = await createTempProject();
   const calls: Array<{ command: string; args: string[] }> = [];
