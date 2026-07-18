@@ -4,7 +4,6 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import vm from 'node:vm';
 
-import { parse as babelParse } from '@babel/parser';
 import { parse, print, types } from 'recast';
 import { YAMLMap, parseDocument } from 'yaml';
 
@@ -30,14 +29,14 @@ import { normalizeTags, slugify, titleCaseFromKey } from '../shared/utils';
 
 const { builders: b, namedTypes: n, visit } = types;
 
-const jsParser = {
-  parse(source: string) {
-    return babelParse(source, {
-      sourceType: 'script',
-      plugins: [],
-    });
-  },
-};
+type BabelParse = (source: string, options?: any) => any;
+
+let babelParsePromise: Promise<BabelParse> | undefined;
+
+function loadBabelParse(): Promise<BabelParse> {
+  babelParsePromise ??= import('@babel/parser').then(({ parse: babelParse }) => babelParse as BabelParse);
+  return babelParsePromise;
+}
 
 type EnvLine = {
   raw: string;
@@ -673,9 +672,16 @@ function ensureNestedObjectProperty(parent: any, key: string): any {
   return objectExpression;
 }
 
-function applyEcosystemPatch(content: string, patch: EcosystemPatch): string {
+async function applyEcosystemPatch(content: string, patch: EcosystemPatch): Promise<string> {
   const source = content.trim() ? content : 'module.exports = { apps: [] };\n';
-  const ast = parse(source, { parser: jsParser });
+  const babelParse = await loadBabelParse();
+  const ast = parse(source, {
+    parser: {
+      parse(value: string) {
+        return babelParse(value, { sourceType: 'script', plugins: [] });
+      },
+    },
+  });
   const rootObject = findModuleExportsObject(ast);
   const appsArray = ensureAppsArray(rootObject);
   const appObject = findOrCreateAppObject(appsArray, patch.appName);
@@ -840,7 +846,7 @@ export class ConfigRepository {
           nextContent = applyComposePatch(existingContent, input.patch);
           break;
         case 'ecosystem':
-          nextContent = applyEcosystemPatch(existingContent, input.patch);
+          nextContent = await applyEcosystemPatch(existingContent, input.patch);
           break;
         default:
           throw new AppError('UNSUPPORTED_PATCH', `Unsupported patch kind.`, 400);
