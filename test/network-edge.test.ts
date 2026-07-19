@@ -105,6 +105,45 @@ test('discoverServiceEdgeUrls skips probing when Network Edge is disabled', asyn
   assert.equal(routes.size, 0);
 });
 
+test('discoverServiceEdgeUrls includes the configured Pocket ID issuer owned by the edge sidecar', async () => {
+  const commandRunner: CommandRunner = async () => ({
+    ok: false,
+    code: 1,
+    signal: null,
+    stdout: '',
+    stderr: 'host daemon does not own the sidecar route',
+    timedOut: false,
+  });
+  const pocketIdExtension: WorkspaceExtension = {
+    ...extension(),
+    id: 'pocket-id',
+    name: 'Pocket ID',
+    kind: 'identity-provider',
+  };
+
+  const routes = await discoverServiceEdgeUrls(
+    [extension(), pocketIdExtension],
+    [service('pocket-id', '1411')],
+    commandRunner,
+    { POCKET_ID_APP_URL: 'https://pocket-id.example.ts.net:7452' },
+  );
+
+  assert.deepEqual(routes.get('pocket-id'), ['https://pocket-id.example.ts.net:7452']);
+});
+
+test('discoverServiceEdgeUrls ignores placeholder Pocket ID issuers', async () => {
+  const commandRunner: CommandRunner = async () => ({ ok: false, code: 1, signal: null, stdout: '', stderr: '', timedOut: false });
+  const pocketIdExtension: WorkspaceExtension = { ...extension(), id: 'pocket-id', kind: 'identity-provider' };
+  const routes = await discoverServiceEdgeUrls(
+    [extension(), pocketIdExtension],
+    [service('pocket-id', '1411')],
+    commandRunner,
+    { POCKET_ID_APP_URL: 'https://pocket-id.example-tailnet.ts.net' },
+  );
+
+  assert.equal(routes.has('pocket-id'), false);
+});
+
 test('parseTailscaleServeRoutes tolerates unavailable or malformed status output', () => {
   assert.deepEqual(parseTailscaleServeRoutes(''), []);
   assert.deepEqual(parseTailscaleServeRoutes('{not json'), []);

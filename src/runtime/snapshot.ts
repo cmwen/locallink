@@ -350,7 +350,7 @@ export class RuntimeResolver {
       collectWindowsStates(definitions, this.commandRunner),
       buildPhase2Advisor(model.env, this.commandRunner),
       buildResourceDashboard(this.commandRunner, definitions),
-      discoverServiceEdgeUrls(model.extensions, definitions, this.commandRunner),
+      discoverServiceEdgeUrls(model.extensions, definitions, this.commandRunner, model.env),
     ]);
 
     const services = definitions.map<ServiceRecord>((definition) => {

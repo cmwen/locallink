@@ -26,6 +26,19 @@ export interface NetworkEdgeRoute {
   targetPort: string;
 }
 
+function normalizeConfiguredEdgeUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) return undefined;
+    if (url.hostname === 'localhost' || url.hostname.endsWith('.example') || url.hostname.endsWith('.example.com') || url.hostname.includes('example-tailnet')) return undefined;
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return undefined;
+  }
+}
+
 function proxyTargetPort(proxy: string | undefined): string | undefined {
   if (!proxy) return undefined;
 
@@ -87,20 +100,28 @@ export async function discoverServiceEdgeUrls(
   extensions: WorkspaceExtension[],
   services: ServiceDefinition[],
   commandRunner: CommandRunner,
+  env: Record<string, string> = {},
 ): Promise<Map<string, string[]>> {
   const networkEdge = extensions.find((extension) => extension.kind === 'network-edge' && extension.enabled && extension.status !== 'disabled');
   if (!networkEdge) return new Map();
 
+  const urlsByService = new Map<string, string[]>();
+  const pocketIdExtension = extensions.find((extension) => extension.kind === 'identity-provider' && extension.enabled && extension.status !== 'disabled');
+  const pocketIdUrl = pocketIdExtension ? normalizeConfiguredEdgeUrl(env.POCKET_ID_APP_URL) : undefined;
+  if (pocketIdExtension && pocketIdUrl) {
+    const pocketIdService = services.find((service) => service.id === pocketIdExtension.id || service.runtimeName === pocketIdExtension.id);
+    if (pocketIdService) urlsByService.set(pocketIdService.id, [pocketIdUrl]);
+  }
+
   const result = await commandRunner(networkEdge.command || 'tailscale', ['serve', 'status', '--json'], { timeoutMs: 2_000 });
-  if (!result.ok) return new Map();
+  if (!result.ok) return urlsByService;
 
   const routes = parseTailscaleServeRoutes(result.stdout);
-  const urlsByService = new Map<string, string[]>();
   for (const service of services) {
     const port = service.port?.trim();
     if (!port || port === '—') continue;
     const urls = routes.filter((route) => route.targetPort === port).map((route) => route.url);
-    if (urls.length > 0) urlsByService.set(service.id, urls);
+    if (urls.length > 0) urlsByService.set(service.id, [...new Set([...(urlsByService.get(service.id) || []), ...urls])]);
   }
   return urlsByService;
 }

@@ -11,12 +11,13 @@
       <header class="hero">
         <div class="eyebrow">Workspace capabilities</div>
         <h1>How LocalLink out-of-box extensions work</h1>
-        <p>Extensions declare optional capabilities around the service topology. They do not silently install software, publish ports, or create credentials.</p>
+        <p>Extensions declare optional capabilities around the service topology. The LocalLink dashboard and local web server do not depend on them: an extension-free workspace can still declare services, resolve ports, inspect runtime state and logs, and run lifecycle actions.</p>
+        <p>Enabling an extension expresses desired capability; it does not currently mean that LocalLink has installed software, published ports, or created credentials. Future installer flows must show the difference between declared, waiting for external setup, installed, waiting for first-user setup, and healthy.</p>
       </header>
 
       <section class="section">
         <h2>The declaration model</h2>
-        <p><code>locallink.extensions.yml</code> is the committable capability inventory. LocalLink resolves exposed ports from <code>.env</code>, reports missing required variables as setup work, and displays each extension in Connections. Runtime services remain in <code>docker-compose.yml</code> or <code>locallink.services.yml</code>; private values remain in <code>.env</code>.</p>
+        <p><code>locallink.extensions.yml</code> is the committable capability inventory. LocalLink resolves exposed ports from <code>.env</code>, reports missing required variables as setup work, and displays each extension in Connections. Runtime services remain in <code>docker-compose.yml</code> or <code>locallink.services.yml</code>; private values currently remain in <code>.env</code>.</p>
         <p>An extension marked ready has its declared configuration present. Use the related service card and runtime checks to confirm live connectivity and external authentication.</p>
         <pre><code>extension declaration → readiness in dashboard
 service declaration   → lifecycle and runtime status
@@ -36,16 +37,25 @@ service declaration   → lifecycle and runtime status
       <section id="tailscale" class="section">
         <h2>Tailscale private edge</h2>
         <p>Provides authenticated network reachability and private HTTPS. Tailscale Serve exposes only the routes explicitly declared in its configuration, and Tailscale ACLs remain the network authorization source. LocalLink never treats edge enablement as permission to make a service public.</p>
+        <p>LocalLink should own the sidecar, persistent node state, proxy routes, derived service URLs, and health checks. The user must still join or create a tailnet, enable HTTPS certificates, provide a bootstrap credential, and approve the access policy. These external security decisions should appear as explicit onboarding checkpoints with focused documentation.</p>
       </section>
 
       <section id="pocket-id" class="section">
         <h2>Pocket ID</h2>
-        <p>Provides passkey-backed OIDC sessions to internal applications after a user reaches them through Tailscale. It depends on a stable HTTPS issuer, persistent data, and an encryption key. See the <a href="./pocket-id-tailscale.html">private SSO guide</a>.</p>
+        <p>Provides passkey-backed OIDC sessions to internal applications after a user reaches them through Tailscale. It depends on a stable HTTPS issuer, persistent data, and an encryption key. LocalLink can automate provider installation, issuer discovery, generated secrets, and health checks; the first administrator/passkey and application identity choices remain user actions. See the <a href="./pocket-id-tailscale.html">private SSO guide</a>.</p>
+        <p>Applications should declare a provider-neutral OIDC contract including callback URLs, logout URLs, scopes, and environment-variable names. Coding agents can then configure the application without coupling it directly to Pocket ID.</p>
       </section>
 
       <section id="observability" class="section">
         <h2>OpenObserve</h2>
-        <p>Receives telemetry from declared services. LocalLink reports whether the required endpoint and stream variables exist, but application exporters and OpenObserve credentials remain explicit service configuration.</p>
+        <p>Receives telemetry from declared services. The target experience is for LocalLink to generate and store backend credentials, derive OTLP endpoints and authorization values, configure compatible exporters, and verify delivery.</p>
+        <p>Applications should use standard OpenTelemetry variables and protocols rather than OpenObserve-specific application code. Custom instrumentation may still require development work, but changing the telemetry backend should not require rewriting the service.</p>
+      </section>
+
+      <section id="agents" class="section">
+        <h2>Coding-agent contract</h2>
+        <p>LocalLink plans to provide an installable agent skill for discovering workspace capabilities, declaring services and Dockerfile blueprints, and integrating generic OIDC and OpenTelemetry interfaces. The skill should teach safe patterns; LocalLink remains the authority for generated configuration, secrets, and lifecycle state.</p>
+        <p>See the <a href="./product-goal.md">product goal</a> for the agreed capability boundaries and configuration-ownership direction.</p>
       </section>
 
       <section class="section">
@@ -56,6 +66,7 @@ service declaration   → lifecycle and runtime status
           <li>Missing required variables produce setup status rather than fake readiness.</li>
           <li>Extension preferences do not replace Docker, PM2, Taskfile, proxy, or Tailscale configuration.</li>
           <li>Disabling a dashboard preference does not destructively stop an external runtime.</li>
+          <li>Derived URLs, encoded headers, proxy routes, and generated credentials should not become duplicated human-maintained inputs.</li>
         </ul>
       </section>
     </main>

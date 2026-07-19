@@ -2,6 +2,29 @@
 
 LocalLink Phase 1 is a local-first orchestration MVP for a single developer workstation. It combines a Node + TypeScript control plane, a loopback-only HTTP dashboard, and an MCP stdio server so local tools and AI agents can inspect config, allocate ports, and trigger lifecycle actions from one place.
 
+## Product goal
+
+LocalLink's dashboard and local web server must work without any optional
+extension. Users can manage their own Docker, PM2, and development services and
+ports; LocalLink makes those services easy to find and operate when they provide
+clear runtime metadata, environment-variable names, dependencies, health
+information, and a Dockerfile or Dockerfile blueprint.
+
+Private Edge, Identity, and Observability are optional capability layers. They
+should automate local installation and derived configuration while clearly
+pausing for external security decisions that only the user can make. Services
+should consume generic OIDC and OpenTelemetry contracts so Pocket ID,
+OpenObserve, or another compatible provider can be replaced without rewriting
+the application.
+
+Coding agents are also a first-class user. The product direction includes an
+installable LocalLink agent skill that teaches agents how to discover workspace
+configuration, declare services and Dockerfile blueprints, and integrate generic
+OIDC and OTLP interfaces without copying secrets or coupling applications to one
+provider.
+
+See [the full product goal and capability boundaries](docs/product-goal.md).
+
 ## What is implemented
 
 - Node + TypeScript backend/control plane
@@ -128,7 +151,7 @@ Use [the private Pocket ID + Tailscale setup guide](docs/pocket-id-tailscale.htm
 
 Client IDs, client secrets, Pocket ID encryption keys, and real issuer domains belong in local secret management—not committed templates. Applications without native OIDC can use an OIDC-aware proxy documented by Pocket ID.
 
-LocalLink's Dashboard, reverse proxy, Tailscale edge, Pocket ID, and observability capabilities are explained in [the out-of-box extension guide](docs/extensions.html). Workspace capability declarations live in `locallink.extensions.yml`; runtime services and secrets remain separately explicit.
+LocalLink's Dashboard, reverse proxy, Tailscale edge, Pocket ID, and observability capabilities are explained in [the out-of-box extension guide](docs/extensions.html). Workspace capability declarations live in `locallink.extensions.yml`; runtime services and secrets remain separately explicit. Extensions are optional: a workspace that enables none of them still retains the dashboard, service discovery, runtime state, ports, logs, and lifecycle controls.
 
 ### Run the MCP server directly
 
