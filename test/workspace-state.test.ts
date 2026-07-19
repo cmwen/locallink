@@ -11,8 +11,9 @@ test('workspace state persists preferences, runtime plans, updates, and reservat
   const file = path.join(root, '.locallink', 'workspace-state.json');
   const repository = new WorkspaceStateRepository(file);
 
-  await repository.load();
-  await repository.updatePreferences({ edgeEnabled: true });
+  const defaults = await repository.load();
+  assert.equal(defaults.preferences.pocketIdEnabled, true);
+  await repository.updatePreferences({ edgeEnabled: true, pocketIdEnabled: false });
   await repository.addTemporaryRuntime({
     id: 'temp-1', name: 'Temp API', type: 'Docker', port: 6080, command: 'docker run api', createdAt: new Date().toISOString(), status: 'planned',
   });
@@ -22,6 +23,7 @@ test('workspace state persists preferences, runtime plans, updates, and reservat
   const restored = new WorkspaceStateRepository(file);
   const state = await restored.load();
   assert.equal(state.preferences.edgeEnabled, true);
+  assert.equal(state.preferences.pocketIdEnabled, false);
   assert.equal(state.temporaryRuntimes[0]?.name, 'Temp API');
   assert.equal(state.versionUpdates[0]?.status, 'queued');
   assert.equal(state.portReservations[0]?.port, 6080);

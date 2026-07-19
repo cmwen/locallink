@@ -23,6 +23,8 @@ LocalLink Phase 1 is a local-first orchestration MVP for a single developer work
   - `.env`
   - `.env.example`
   - `docker-compose.yml`
+  - `locallink.services.yml`
+  - `locallink.extensions.yml`
   - `ecosystem.config.js`
 - Sample topology already declared in `docker-compose.yml`, `ecosystem.config.js`, and `Taskfile.yml`
 - Backend endpoints for state, config editing, port allocation, task execution, and log streaming
@@ -30,7 +32,7 @@ LocalLink Phase 1 is a local-first orchestration MVP for a single developer work
 
 The sample topology currently includes:
 
-- Docker: `postgres`
+- Docker: `pocket-id` (default identity extension, explicit `identity` profile) and `postgres`
 - PM2/PWA: `LocalLink MCP Core`, `Queue Worker`, `LocalLink Dashboard UI`
 - Taskfile-backed placeholders: `Windows File Indexer`, `AgentGateway Proxy`
 
@@ -58,6 +60,8 @@ cp .env.example .env
 - `LOCALLINK_DEFAULT_PORT_START=5000`
 - `LOCALLINK_ENABLE_PHASE2_ADVISOR=true`
 - `LOCALLINK_PHASE2_PREFERRED_EDGE=auto`
+- `POCKET_ID_APP_URL=https://pocket-id.example-tailnet.ts.net` (replace with the private Tailscale Serve issuer)
+- `POCKET_ID_PORT=1411`
 
 ### Build
 
@@ -88,13 +92,13 @@ node ./bin/locallink.js web --log-level debug
 If you want the `locallink` command directly on your machine, link the package once:
 
 ```bash
-pnpm link --global
+pnpm add -g .
 locallink web
 locallink mcp
 locallink snapshot --log-level debug
 ```
 
-When you launch `locallink` from another folder, it reads `.env`, `docker-compose.yml`, and `ecosystem.config.js` from that current working directory.
+When you launch `locallink` from another folder, it reads environment, service, extension, and runtime declarations from that current working directory.
 Use `--log-level debug` or `LOCALLINK_LOG_LEVEL=debug` when you want stderr traces for startup, state discovery, HTTP requests, and runtime probe failures.
 
 Open:
@@ -108,6 +112,23 @@ Open:
 - `http://127.0.0.1:4010/docs` - static project documentation
 
 For a deeper implementation and operations guide, open [docs/index.html](docs/index.html) directly or use the dashboard docs route after starting the web server.
+
+### Private Pocket ID application SSO
+
+Pocket ID is registered as a default, enabled application-identity extension and declared as an opt-in Docker Compose profile. Tailscale remains the network gate with its existing login provider; Pocket ID supplies passkey-backed OIDC sessions to internal applications after the user joins the tailnet.
+
+```bash
+cp .env.example .env
+openssl rand -base64 32
+# Set POCKET_ID_APP_URL and POCKET_ID_ENCRYPTION_KEY in .env.
+docker compose --profile identity up -d pocket-id
+```
+
+Use [the private Pocket ID + Tailscale setup guide](docs/pocket-id-tailscale.html) to configure a stable tailnet-only HTTPS issuer and register each internal service as an OIDC client. The dashboard also links to the [Pocket ID installation guide](https://pocket-id.org/docs/setup/installation) and [Tailscale Serve guide](https://tailscale.com/docs/features/tailscale-serve).
+
+Client IDs, client secrets, Pocket ID encryption keys, and real issuer domains belong in local secret management—not committed templates. Applications without native OIDC can use an OIDC-aware proxy documented by Pocket ID.
+
+LocalLink's Dashboard, reverse proxy, Tailscale edge, Pocket ID, and observability capabilities are explained in [the out-of-box extension guide](docs/extensions.html). Workspace capability declarations live in `locallink.extensions.yml`; runtime services and secrets remain separately explicit.
 
 ### Run the MCP server directly
 
@@ -131,12 +152,13 @@ locallink init my-local-infra
 - `.gitignore`
 - `Taskfile.yml`
 - `docker-compose.yml`
+- `locallink.extensions.yml`
 - `ecosystem.config.js`
 - `mcp-registry.json`
 - `AGENTS.md`
 - `README.md` or `README.locallink.md` if a README already exists
 
-The generated starter config includes the Dockerfile blueprint convention, optional service metadata fields, the Phase 2 advisor toggle, and the agent guardrails file.
+The generated starter config includes the Pocket ID identity profile, Dockerfile blueprint convention, optional service metadata fields, the Phase 2 advisor toggle, and the agent guardrails file.
 
 ### Dev/test helpers
 
@@ -195,6 +217,8 @@ LocalLink treats these files as the committable infra contract:
 - `.env`: active local values
 - `.env.example`: shareable defaults/template
 - `docker-compose.yml`: Docker services plus `locallink.*` labels for UI/runtime metadata
+- `locallink.services.yml`: preferred PM2, PWA, Windows, and task-backed service registry
+- `locallink.extensions.yml`: optional dashboard, proxy, private edge, identity, observability, and custom capability declarations
 - `ecosystem.config.js`: PM2/PWA/Windows/taskfile app definitions plus `locallink` metadata
 - `mcp-registry.json`: optional registry for local-build MCP servers and mapped external volumes
 

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Private Pocket ID SSO | LocalLink</title>
+    <link rel="stylesheet" href="./assets/style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div class="eyebrow">LocalLink identity extension</div>
+        <h1>Private application SSO with Pocket ID and Tailscale</h1>
+        <p>Pocket ID authenticates users into internal applications. Tailscale remains the network gate and keeps its existing login provider.</p>
+      </header>
+
+      <section class="section">
+        <h2>The two independent gates</h2>
+        <pre><code>Existing IdP → Tailscale login → private tailnet access
+                                      ↓
+Internal app → Pocket ID passkey → application session</code></pre>
+        <p>Tailscale ACLs decide whether a device can reach Pocket ID and an application. Pocket ID then supplies standard OIDC identity, groups, and a user session to that application. Pocket ID is not used to enroll the device into Tailscale, so it can stay private.</p>
+      </section>
+
+      <section class="section">
+        <h2>1. Configure and start Pocket ID</h2>
+        <pre><code>cp .env.example .env
+openssl rand -base64 32
+
+# .env
+POCKET_ID_APP_URL=https://pocket-id-host.your-tailnet.ts.net
+POCKET_ID_PORT=1411
+POCKET_ID_ENCRYPTION_KEY=&lt;generated-value&gt;
+POCKET_ID_TRUST_PROXY=false
+
+docker compose --profile identity up -d pocket-id</code></pre>
+        <p class="note">Keep the encryption key outside version control and back it up with the Pocket ID data. The issuer URL is an identity boundary: choose the final Tailscale HTTPS hostname before registering clients.</p>
+      </section>
+
+      <section class="section">
+        <h2>2. Publish private HTTPS</h2>
+        <p>Bind Pocket ID to loopback and use Tailscale Serve as the TLS endpoint. On a host Tailscale node, the basic form is:</p>
+        <pre><code>tailscale serve 1411
+tailscale serve status</code></pre>
+        <p>In a container-sidecar deployment, route a dedicated Serve HTTPS port to the reverse-proxy listener for Pocket ID. Do not enable Funnel: the issuer is intended only for authenticated tailnet members.</p>
+      </section>
+
+      <section class="section">
+        <h2>3. Register every internal application</h2>
+        <ol>
+          <li>Open Pocket ID through its private HTTPS URL and complete <code>/setup</code>.</li>
+          <li>Create one OIDC client per application.</li>
+          <li>Copy the application's exact callback URL from its documentation.</li>
+          <li>Store that application's client secret in its local secret configuration.</li>
+          <li>Configure scopes such as <code>openid profile email groups</code> when supported.</li>
+        </ol>
+        <p>The user's browser must reach both the application and Pocket ID. The application backend must also reach Pocket ID for discovery, token exchange, and signing keys.</p>
+      </section>
+
+      <section class="section">
+        <h2>Applications without native OIDC</h2>
+        <p>Place OAuth2 Proxy, Caddy Security, Tinyauth, or a compatible forward-auth component in front of the application. The proxy becomes the Pocket ID OIDC client and passes authenticated identity to the upstream service.</p>
+      </section>
+
+      <section class="section">
+        <h2>Operational checks</h2>
+        <pre><code>docker compose ps pocket-id
+curl -fsS "$POCKET_ID_APP_URL/.well-known/openid-configuration"
+tailscale serve status</code></pre>
+        <p>Test a new browser session and a second tailnet user before relying on the setup. Pocket ID downtime blocks new application sessions, while Tailscale connectivity and already-issued application cookies have their own lifetimes.</p>
+      </section>
+
+      <section class="section">
+        <h2>Further reading</h2>
+        <ul>
+          <li><a href="https://pocket-id.org/docs/setup/installation">Pocket ID installation</a></li>
+          <li><a href="https://pocket-id.org/docs/guides/proxy-services">Pocket ID proxy services</a></li>
+          <li><a href="https://tailscale.com/docs/features/tailscale-serve">Tailscale Serve</a></li>
+          <li><a href="./extensions.html">LocalLink out-of-box extensions</a></li>
+        </ul>
+      </section>
+    </main>
+  </body>
+</html>

@@ -25,7 +25,7 @@ test('buildPhase2Advisor respects opt-out configuration', async () => {
   assert.match(advisor.summary, /disabled/i);
 });
 
-test('buildPhase2Advisor surfaces detected tailscale and reverse proxy options', async () => {
+test('buildPhase2Advisor surfaces detected tailscale, reverse proxy, and private application SSO options', async () => {
   const commandRunner: CommandRunner = async (command, args) => {
     if (command === 'tailscale') {
       return result({
@@ -45,6 +45,7 @@ test('buildPhase2Advisor surfaces detected tailscale and reverse proxy options',
     {
       LOCALLINK_ENABLE_PHASE2_ADVISOR: 'true',
       LOCALLINK_PHASE2_PREFERRED_EDGE: 'tailscale',
+      POCKET_ID_APP_URL: 'https://id.example.org',
     },
     commandRunner,
   );
@@ -54,4 +55,18 @@ test('buildPhase2Advisor surfaces detected tailscale and reverse proxy options',
   assert.equal(advisor.options[0].status, 'available');
   assert.equal(advisor.options[0].recommended, true);
   assert.equal(advisor.options[1].status, 'available');
+  const pocketId = advisor.options.find((option) => option.id === 'pocket-id');
+  assert.equal(pocketId?.status, 'available');
+  assert.equal(pocketId?.detectedValue, 'https://id.example.org');
+});
+
+test('buildPhase2Advisor keeps placeholder Pocket ID issuers in setup state', async () => {
+  const commandRunner: CommandRunner = async (command) => result({
+    ok: false,
+    code: null,
+    stderr: `spawn ${command} ENOENT`,
+    error: `spawn ${command} ENOENT`,
+  });
+  const advisor = await buildPhase2Advisor({ POCKET_ID_APP_URL: 'https://id.example.com' }, commandRunner);
+  assert.equal(advisor.options.find((option) => option.id === 'pocket-id')?.status, 'optional');
 });

@@ -48,6 +48,7 @@ test('HTTP server exposes the dashboard state endpoint', async () => {
   const payload = response.json();
   assert.equal(payload.app.name, 'LocalLink');
   assert.ok(Array.isArray(payload.services));
+  assert.ok(Array.isArray(payload.extensions));
   assert.equal(payload.pwa.manifest, 'Valid');
   assert.ok(Array.isArray(payload.diagnostics.checks));
   assert.ok(payload.resources.system.cpuPercent >= 0);
@@ -72,6 +73,17 @@ test('HTTP server exposes static project docs', async () => {
 
   assert.equal(response.statusCode, 200);
   assert.match(response.body, /LocalLink Documentation/);
+
+  const pocketIdGuide = await server.inject({
+    method: 'GET',
+    url: '/docs/pocket-id-tailscale.html',
+  });
+  assert.equal(pocketIdGuide.statusCode, 200);
+  assert.match(pocketIdGuide.body, /Private application SSO with Pocket ID and Tailscale/);
+
+  const extensionGuide = await server.inject({ method: 'GET', url: '/docs/extensions.html' });
+  assert.equal(extensionGuide.statusCode, 200);
+  assert.match(extensionGuide.body, /How LocalLink out-of-box extensions work/);
 
   await server.close();
 });
@@ -104,10 +116,11 @@ test('HTTP server persists workspace workflows', async () => {
   const preferences = await server.inject({
     method: 'PATCH',
     url: '/api/workspace/settings',
-    payload: { edgeEnabled: true },
+    payload: { edgeEnabled: true, pocketIdEnabled: false },
   });
   assert.equal(preferences.statusCode, 200);
   assert.equal(preferences.json().edgeEnabled, true);
+  assert.equal(preferences.json().pocketIdEnabled, false);
 
   const runtime = await server.inject({
     method: 'POST',

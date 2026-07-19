@@ -44,6 +44,7 @@ const processTerminateSchema = z.object({
 const preferencesSchema = z.object({
   dashboardEnabled: z.boolean().optional(),
   proxyEnabled: z.boolean().optional(),
+  pocketIdEnabled: z.boolean().optional(),
   edgeEnabled: z.boolean().optional(),
 });
 

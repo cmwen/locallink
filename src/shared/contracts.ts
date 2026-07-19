@@ -3,6 +3,7 @@ export const TARGET_FILES = [
   '.env.example',
   'docker-compose.yml',
   'locallink.services.yml',
+  'locallink.extensions.yml',
   'ecosystem.config.js',
   'mcp-registry.json',
 ] as const;
@@ -16,6 +17,8 @@ export type LogLevel = 'info' | 'warn' | 'error';
 export type DiagnosticStatus = 'ok' | 'warn' | 'error';
 export type ResourceScope = 'workspace' | 'host';
 export type AttributionConfidence = 'exact' | 'heuristic' | 'unknown';
+export type ExtensionKind = 'dashboard' | 'reverse-proxy' | 'network-edge' | 'identity-provider' | 'observability' | 'custom';
+export type ExtensionStatus = 'ready' | 'setup' | 'disabled';
 
 export interface FilterOption {
   label: string;
@@ -106,6 +109,7 @@ export interface ServiceDefinition {
 }
 
 export interface ServiceRecord extends ServiceDefinition {
+  edgeUrls?: string[];
   status: 'running' | 'stopped' | 'degraded' | 'unknown';
   statusLabel: 'Up' | 'Down' | 'Restarting' | 'Unknown';
   statusTone: StatusTone;
@@ -140,6 +144,7 @@ export interface DashboardState {
   };
   diagnostics: StartupDiagnostics;
   phase2: Phase2Advisor;
+  extensions: WorkspaceExtension[];
   filters: FilterOption[];
   services: ServiceRecord[];
   tools: ToolSummary[];
@@ -148,6 +153,21 @@ export interface DashboardState {
   resources: ResourceDashboard;
   constraints: InfoCard[];
   timeline: InfoCard[];
+}
+
+export interface WorkspaceExtension {
+  id: string;
+  name: string;
+  kind: ExtensionKind;
+  enabled: boolean;
+  detail: string;
+  status: ExtensionStatus;
+  command?: string;
+  exposedPorts: string[];
+  requiredEnv: string[];
+  missingEnv: string[];
+  dependsOn: string[];
+  docsUrl?: string;
 }
 
 export interface ServiceBlueprint {
@@ -301,6 +321,7 @@ export interface PortReservation {
 export interface WorkspacePreferences {
   dashboardEnabled: boolean;
   proxyEnabled: boolean;
+  pocketIdEnabled: boolean;
   edgeEnabled: boolean;
 }
 
@@ -390,4 +411,5 @@ export interface TaskExecutionResult {
 export interface ProjectModel {
   env: Record<string, string>;
   definitions: ServiceDefinition[];
+  extensions: WorkspaceExtension[];
 }

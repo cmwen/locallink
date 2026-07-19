@@ -129,6 +129,38 @@ test('ConfigRepository loads optional service metadata from ecosystem and compos
   assert.equal(postgres.docsUrl, 'https://example.com/postgres');
 });
 
+test('ConfigRepository loads extension declarations and reports missing setup values', async () => {
+  const root = await createTempProject();
+  await fs.writeFile(path.join(root, '.env'), 'POCKET_ID_PORT=1411\nPOCKET_ID_APP_URL=https://pocket-id.example-tailnet.ts.net\n', 'utf8');
+  await fs.writeFile(
+    path.join(root, 'locallink.extensions.yml'),
+    [
+      'extensions:',
+      '  - id: pocket-id',
+      '    name: Pocket ID',
+      '    kind: identity-provider',
+      '    enabled: true',
+      '    exposedPorts:',
+      '      - "${POCKET_ID_PORT:-1411}"',
+      '    requiredEnv:',
+      '      - POCKET_ID_APP_URL',
+      '      - POCKET_ID_ENCRYPTION_KEY',
+      '    dependsOn:',
+      '      - tailscale',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const model = await new ConfigRepository(root).loadProjectModel();
+  const pocketId = model.extensions[0];
+  assert.equal(pocketId?.name, 'Pocket ID');
+  assert.equal(pocketId?.status, 'setup');
+  assert.deepEqual(pocketId?.missingEnv, ['POCKET_ID_APP_URL', 'POCKET_ID_ENCRYPTION_KEY']);
+  assert.deepEqual(pocketId?.exposedPorts, ['1411']);
+  assert.deepEqual(pocketId?.dependsOn, ['tailscale']);
+});
+
 test('ConfigRepository loads locallink.services.yml and resolves app-owned Dockerfile.locallink', async () => {
   const root = await createTempProject();
   const appRoot = path.join(root, 'apps', 'api');

@@ -1,0 +1,36 @@
+# LocalLink out-of-box workspace capabilities.
+extensions:
+  - id: dashboard
+    name: Dashboard
+    kind: dashboard
+    enabled: true
+    exposedPorts:
+      - "${LOCALLINK_WEB_PORT:-4010}"
+    docsUrl: /docs/extensions.html#dashboard
+
+  - id: proxy
+    name: Reverse Proxy
+    kind: reverse-proxy
+    enabled: true
+    docsUrl: /docs/extensions.html#reverse-proxy
+
+  - id: tailscale
+    name: Tailscale Private Edge
+    kind: network-edge
+    enabled: true
+    command: tailscale
+    docsUrl: https://tailscale.com/docs/features/tailscale-serve
+
+  - id: pocket-id
+    name: Pocket ID
+    kind: identity-provider
+    enabled: true
+    detail: Private passkey SSO for internal applications after Tailscale grants network access.
+    dependsOn:
+      - tailscale
+    requiredEnv:
+      - POCKET_ID_APP_URL
+      - POCKET_ID_ENCRYPTION_KEY
+    exposedPorts:
+      - "${POCKET_ID_PORT:-1411}"
+    docsUrl: /docs/pocket-id-tailscale.html

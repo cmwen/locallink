@@ -1,5 +1,37 @@
 # LocalLink Phase 1 sample Docker topology
 services:
+  pocket-id:
+    image: ghcr.io/pocket-id/pocket-id:v2
+    container_name: locallink-pocket-id
+    profiles: [identity]
+    restart: unless-stopped
+    environment:
+      APP_URL: ${POCKET_ID_APP_URL:-https://pocket-id.example-tailnet.ts.net}
+      ENCRYPTION_KEY: ${POCKET_ID_ENCRYPTION_KEY:-}
+      TRUST_PROXY: ${POCKET_ID_TRUST_PROXY:-false}
+      ALLOW_INSECURE_CALLBACK_URLS: "false"
+    ports:
+      - "127.0.0.1:${POCKET_ID_PORT:-1411}:1411"
+    volumes:
+      - pocket-id-data:/app/data
+    healthcheck:
+      test: ["CMD", "/app/pocket-id", "healthcheck"]
+      interval: 90s
+      timeout: 5s
+      retries: 2
+      start_period: 10s
+    labels:
+      locallink.name: Pocket ID
+      locallink.group: docker
+      locallink.runtime: docker
+      locallink.downstream: Internal OIDC applications
+      locallink.envVars: POCKET_ID_APP_URL,POCKET_ID_PORT,POCKET_ID_ENCRYPTION_KEY,POCKET_ID_TRUST_PROXY
+      locallink.docsUrl: https://pocket-id.org/docs/setup/installation
+      locallink.notes: Default private passkey SSO extension for internal applications.
+      locallink.detail: Runs on loopback and is published privately through Tailscale Serve; Tailscale keeps its existing login provider.
+      locallink.tags: docker,identity,oidc,passkeys
+      locallink.portEnv: POCKET_ID_PORT
+
   postgres:
     image: postgres:16-alpine
     container_name: locallink-postgres
@@ -21,3 +53,6 @@ services:
       locallink.detail: Keeps database dependencies visible without leaving the local workspace.
       locallink.tags: docker,db,stable
       locallink.portEnv: POSTGRES_PORT
+
+volumes:
+  pocket-id-data:

@@ -16,16 +16,90 @@ LOCALLINK_WEB_PORT=4010
 LOCALLINK_DEFAULT_PORT_START=5000
 LOCALLINK_ENABLE_PHASE2_ADVISOR=true
 LOCALLINK_PHASE2_PREFERRED_EDGE=auto
+POCKET_ID_APP_URL=https://pocket-id.example-tailnet.ts.net
+POCKET_ID_PORT=1411
+# Generate locally with: openssl rand -base64 32
+POCKET_ID_ENCRYPTION_KEY=
+POCKET_ID_TRUST_PROXY=false
 `;
 
 const EMPTY_COMPOSE_TEMPLATE = `# LocalLink starter Docker topology
-services: {}
+services:
+  pocket-id:
+    image: ghcr.io/pocket-id/pocket-id:v2
+    profiles: [identity]
+    restart: unless-stopped
+    environment:
+      APP_URL: \${POCKET_ID_APP_URL:-https://pocket-id.example-tailnet.ts.net}
+      ENCRYPTION_KEY: \${POCKET_ID_ENCRYPTION_KEY:-}
+      TRUST_PROXY: \${POCKET_ID_TRUST_PROXY:-false}
+      ALLOW_INSECURE_CALLBACK_URLS: "false"
+    ports:
+      - "127.0.0.1:\${POCKET_ID_PORT:-1411}:1411"
+    volumes:
+      - pocket-id-data:/app/data
+    healthcheck:
+      test: ["CMD", "/app/pocket-id", "healthcheck"]
+      interval: 90s
+      timeout: 5s
+      retries: 2
+      start_period: 10s
+    labels:
+      locallink.name: Pocket ID
+      locallink.group: docker
+      locallink.runtime: docker
+      locallink.envVars: POCKET_ID_APP_URL,POCKET_ID_PORT,POCKET_ID_ENCRYPTION_KEY,POCKET_ID_TRUST_PROXY
+      locallink.docsUrl: https://pocket-id.org/docs/setup/installation
+      locallink.notes: Default private passkey SSO extension for internal applications.
+      locallink.detail: Runs on loopback and is published privately through Tailscale Serve; Tailscale keeps its existing login provider.
+      locallink.tags: docker,identity,oidc,passkeys
+      locallink.portEnv: POCKET_ID_PORT
+
+volumes:
+  pocket-id-data:
 `;
 
 const MCP_REGISTRY_TEMPLATE = `{
   "servers": [],
   "volumes": []
 }
+`;
+
+const EXTENSIONS_TEMPLATE = `# LocalLink out-of-box workspace capabilities
+extensions:
+  - id: dashboard
+    name: Dashboard
+    kind: dashboard
+    enabled: true
+    exposedPorts:
+      - "\${LOCALLINK_WEB_PORT:-4010}"
+    docsUrl: /docs/extensions.html#dashboard
+
+  - id: proxy
+    name: Reverse Proxy
+    kind: reverse-proxy
+    enabled: true
+    docsUrl: /docs/extensions.html#reverse-proxy
+
+  - id: tailscale
+    name: Tailscale Private Edge
+    kind: network-edge
+    enabled: true
+    command: tailscale
+    docsUrl: https://tailscale.com/docs/features/tailscale-serve
+
+  - id: pocket-id
+    name: Pocket ID
+    kind: identity-provider
+    enabled: true
+    dependsOn:
+      - tailscale
+    requiredEnv:
+      - POCKET_ID_APP_URL
+      - POCKET_ID_ENCRYPTION_KEY
+    exposedPorts:
+      - "\${POCKET_ID_PORT:-1411}"
+    docsUrl: /docs/pocket-id-tailscale.html
 `;
 
 const EMPTY_ECOSYSTEM_TEMPLATE = `// LocalLink starter PM2 / task topology.
@@ -95,6 +169,7 @@ This workspace is orchestrated by LocalLink.
 
 - Phase 1 is localhost-only by default.
 - Treat Tailscale / reverse-proxy recommendations as optional Phase 2 edge capabilities.
+- Pocket ID is the default application identity extension. Keep it private, publish it through Tailscale Serve HTTPS, and register internal applications as OIDC clients.
 - Use relative paths or translated WSL paths for external volume mappings.
 `;
 
@@ -127,6 +202,7 @@ This folder was initialized by \`locallink init\`.
 - \`.gitignore\` — starter ignore rules for secrets and generated output
 - \`Taskfile.yml\` — starter workspace orchestration tasks
 - \`docker-compose.yml\` — Docker services and LocalLink labels
+- \`locallink.extensions.yml\` — out-of-box capability declarations and readiness requirements
 - \`ecosystem.config.js\` — PM2 / task-backed services plus LocalLink metadata
 - \`mcp-registry.json\` — optional registry for local-build MCP servers and mapped volumes
 - \`AGENTS.md\` — LocalLink agent conventions and guardrails
@@ -134,18 +210,19 @@ This folder was initialized by \`locallink init\`.
 
 ## Start here
 
-1. Add your Docker services to \`docker-compose.yml\`.
-2. Add your PM2 or task-backed services to \`ecosystem.config.js\`.
-3. For native Node or Python services, create a Dockerfile that declares:
+1. Configure the default Pocket ID extension in \`.env\`, start it with \`docker compose --profile identity up -d pocket-id\`, then publish its loopback port with Tailscale Serve.
+2. Add your Docker services to \`docker-compose.yml\`.
+3. Add your PM2 or task-backed services to \`ecosystem.config.js\`.
+4. For native Node or Python services, create a Dockerfile that declares:
    - \`EXPOSE\` for the local service port
    - \`ENV\` keys for required runtime configuration
    - \`CMD\` / \`ENTRYPOINT\` for the launch contract
-4. Enrich each service with optional metadata such as:
+5. Enrich each service with optional metadata such as:
    - \`dependsOn\`
    - \`downstream\`
    - \`envVars\`
    - \`docsUrl\`
-5. Run LocalLink:
+6. Run LocalLink:
 
 \`\`\`bash
 locallink web
@@ -155,6 +232,8 @@ locallink mcp
 ## Helpful notes
 
 - Set \`LOCALLINK_ENABLE_PHASE2_ADVISOR=false\` in \`.env\` to opt out of Tailscale / reverse-proxy suggestions.
+- Pocket ID needs a stable private Tailscale Serve HTTPS \`POCKET_ID_APP_URL\` and a locally generated \`POCKET_ID_ENCRYPTION_KEY\`.
+- Keep your existing Tailscale login provider. Pocket ID authenticates users into internal applications after Tailscale grants network access.
 - Use \`locallink web --log-level debug\` (or \`LOCALLINK_LOG_LEVEL=debug\`) when you want stderr traces for startup, workspace parsing, and runtime probing.
 - LocalLink will surface a blueprint compliance warning when a local PM2 or task-backed service does not declare a readable Dockerfile blueprint.
 - Dashboard state is rehydrated from external runtime managers on each refresh/startup; services LocalLink cannot verify confidently are shown as \`Unknown\`.
@@ -191,6 +270,10 @@ export async function initializeWorkspace(root: string): Promise<InitWorkspaceRe
     {
       target: path.join(root, 'docker-compose.yml'),
       content: EMPTY_COMPOSE_TEMPLATE,
+    },
+    {
+      target: path.join(root, 'locallink.extensions.yml'),
+      content: EXTENSIONS_TEMPLATE,
     },
     {
       target: path.join(root, 'ecosystem.config.js'),

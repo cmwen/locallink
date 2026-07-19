@@ -186,9 +186,10 @@
       "memory": "—",
       "uptime": "—",
       "notes": "Phase 2 bridge placeholder.",
-      "detail": "Kept visible as a future network edge component until a trustworthy runtime probe exists.",
+      "detail": "Tailscale edge placeholder that privately publishes Pocket ID and internal application origins.",
       "tags": "future · gateway · off",
-      "docsUrl": "https://tailscale.com/kb"
+      "dependsOn": ["Pocket ID"],
+      "docsUrl": "https://tailscale.com/docs/features/tailscale-serve"
     }
   ],
   "tools": [

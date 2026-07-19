@@ -7,6 +7,7 @@ import { LogBroker } from '../logs/broker';
 import { enrichServiceDefinition } from './lego';
 import { PortAllocator } from '../ports/allocator';
 import { buildPhase2Advisor } from './phase2';
+import { discoverServiceEdgeUrls } from './network-edge';
 import { selectPm2Row, type Pm2Row } from './pm2';
 import { buildResourceDashboard } from './resources';
 import { normalizeLoopbackBindHost } from '../shared/network';
@@ -343,12 +344,13 @@ export class RuntimeResolver {
     await this.configRepository.hydrateProcessEnv();
     const model = await this.configRepository.loadProjectModel();
     const definitions = await Promise.all(model.definitions.map((definition) => enrichServiceDefinition(definition)));
-    const [dockerStates, pm2States, windowsStates, phase2, resources] = await Promise.all([
+    const [dockerStates, pm2States, windowsStates, phase2, resources, edgeUrlsByService] = await Promise.all([
       collectDockerStates(this.root, definitions, this.commandRunner),
       collectPm2States(definitions, this.commandRunner),
       collectWindowsStates(definitions, this.commandRunner),
-      buildPhase2Advisor(model.env),
+      buildPhase2Advisor(model.env, this.commandRunner),
       buildResourceDashboard(this.commandRunner, definitions),
+      discoverServiceEdgeUrls(model.extensions, definitions, this.commandRunner),
     ]);
 
     const services = definitions.map<ServiceRecord>((definition) => {
@@ -368,6 +370,7 @@ export class RuntimeResolver {
       return {
         ...definition,
         port: definition.port || '—',
+        edgeUrls: edgeUrlsByService.get(definition.id),
         ...runtimeState,
         reviewReasons,
       };
@@ -461,6 +464,7 @@ export class RuntimeResolver {
       },
       diagnostics,
       phase2,
+      extensions: model.extensions,
       filters: [
         { label: 'All', value: 'all' },
         { label: 'Docker', value: 'docker' },
@@ -472,7 +476,7 @@ export class RuntimeResolver {
         {
           name: 'read_workspace_blueprint',
           input: 'None',
-          detail: 'Reads .env, docker-compose.yml, ecosystem.config.js, and mcp-registry.json as a structural snapshot.',
+          detail: 'Reads environment, service, extension, runtime, and MCP declarations as a structural snapshot.',
         },
         {
           name: 'patch_workspace_blueprint',

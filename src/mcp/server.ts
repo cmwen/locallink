@@ -33,7 +33,7 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
   server.registerTool(
     'read_workspace_blueprint',
     {
-      description: 'Return a structural view of .env, docker-compose.yml, ecosystem.config.js, and mcp-registry.json.',
+      description: 'Return a structural view of workspace environment, service, extension, runtime, and MCP declarations.',
     },
     readWorkspaceBlueprint,
   );
@@ -69,7 +69,7 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
   server.registerTool(
     'patch_workspace_blueprint',
     {
-      description: 'Safely update .env, .env.example, docker-compose.yml, ecosystem.config.js, or mcp-registry.json with raw content or a structured patch.',
+      description: 'Safely update a supported workspace environment, service, extension, runtime, or MCP declaration with raw content or a structured patch.',
       inputSchema: z
         .object({
           target_file: z.enum(TARGET_FILES),

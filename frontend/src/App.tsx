@@ -138,6 +138,7 @@ export function App() {
   const [extensionState, setExtensionState] = useState({
     dashboard: true,
     proxy: true,
+    pocketId: true,
     edge: false,
     updateQueued: false,
   });
@@ -242,6 +243,7 @@ export function App() {
         setExtensionState({
           dashboard: persisted.preferences.dashboardEnabled,
           proxy: persisted.preferences.proxyEnabled,
+          pocketId: persisted.preferences.pocketIdEnabled,
           edge: persisted.preferences.edgeEnabled,
           updateQueued: persisted.versionUpdates.some((update) => update.status === 'queued'),
         });
@@ -436,11 +438,17 @@ export function App() {
     }
   }
 
-  async function updateExtension(key: 'dashboard' | 'proxy' | 'edge') {
+  async function updateExtension(key: 'dashboard' | 'proxy' | 'pocketId' | 'edge') {
     const next = !extensionState[key];
     setExtensionState((current) => ({ ...current, [key]: next }));
     if (source === 'api') {
-      const preferenceKey = key === 'dashboard' ? 'dashboardEnabled' : key === 'proxy' ? 'proxyEnabled' : 'edgeEnabled';
+      const preferenceKey = key === 'dashboard'
+        ? 'dashboardEnabled'
+        : key === 'proxy'
+          ? 'proxyEnabled'
+          : key === 'pocketId'
+            ? 'pocketIdEnabled'
+            : 'edgeEnabled';
       try {
         await updateWorkspacePreferences({ [preferenceKey]: next });
         setStatus('Extension preference persisted to this workspace.');
@@ -531,6 +539,7 @@ export function App() {
           attentionCount={attentionItems.length}
           portsHeld={state.ports.recent.length || state.ports.busy.length}
           pendingServices={pendingServices}
+          networkEdgeEnabled={extensionState.edge && state.extensions.some((extension) => extension.kind === 'network-edge' && extension.enabled)}
           setHealthFilter={setHealthFilter}
           selectService={(id) => {
             setSelectedServiceId(id);
@@ -668,6 +677,7 @@ interface CurrentWorkspaceProps {
   attentionCount: number;
   portsHeld: number;
   pendingServices: Set<string>;
+  networkEdgeEnabled: boolean;
   setHealthFilter: (filter: ServiceHealthFilter) => void;
   selectService: (id: string) => void;
   mobileServiceDetail: boolean;
@@ -688,6 +698,7 @@ function CurrentWorkspace({
   attentionCount,
   portsHeld,
   pendingServices,
+  networkEdgeEnabled,
   setHealthFilter,
   selectService,
   mobileServiceDetail,
@@ -762,6 +773,7 @@ function CurrentWorkspace({
               service={selectedService}
               services={services}
               pending={pendingServices.has(selectedService.name)}
+              networkEdgeEnabled={networkEdgeEnabled}
               selectService={selectService}
               runServiceAction={runServiceAction}
               openSafeStop={openSafeStop}
@@ -782,6 +794,7 @@ function ServiceDetail({
   service,
   services,
   pending,
+  networkEdgeEnabled,
   selectService,
   runServiceAction,
   openSafeStop,
@@ -792,6 +805,7 @@ function ServiceDetail({
   service: ServiceRecord;
   services: ServiceRecord[];
   pending: boolean;
+  networkEdgeEnabled: boolean;
   selectService: (id: string) => void;
   runServiceAction: (service: ServiceRecord, action: TaskAction) => Promise<void>;
   openSafeStop: (service: ServiceRecord) => void;
@@ -804,6 +818,7 @@ function ServiceDetail({
   const runtimeLabel = service.runtime ? `${service.runtime.toUpperCase()} / ${runtimeIdentity}` : runtimeIdentity;
   const compliance = service.compliance?.summary || (service.blueprint ? 'Blueprint parsed' : 'No blueprint check');
   const attentionReasons = (service.reviewReasons || []).filter((reason) => !/^No service documentation/i.test(reason));
+  const mainPageUrl = networkEdgeEnabled ? service.edgeUrls?.[0] : undefined;
 
   function serviceLink(name: string) {
     const target = services.find((candidate) => candidate.name === name);
@@ -825,6 +840,11 @@ function ServiceDetail({
           <p>{service.detail}</p>
         </div>
         <div className="status-row">
+          {mainPageUrl ? (
+            <a className="btn primary" href={mainPageUrl} target="_blank" rel="noreferrer" title={`Open ${service.name} through the Network Edge`}>
+              Open main page
+            </a>
+          ) : null}
           <span className={`pill ${toneClass(service.statusTone)}`}>{pending ? 'updating' : service.statusLabel.toLowerCase()}</span>
           <span className="pill mono">{formatPort(service.port)}</span>
         </div>
@@ -924,28 +944,52 @@ function ExtensionsWorkspace({
 }: {
   state: DashboardState;
   services: ServiceRecord[];
-  extensionState: { dashboard: boolean; proxy: boolean; edge: boolean; updateQueued: boolean };
+  extensionState: { dashboard: boolean; proxy: boolean; pocketId: boolean; edge: boolean; updateQueued: boolean };
   query: string;
-  updateExtension: (key: 'dashboard' | 'proxy' | 'edge') => Promise<void>;
+  updateExtension: (key: 'dashboard' | 'proxy' | 'pocketId' | 'edge') => Promise<void>;
   queueUpdate: () => Promise<void>;
   openService: (id: string) => void;
 }) {
-  const edgeOption = state.phase2.options.find((option) => option.id === 'tailscale' || option.id === 'reverse-proxy');
-  const extensions = [
-    { key: 'dashboard' as const, title: 'Dashboard', detail: 'Local command center.', enabled: extensionState.dashboard, warn: false },
-    { key: 'proxy' as const, title: 'Proxy', detail: 'Stable URLs for local services.', enabled: extensionState.proxy, warn: false },
-    { key: 'edge' as const, title: 'Network edge', detail: edgeOption?.title || 'Temporary share workflow.', enabled: extensionState.edge, warn: true },
+  const edgeOption = state.phase2.options.find((option) => option.id === 'tailscale')
+    || state.phase2.options.find((option) => option.id === 'reverse-proxy');
+  const pocketIdOption = state.phase2.options.find((option) => option.id === 'pocket-id');
+  const declaredExtensions = state.extensions.length > 0 ? state.extensions : [
+    { id: 'dashboard', name: 'Dashboard', kind: 'dashboard' as const, enabled: true, detail: 'Local command center.', status: 'ready' as const, exposedPorts: [], requiredEnv: [], missingEnv: [], dependsOn: [] },
+    { id: 'proxy', name: 'Proxy', kind: 'reverse-proxy' as const, enabled: true, detail: 'Stable URLs for local services.', status: 'ready' as const, exposedPorts: [], requiredEnv: [], missingEnv: [], dependsOn: [] },
+    { id: 'pocket-id', name: 'Pocket ID', kind: 'identity-provider' as const, enabled: true, detail: 'Private passkey SSO for internal applications.', status: pocketIdOption?.status === 'available' ? 'ready' as const : 'setup' as const, exposedPorts: [], requiredEnv: [], missingEnv: [], dependsOn: [] },
+    { id: 'tailscale', name: 'Network edge', kind: 'network-edge' as const, enabled: true, detail: edgeOption?.title || 'Private tailnet access.', status: edgeOption?.status === 'available' ? 'ready' as const : 'setup' as const, exposedPorts: [], requiredEnv: [], missingEnv: [], dependsOn: [] },
   ];
+  const extensions = declaredExtensions.map((extension) => {
+    const key = extension.id === 'dashboard' || extension.kind === 'dashboard'
+      ? 'dashboard' as const
+      : extension.id === 'pocket-id' || extension.kind === 'identity-provider'
+        ? 'pocketId' as const
+        : extension.kind === 'reverse-proxy'
+          ? 'proxy' as const
+          : extension.kind === 'network-edge'
+            ? 'edge' as const
+            : undefined;
+    const enabled = extension.enabled && (key ? extensionState[key] : true);
+    const setupDetail = extension.missingEnv.length > 0 ? ` Missing: ${extension.missingEnv.join(', ')}.` : '';
+    return {
+      id: extension.id,
+      key,
+      title: extension.name,
+      detail: `${extension.detail}${setupDetail}`,
+      enabled,
+      warn: extension.status === 'setup',
+    };
+  });
   const visibleExtensions = extensions.filter((extension) => matchesWorkspaceQuery(query, extension.title, extension.detail, extension.enabled ? 'on enabled' : 'off disabled'));
   const ports = state.ports.recent
     .filter((entry) => matchesWorkspaceQuery(query, entry.service, entry.port, entry.status, 'port'))
     .slice(0, 5);
-  const showConfig = matchesWorkspaceQuery(query, 'extension config', 'dashboard', 'proxy', 'network edge', state.phase2.summary);
+  const showConfig = matchesWorkspaceQuery(query, 'extension config', 'dashboard', 'proxy', 'pocket id', 'identity provider', 'tailscale serve', 'network edge', state.phase2.summary);
   const showPorts = ports.length > 0 || matchesWorkspaceQuery(query, 'port list', 'configured ports', 'next open port');
   const showVersion = matchesWorkspaceQuery(query, 'version workflow', 'CLI 0.12.4 0.13.0', 'schedule update', 'cancel update');
   const hasResults = visibleExtensions.length > 0 || showConfig || showPorts || showVersion;
 
-  function toggle(key: 'dashboard' | 'proxy' | 'edge') {
+  function toggle(key: 'dashboard' | 'proxy' | 'pocketId' | 'edge') {
     void updateExtension(key);
   }
 
@@ -956,13 +1000,13 @@ function ExtensionsWorkspace({
           <div className="label">Connections workspace</div>
           <h1>Connections and config</h1>
         </div>
-        <span className="pill ok">changes save immediately</span>
+        <span className="pill ok">declared per workspace</span>
       </div>
       <div className="pane-body stack">
         {visibleExtensions.length > 0 ? (
           <section className="extension-row" aria-label="Connections">
             {visibleExtensions.map((extension) => (
-              <ExtensionButton key={extension.key} title={extension.title} detail={extension.detail} enabled={extension.enabled} warn={extension.warn} onChange={() => toggle(extension.key)} />
+              <ExtensionButton key={extension.id} title={extension.title} detail={extension.detail} enabled={extension.enabled} warn={extension.warn} onChange={extension.key ? () => toggle(extension.key!) : undefined} />
             ))}
           </section>
         ) : null}
@@ -971,12 +1015,22 @@ function ExtensionsWorkspace({
           {showConfig ? <article className="config-card">
             <strong>Extension config</strong>
             <p>
-              Dashboard and proxy preferences are persisted per workspace. Network edge remains opt-in until it is explicitly confirmed.
+              Extension capabilities come from <span className="mono">locallink.extensions.yml</span>. Known dashboard preferences are saved locally; runtime enablement and secrets remain declaration-first.
             </p>
             <div className="config-lines">
-              <ConfigLine label="Dashboard" value={`route: /dashboard / refresh: local events / auth: local session`} />
-              <ConfigLine label="Proxy" value={`host: *.localhost / tls: off / target: active service port`} />
-              <ConfigLine label="Network edge" value={edgeOption?.detail || state.phase2.summary || 'No edge tooling detected yet.'} />
+              {declaredExtensions.map((extension) => (
+                <ConfigLine
+                  key={extension.id}
+                  label={extension.name}
+                  value={`${extension.status}${extension.exposedPorts.length ? ` / ports: ${extension.exposedPorts.join(', ')}` : ''}${extension.dependsOn.length ? ` / needs: ${extension.dependsOn.join(', ')}` : ''}`}
+                />
+              ))}
+              <ConfigLine label="Pocket ID issuer" value={pocketIdOption?.detectedValue || 'Set POCKET_ID_APP_URL to the private Tailscale Serve HTTPS URL.'} />
+            </div>
+            <div className="actions">
+              <a className="btn" href="./docs/pocket-id-tailscale.html" target="_blank" rel="noreferrer">Private SSO setup</a>
+              <a className="btn ghost" href="./docs/extensions.html" target="_blank" rel="noreferrer">Extension guide</a>
+              <a className="btn ghost" href="https://tailscale.com/docs/features/tailscale-serve" target="_blank" rel="noreferrer">Tailscale Serve docs</a>
             </div>
           </article> : null}
 
@@ -1459,7 +1513,7 @@ function ExtensionButton({
   detail: string;
   enabled: boolean;
   warn?: boolean;
-  onChange: () => void;
+  onChange?: () => void;
 }) {
   return (
     <label className="extension">
@@ -1468,7 +1522,7 @@ function ExtensionButton({
         <span>{detail}</span>
       </span>
       <span className={`pill ${enabled ? 'ok' : warn ? 'warn' : ''}`}>{enabled ? 'on' : 'off'}</span>
-      <input className="extension-switch" type="checkbox" role="switch" checked={enabled} onChange={onChange} aria-label={`${title}: ${enabled ? 'on' : 'off'}`} />
+      <input className="extension-switch" type="checkbox" role="switch" checked={enabled} disabled={!onChange} onChange={onChange} aria-label={`${title}: ${enabled ? 'on' : 'off'}`} />
     </label>
   );
 }

@@ -12,6 +12,7 @@ import type {
 const DEFAULT_PREFERENCES: WorkspacePreferences = {
   dashboardEnabled: true,
   proxyEnabled: true,
+  pocketIdEnabled: true,
   edgeEnabled: false,
 };
 

@@ -19,6 +19,7 @@ import {
   type ServiceDefinition,
   type ServiceGroup,
   type TargetFile,
+  type WorkspaceExtension,
   type WriteInfraConfigInput,
   type WriteInfraConfigResult,
 } from '../shared/contracts';
@@ -244,6 +245,57 @@ function normalizeMetadataList(input: unknown): string[] {
   }
 
   return [];
+}
+
+function resolveEnvValue(input: unknown, env: Record<string, string>): string {
+  const value = String(input ?? '');
+  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g, (_match, key: string, fallback = '') => env[key] || fallback);
+}
+
+function isConfiguredEnvValue(value: string | undefined): boolean {
+  if (!value?.trim()) return false;
+  return !/(?:example\.com|example-tailnet|change[-_]?me|<[^>]+>)/i.test(value);
+}
+
+function extensionDefaultDetail(kind: WorkspaceExtension['kind']): string {
+  switch (kind) {
+    case 'dashboard': return 'LocalLink control surface for services, connections, and resources.';
+    case 'reverse-proxy': return 'Routes stable private origins to local application ports.';
+    case 'network-edge': return 'Publishes selected services privately to an authenticated tailnet.';
+    case 'identity-provider': return 'Provides application-level OIDC sign-in after the network gate.';
+    case 'observability': return 'Collects runtime telemetry for the workspace.';
+    default: return 'Optional workspace capability declared through LocalLink.';
+  }
+}
+
+function buildExtensionDefinitions(raw: string, env: Record<string, string>): WorkspaceExtension[] {
+  if (!raw.trim()) return [];
+
+  const parsed = parseDocument(raw).toJS() as { extensions?: unknown };
+  const extensions = Array.isArray(parsed?.extensions) ? parsed.extensions : [];
+  return extensions
+    .filter((extension): extension is Record<string, unknown> => !!extension && typeof extension === 'object')
+    .map((extension) => {
+      const id = typeof extension.id === 'string' ? extension.id : slugify(String(extension.name || 'extension'));
+      const kind = (typeof extension.kind === 'string' ? extension.kind : 'custom') as WorkspaceExtension['kind'];
+      const enabled = extension.enabled !== false;
+      const requiredEnv = normalizeMetadataList(extension.requiredEnv);
+      const missingEnv = requiredEnv.filter((key) => !isConfiguredEnvValue(env[key]));
+      return {
+        id,
+        name: typeof extension.name === 'string' ? extension.name : titleCaseFromKey(id),
+        kind,
+        enabled,
+        detail: typeof extension.detail === 'string' ? extension.detail : extensionDefaultDetail(kind),
+        status: !enabled ? 'disabled' : missingEnv.length > 0 ? 'setup' : 'ready',
+        command: typeof extension.command === 'string' ? extension.command : undefined,
+        exposedPorts: normalizeMetadataList(extension.exposedPorts).map((value) => resolveEnvValue(value, env)),
+        requiredEnv,
+        missingEnv,
+        dependsOn: normalizeMetadataList(extension.dependsOn),
+        docsUrl: typeof extension.docsUrl === 'string' ? extension.docsUrl : undefined,
+      };
+    });
 }
 
 function buildComposeDefinitions(raw: string, env: Record<string, string>): ServiceDefinition[] {
@@ -746,6 +798,8 @@ function initialContentForTarget(targetFile: TargetFile): string {
       return 'services: {}\n';
     case 'locallink.services.yml':
       return 'services: []\n';
+    case 'locallink.extensions.yml':
+      return 'extensions: []\n';
     case 'ecosystem.config.js':
       return 'module.exports = {\n  apps: [],\n};\n';
     case 'mcp-registry.json':
@@ -776,6 +830,7 @@ export class ConfigRepository {
     const env = mergeRuntimeEnv(parseEnvMap(envContent));
     const composeContent = await readFileOrEmpty(this.getFilePath('docker-compose.yml'));
     const servicesContent = await readFileOrEmpty(this.getFilePath('locallink.services.yml'));
+    const extensionsContent = await readFileOrEmpty(this.getFilePath('locallink.extensions.yml'));
     const ecosystemPath = this.getFilePath('ecosystem.config.js');
     const ecosystemContent = await readFileOrEmpty(ecosystemPath);
     const serviceDefinitions = buildServiceRegistryDefinitions(
@@ -785,6 +840,7 @@ export class ConfigRepository {
     );
     const ecosystemDefinitions = buildEcosystemDefinitions(ecosystemPath, ecosystemContent, env);
     const composeDefinitions = buildComposeDefinitions(composeContent, env);
+    const extensions = buildExtensionDefinitions(extensionsContent, env);
 
     logDebug('Loaded workspace model.', {
       root: this.root,
@@ -792,12 +848,14 @@ export class ConfigRepository {
       serviceRegistryServices: serviceDefinitions.length,
       ecosystemServices: ecosystemDefinitions.length,
       composeServices: composeDefinitions.length,
+      extensions: extensions.length,
       totalServices: ecosystemDefinitions.length + composeDefinitions.length,
     });
 
     return {
       env,
       definitions: [...serviceDefinitions, ...ecosystemDefinitions, ...composeDefinitions],
+      extensions,
     };
   }
 

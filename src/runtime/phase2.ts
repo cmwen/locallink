@@ -20,6 +20,20 @@ function isEnabled(value: string | undefined): boolean {
   return !['0', 'false', 'off', 'disabled', 'no'].includes(value.toLowerCase());
 }
 
+function normalizeHttpsUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:') return undefined;
+    if (url.username || url.password || url.search || url.hash) return undefined;
+    if (url.hostname === 'localhost' || url.hostname.endsWith('.example') || url.hostname.endsWith('.example.com') || url.hostname.includes('example-tailnet')) return undefined;
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return undefined;
+  }
+}
+
 async function detectCommand(
   command: string,
   args: string[],
@@ -56,6 +70,7 @@ export async function buildPhase2Advisor(
   }
 
   const preferredEdge = (env.LOCALLINK_PHASE2_PREFERRED_EDGE || 'auto').toLowerCase();
+  const pocketIdIssuer = normalizeHttpsUrl(env.POCKET_ID_APP_URL);
   const [tailscaleResult, caddyResult, traefikResult, nginxResult] = await Promise.all([
     commandRunner('tailscale', ['status', '--json'], { timeoutMs: 2_000 }),
     detectCommand('caddy', ['version'], commandRunner),
@@ -76,7 +91,7 @@ export async function buildPhase2Advisor(
       title: 'Tailscale private network',
       detail: 'Tailscale is not installed. Install it to offer a private network edge without exposing a public reverse proxy.',
       status: 'optional',
-      docsUrl: 'https://tailscale.com/kb',
+      docsUrl: 'https://tailscale.com/docs/features/tailscale-serve',
     };
   } else if (!tailscaleResult.ok) {
     tailscaleOption = {
@@ -84,7 +99,7 @@ export async function buildPhase2Advisor(
       title: 'Tailscale private network',
       detail: 'Tailscale is installed but not currently connected. Start Tailscale or authenticate the node to offer this Phase 2 option.',
       status: 'optional',
-      docsUrl: 'https://tailscale.com/kb',
+      docsUrl: 'https://tailscale.com/docs/features/tailscale-serve',
     };
   } else {
     const status = parseJsonOutput<TailscaleStatus>(tailscaleResult.stdout)[0];
@@ -97,7 +112,7 @@ export async function buildPhase2Advisor(
         : 'Private network tooling is installed. Confirm the node connection before enabling a Phase 2 edge.',
       status: connected ? 'available' : 'optional',
       recommended: preferredEdge === 'auto' || preferredEdge === 'tailscale',
-      docsUrl: 'https://tailscale.com/kb',
+      docsUrl: 'https://tailscale.com/docs/features/tailscale-serve',
       detectedValue: 'Private network detected; address hidden',
     };
   }
@@ -128,8 +143,27 @@ export async function buildPhase2Advisor(
     recommended: preferredEdge === 'local-only',
   };
 
-  const options = [tailscaleOption, reverseProxyOption, localOnlyOption];
-  const availableOptions = options.filter((option) => option.status === 'available').length;
+  const pocketIdOption: Phase2Option = pocketIdIssuer
+    ? {
+        id: 'pocket-id',
+        title: 'Pocket ID application SSO',
+        detail: 'Private HTTPS issuer configured. Publish it through Tailscale Serve, then register each internal application as a Pocket ID OIDC client.',
+        status: 'available',
+        recommended: tailscaleOption.status === 'available',
+        docsUrl: '/docs/pocket-id-tailscale.html',
+        detectedValue: pocketIdIssuer,
+      }
+    : {
+        id: 'pocket-id',
+        title: 'Pocket ID application SSO',
+        detail: 'Set POCKET_ID_APP_URL to Pocket ID\'s stable private Tailscale Serve HTTPS URL before registering internal OIDC clients.',
+        status: 'optional',
+        docsUrl: '/docs/pocket-id-tailscale.html',
+      };
+
+  const edgeOptions = [tailscaleOption, reverseProxyOption, localOnlyOption];
+  const options = [...edgeOptions, pocketIdOption];
+  const availableOptions = edgeOptions.filter((option) => option.status === 'available').length;
 
   return {
     enabled: true,

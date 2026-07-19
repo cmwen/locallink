@@ -26,7 +26,7 @@ export function serviceMatchReason(service: ServiceRecord, rawQuery: string): st
     ['name', [service.name]],
     ['runtime', [service.kind, service.group, service.runtime, service.runtimeName, service.taskName]],
     ['status', [service.status, service.statusLabel, service.compliance?.status, service.compliance?.summary]],
-    ['port', [service.port, service.portEnv]],
+    ['port', [service.port, service.portEnv, ...(service.edgeUrls || [])]],
     ['description', [service.notes, service.detail, service.tags]],
     ['documentation', [service.docsUrl]],
     ['relationship', [...(service.dependsOn || []), ...(service.downstream || [])]],

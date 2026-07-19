@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Out-of-box Extensions | LocalLink</title>
+    <link rel="stylesheet" href="./assets/style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div class="eyebrow">Workspace capabilities</div>
+        <h1>How LocalLink out-of-box extensions work</h1>
+        <p>Extensions declare optional capabilities around the service topology. They do not silently install software, publish ports, or create credentials.</p>
+      </header>
+
+      <section class="section">
+        <h2>The declaration model</h2>
+        <p><code>locallink.extensions.yml</code> is the committable capability inventory. LocalLink resolves exposed ports from <code>.env</code>, reports missing required variables as setup work, and displays each extension in Connections. Runtime services remain in <code>docker-compose.yml</code> or <code>locallink.services.yml</code>; private values remain in <code>.env</code>.</p>
+        <p>An extension marked ready has its declared configuration present. Use the related service card and runtime checks to confirm live connectivity and external authentication.</p>
+        <pre><code>extension declaration → readiness in dashboard
+service declaration   → lifecycle and runtime status
+.env                   → local ports, URLs, and secrets</code></pre>
+      </section>
+
+      <section id="dashboard" class="section">
+        <h2>Dashboard</h2>
+        <p>The local control surface. It reads the workspace model, runtime probes, connection declarations, resource state, and saved display preferences. Enabling its preference does not override the configured bind host or launch an undeclared service.</p>
+      </section>
+
+      <section id="reverse-proxy" class="section">
+        <h2>Reverse proxy</h2>
+        <p>Maps stable origins or edge listeners to application ports. Caddy is the default example. LocalLink records the capability and its service dependencies; the Caddyfile remains the routing source of truth.</p>
+      </section>
+
+      <section id="tailscale" class="section">
+        <h2>Tailscale private edge</h2>
+        <p>Provides authenticated network reachability and private HTTPS. Tailscale Serve exposes only the routes explicitly declared in its configuration, and Tailscale ACLs remain the network authorization source. LocalLink never treats edge enablement as permission to make a service public.</p>
+      </section>
+
+      <section id="pocket-id" class="section">
+        <h2>Pocket ID</h2>
+        <p>Provides passkey-backed OIDC sessions to internal applications after a user reaches them through Tailscale. It depends on a stable HTTPS issuer, persistent data, and an encryption key. See the <a href="./pocket-id-tailscale.html">private SSO guide</a>.</p>
+      </section>
+
+      <section id="observability" class="section">
+        <h2>OpenObserve</h2>
+        <p>Receives telemetry from declared services. LocalLink reports whether the required endpoint and stream variables exist, but application exporters and OpenObserve credentials remain explicit service configuration.</p>
+      </section>
+
+      <section class="section">
+        <h2>Default safety properties</h2>
+        <ul>
+          <li>No extension writes secrets into committed files.</li>
+          <li>No network edge is assumed public.</li>
+          <li>Missing required variables produce setup status rather than fake readiness.</li>
+          <li>Extension preferences do not replace Docker, PM2, Taskfile, proxy, or Tailscale configuration.</li>
+          <li>Disabling a dashboard preference does not destructively stop an external runtime.</li>
+        </ul>
+      </section>
+    </main>
+  </body>
+</html>

@@ -69,6 +69,7 @@ export interface ServiceRecord {
   downstream?: string[];
   envVars?: string[];
   docsUrl?: string;
+  edgeUrls?: string[];
   blueprint?: ServiceBlueprint;
   compliance?: ServiceCompliance;
   windowsProcessName?: string;
@@ -109,6 +110,21 @@ export interface Phase2Advisor {
   enabled: boolean;
   summary: string;
   options: Phase2Option[];
+}
+
+export interface WorkspaceExtension {
+  id: string;
+  name: string;
+  kind: 'dashboard' | 'reverse-proxy' | 'network-edge' | 'identity-provider' | 'observability' | 'custom';
+  enabled: boolean;
+  detail: string;
+  status: 'ready' | 'setup' | 'disabled';
+  command?: string;
+  exposedPorts: string[];
+  requiredEnv: string[];
+  missingEnv: string[];
+  dependsOn: string[];
+  docsUrl?: string;
 }
 
 export interface ResourceProcess {
@@ -220,6 +236,7 @@ export interface DashboardState {
   };
   diagnostics: StartupDiagnostics;
   phase2: Phase2Advisor;
+  extensions: WorkspaceExtension[];
   services: ServiceRecord[];
   logs: LogEntry[];
   ports: PortResolution;
@@ -281,6 +298,7 @@ export interface PortReservation {
 export interface WorkspacePreferences {
   dashboardEnabled: boolean;
   proxyEnabled: boolean;
+  pocketIdEnabled: boolean;
   edgeEnabled: boolean;
 }
 

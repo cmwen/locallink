@@ -45,6 +45,7 @@ const DEFAULT_STATE: DashboardState = {
     summary: '',
     options: [],
   },
+  extensions: [],
   services: [],
   logs: [],
   ports: {
@@ -126,6 +127,13 @@ function normalizeService(service: Partial<ServiceRecord>, index: number): Servi
     downstream: service.downstream || [],
     envVars: service.envVars || [],
     docsUrl: service.docsUrl,
+    edgeUrls: (service.edgeUrls || []).filter((value) => {
+      try {
+        return ['http:', 'https:'].includes(new URL(value).protocol);
+      } catch {
+        return false;
+      }
+    }),
     blueprint: service.blueprint,
     compliance: service.compliance,
     windowsProcessName: service.windowsProcessName,
@@ -163,6 +171,7 @@ export function normalizeState(input: Partial<DashboardState> = {}): DashboardSt
       ...(input.phase2 || {}),
       options: input.phase2?.options || [],
     },
+    extensions: Array.isArray(input.extensions) ? input.extensions : [],
     services,
     logs: (input.logs || []).map(normalizeLog),
     ports: {

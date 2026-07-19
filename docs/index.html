@@ -361,12 +361,19 @@ locallink: {
             <small>When <code>tailscale status --json</code> succeeds, LocalLink can recommend a private network edge with the detected tailnet and IP details.</small>
           </div>
           <div class="card">
+            <strong>Pocket ID identity</strong>
+            <small>Pocket ID is the default application identity extension. Keep it private behind Tailscale Serve and register internal services as OIDC clients. <a href="./pocket-id-tailscale.html">Open the private SSO guide.</a></small>
+          </div>
+          <div class="card">
             <strong>Reverse-proxy detection</strong>
             <small>LocalLink checks for Caddy, Traefik, and Nginx and recommends a reverse-proxy edge when those tools are present.</small>
           </div>
         </div>
         <pre><code>LOCALLINK_ENABLE_PHASE2_ADVISOR=true
-LOCALLINK_PHASE2_PREFERRED_EDGE=auto</code></pre>
+LOCALLINK_PHASE2_PREFERRED_EDGE=auto
+POCKET_ID_APP_URL=https://pocket-id-host.your-tailnet.ts.net
+POCKET_ID_PORT=1411</code></pre>
+        <p class="note">See <a href="./extensions.html">How LocalLink out-of-box extensions work</a> for the declaration, readiness, runtime, and secret boundaries.</p>
       </section>
 
       <section id="cli" class="section">
