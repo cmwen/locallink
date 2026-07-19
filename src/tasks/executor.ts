@@ -6,6 +6,7 @@ import { LogBroker } from '../logs/broker';
 import { ConfigRepository } from '../config/files';
 import { prepareRuntimeIsolation, readDockerfileBlueprint, verifyBlueprintCompliance } from '../runtime/lego';
 import { runCommand } from '../shared/utils';
+import { buildWorkspaceProcessEnv } from '../workspace/identity';
 
 function resolveServiceDefinition(
   definitions: ServiceDefinition[],
@@ -309,21 +310,16 @@ export class TaskExecutor {
     return blueprint?.command ? pm2LaunchFromCommand(blueprint.command) : undefined;
   }
 
-  private serviceProcessEnv?: Record<string, string>;
+  private serviceProcessEnv?: NodeJS.ProcessEnv;
 
-  private buildServiceProcessEnv(): Record<string, string> {
+  private buildServiceProcessEnv(): NodeJS.ProcessEnv {
     return this.serviceProcessEnv || Object.fromEntries(
       Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
     );
   }
 
   private setServiceProcessEnv(env: Record<string, string>): void {
-    this.serviceProcessEnv = {
-      ...Object.fromEntries(
-        Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
-      ),
-      ...env,
-    };
+    this.serviceProcessEnv = buildWorkspaceProcessEnv(this.root, env);
   }
 
   private buildDockerCommand(definition: ServiceDefinition, action: TaskAction) {

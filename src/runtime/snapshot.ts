@@ -28,6 +28,7 @@ import {
   runCommand,
 } from '../shared/utils';
 import { logDebug, logWarn } from '../shared/logger';
+import { buildWorkspaceProcessEnv, deriveWorkspaceIdentity } from '../workspace/identity';
 
 interface DockerPsRow {
   ID?: string;
@@ -111,6 +112,7 @@ function isRestartingState(value: string | undefined): boolean {
 async function collectDockerStates(
   root: string,
   definitions: ServiceDefinition[],
+  env: Record<string, string>,
   commandRunner: CommandRunner,
 ): Promise<Map<string, RuntimeState>> {
   const dockerDefinitions = definitions.filter((definition) => definition.group === 'docker');
@@ -122,6 +124,7 @@ async function collectDockerStates(
   const [psResult, statsResult] = await Promise.all([
     commandRunner('docker', ['compose', 'ps', '--all', '--format', 'json'], {
       cwd: root,
+      env: buildWorkspaceProcessEnv(root, env),
       timeoutMs: 1200,
     }),
     commandRunner('docker', ['stats', '--no-stream', '--format', '{{json .}}'], {
@@ -197,7 +200,9 @@ async function collectDockerStates(
 }
 
 async function collectPm2States(
+  root: string,
   definitions: ServiceDefinition[],
+  env: Record<string, string>,
   commandRunner: CommandRunner,
 ): Promise<Map<string, RuntimeState>> {
   const pm2Definitions = definitions.filter(
@@ -209,6 +214,8 @@ async function collectPm2States(
   }
 
   const result = await commandRunner('pm2', ['jlist'], {
+    cwd: root,
+    env: buildWorkspaceProcessEnv(root, env),
     timeoutMs: 1200,
   });
   if (!result.ok) {
@@ -343,13 +350,14 @@ export class RuntimeResolver {
   async buildDashboardState(diagnostics: StartupDiagnostics): Promise<DashboardState> {
     await this.configRepository.hydrateProcessEnv();
     const model = await this.configRepository.loadProjectModel();
+    const identity = deriveWorkspaceIdentity(this.root, model.env.LOCALLINK_WORKSPACE_ID);
     const definitions = await Promise.all(model.definitions.map((definition) => enrichServiceDefinition(definition)));
     const [dockerStates, pm2States, windowsStates, phase2, resources, edgeUrlsByService] = await Promise.all([
-      collectDockerStates(this.root, definitions, this.commandRunner),
-      collectPm2States(definitions, this.commandRunner),
+      collectDockerStates(this.root, definitions, model.env, this.commandRunner),
+      collectPm2States(this.root, definitions, model.env, this.commandRunner),
       collectWindowsStates(definitions, this.commandRunner),
       buildPhase2Advisor(model.env, this.commandRunner),
-      buildResourceDashboard(this.commandRunner, definitions),
+      buildResourceDashboard(this.commandRunner, definitions, { root: this.root, env: model.env }),
       discoverServiceEdgeUrls(model.extensions, definitions, this.commandRunner, model.env),
     ]);
 
@@ -421,8 +429,8 @@ export class RuntimeResolver {
     return {
       app: {
         name: 'LocalLink',
-        subtitle: 'Local-first orchestration for Docker, PM2, and dev servers',
-        scope: `${bindHost} only`,
+        subtitle: `Local-first orchestration for ${identity.name}`,
+        scope: `${bindHost} only · ${identity.id}`,
       },
       hero: {
         eyebrow: 'Phase 1 control plane',
@@ -431,7 +439,7 @@ export class RuntimeResolver {
       },
       snapshot: {
         value: `${trackedServices} services`,
-        detail: 'rehydrated from Docker, PM2, PWA dev servers, and Windows process probes',
+        detail: `workspace ${identity.id}, rehydrated from Docker, PM2, PWA dev servers, and Windows process probes`,
       },
       stats: [
         {

@@ -24,7 +24,7 @@ async function createTempProject(): Promise<string> {
   await fs.writeFile(path.join(root, 'public', 'sw.js'), '// sw', 'utf8');
   await fs.writeFile(
     path.join(root, '.env'),
-    'LOCALLINK_BIND_HOST=127.0.0.1\nLOCALLINK_WEB_PORT=4010\nLOCALLINK_DEFAULT_PORT_START=5000\nPOSTGRES_PORT=5432\nQUEUE_WORKER_PORT=6012\n',
+    'LOCALLINK_BIND_HOST=127.0.0.1\nLOCALLINK_WEB_PORT=4010\nLOCALLINK_DEFAULT_PORT_START=5000\nPM2_HOME=.locallink/pm2\nPOSTGRES_PORT=5432\nQUEUE_WORKER_PORT=6012\n',
     'utf8',
   );
   await fs.writeFile(
@@ -138,7 +138,8 @@ test('RuntimeResolver marks unverifiable services as unknown', async () => {
 
 test('RuntimeResolver marks declared Docker and PM2 services down when managers report no matching runtime', async () => {
   const root = await createTempProject();
-  const commandRunner: CommandRunner = async (command, args) => {
+  const pm2Options: Parameters<CommandRunner>[2][] = [];
+  const commandRunner: CommandRunner = async (command, args, options) => {
     if (command === 'ps') {
       return commandResult();
     }
@@ -149,6 +150,7 @@ test('RuntimeResolver marks declared Docker and PM2 services down when managers 
       return commandResult({ stdout: '' });
     }
     if (command === 'pm2') {
+      pm2Options.push(options);
       return commandResult({ stdout: '[]' });
     }
     return commandResult();
@@ -161,6 +163,10 @@ test('RuntimeResolver marks declared Docker and PM2 services down when managers 
   assert.equal(services.get('Postgres Compose')?.statusLabel, 'Down');
   assert.equal(services.get('Queue Worker')?.status, 'stopped');
   assert.equal(services.get('Queue Worker')?.statusLabel, 'Down');
+  assert.ok(pm2Options.length >= 2);
+  assert.ok(pm2Options.every((options) => options?.cwd === root));
+  assert.ok(pm2Options.every((options) => options?.env?.PM2_HOME === path.join(root, '.locallink', 'pm2')));
+  assert.match(state.app.scope, /locallink-runtime-snapshot-/);
 });
 
 test('RuntimeResolver keeps building state when port scanning is unavailable', async () => {

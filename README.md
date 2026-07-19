@@ -1,6 +1,6 @@
 # LocalLink Phase 1 MVP
 
-LocalLink Phase 1 is a local-first orchestration MVP for a single developer workstation. It combines a Node + TypeScript control plane, a loopback-only HTTP dashboard, and an MCP stdio server so local tools and AI agents can inspect config, allocate ports, and trigger lifecycle actions from one place.
+LocalLink Phase 1 is a local-first orchestration MVP for a developer workstation. Multiple isolated LocalLink workspaces can run on the same machine. Each workspace gets its own identity, state, PM2 namespace, Docker Compose project, and dashboard port. The Node + TypeScript control plane, loopback-only HTTP dashboard, and MCP stdio server let local tools and AI agents inspect config, allocate ports, and trigger lifecycle actions from one place.
 
 ## Product goal
 
@@ -78,8 +78,12 @@ cp .env.example .env
 
 `.env.example` ships with these defaults:
 
+- `LOCALLINK_WORKSPACE_ID=locallink-dev`
+- `COMPOSE_PROJECT_NAME=locallink_locallink_dev`
+- `PM2_HOME=.locallink/pm2`
 - `LOCALLINK_BIND_HOST=127.0.0.1`
-- `LOCALLINK_WEB_PORT=4010`
+- `LOCALLINK_WEB_PORT=auto`
+- `LOCALLINK_WEB_PORT_START=4010`
 - `LOCALLINK_DEFAULT_PORT_START=5000`
 - `LOCALLINK_ENABLE_PHASE2_ADVISOR=true`
 - `LOCALLINK_PHASE2_PREFERRED_EDGE=auto`
@@ -124,7 +128,9 @@ locallink snapshot --log-level debug
 When you launch `locallink` from another folder, it reads environment, service, extension, and runtime declarations from that current working directory.
 Use `--log-level debug` or `LOCALLINK_LOG_LEVEL=debug` when you want stderr traces for startup, state discovery, HTTP requests, and runtime probe failures.
 
-Open:
+With the repository defaults, open the URL reported at startup or read it from
+`.locallink/runtime.json`. The first workspace normally receives port 4010;
+additional workspaces automatically use the next free port. Typical routes are:
 
 - `http://127.0.0.1:4010/` - launcher
 - `http://127.0.0.1:4010/dashboard` - dashboard
@@ -181,7 +187,7 @@ locallink init my-local-infra
 - `AGENTS.md`
 - `README.md` or `README.locallink.md` if a README already exists
 
-The generated starter config includes the Pocket ID identity profile, Dockerfile blueprint convention, optional service metadata fields, the Phase 2 advisor toggle, and the agent guardrails file.
+The generated starter is extension-free: it includes the dashboard declaration, isolated Docker/PM2 namespaces, automatic dashboard port selection, the Dockerfile blueprint convention, optional service metadata fields, the Phase 2 advisor toggle, and the agent guardrails file. Private Edge, identity, and observability capabilities can be added later per workspace.
 
 ### Dev/test helpers
 

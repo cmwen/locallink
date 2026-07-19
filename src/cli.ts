@@ -33,7 +33,15 @@ async function runServe(context: AppContext): Promise<FastifyInstance> {
       500,
     );
   }
-  context.logs.append(`Dashboard server listening on http://${binding.host}:${binding.port}.`, 'Runtime');
+  const runtime = await context.recordRuntimeBinding(binding);
+  server.addHook('onClose', async () => context.clearRuntimeBinding(runtime.pid));
+  context.logs.append(`Dashboard server for ${runtime.id} listening on ${runtime.url}.`, 'Runtime');
+  logInfo('LocalLink dashboard server started.', {
+    workspaceId: runtime.id,
+    workspaceRoot: runtime.root,
+    url: runtime.url,
+    automaticPort: runtime.automatic,
+  });
   return server;
 }
 

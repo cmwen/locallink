@@ -111,7 +111,16 @@ export function createHttpServer(context: AppContext) {
     });
   }
 
-  app.get('/health', async () => ({ ok: true }));
+  app.get('/health', async () => {
+    const workspace = await context.getWorkspaceIdentity();
+    return {
+      ok: true,
+      workspace: {
+        id: workspace.id,
+        name: workspace.name,
+      },
+    };
+  });
 
   app.get('/api/state', async (_request, reply) => {
     reply.header('Cache-Control', 'no-store');

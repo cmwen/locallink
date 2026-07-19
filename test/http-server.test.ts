@@ -60,6 +60,41 @@ test('HTTP server exposes the dashboard state endpoint', async () => {
   await server.close();
 });
 
+test('HTTP health identifies the current workspace', async () => {
+  const root = await createTempProject();
+  const context = new AppContext(root);
+  await context.initialize();
+  const server = context.createServer();
+
+  const response = await server.inject({ method: 'GET', url: '/health' });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().ok, true);
+  assert.match(response.json().workspace.id, /^locallink-http-/);
+  assert.equal(response.json().workspace.name, path.basename(root));
+  await server.close();
+});
+
+test('AppContext records and clears the workspace runtime URL', async () => {
+  const root = await createTempProject();
+  const context = new AppContext(root);
+  await context.initialize();
+
+  const descriptor = await context.recordRuntimeBinding({
+    host: '127.0.0.1',
+    port: 4567,
+    automatic: true,
+  });
+  const persisted = JSON.parse(await fs.readFile(context.paths.runtimeStateFile, 'utf8'));
+
+  assert.equal(persisted.id, descriptor.id);
+  assert.equal(persisted.url, 'http://127.0.0.1:4567');
+  assert.equal(persisted.pid, process.pid);
+
+  await context.clearRuntimeBinding();
+  await assert.rejects(() => fs.readFile(context.paths.runtimeStateFile, 'utf8'), { code: 'ENOENT' });
+});
+
 test('HTTP server exposes static project docs', async () => {
   const root = await createTempProject();
   const context = new AppContext(root);

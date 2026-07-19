@@ -10,6 +10,7 @@ import type {
 } from '../shared/contracts';
 import { AppError } from '../shared/errors';
 import { formatDurationFromSeconds, parseJsonOutput, runCommand, type CommandRunner } from '../shared/utils';
+import { buildWorkspaceProcessEnv } from '../workspace/identity';
 
 interface ParsedProcessRow {
   pid: number;
@@ -213,6 +214,7 @@ export function parseProcessTable(stdout: string): ResourceProcess[] {
 export async function buildResourceDashboard(
   commandRunner: CommandRunner = runCommand,
   definitions: ServiceDefinition[] = [],
+  workspace?: { root: string; env: Record<string, string> },
 ): Promise<ResourceDashboard> {
   const result = await commandRunner(
     'ps',
@@ -228,7 +230,11 @@ export async function buildResourceDashboard(
         .filter((row) => row.name !== 'ps' && !row.command.startsWith('ps -eo '))
     : [];
   const pm2Result = definitions.some((definition) => definition.runtime === 'pm2')
-    ? await commandRunner('pm2', ['jlist'], { timeoutMs: 1_200 })
+    ? await commandRunner('pm2', ['jlist'], {
+        cwd: workspace?.root,
+        env: workspace ? buildWorkspaceProcessEnv(workspace.root, workspace.env) : undefined,
+        timeoutMs: 1_200,
+      })
     : undefined;
   const pm2Rows = pm2Result?.ok ? parseJsonOutput<Pm2ResourceRow>(pm2Result.stdout) : [];
   const attributed = allRows.map((row) => {

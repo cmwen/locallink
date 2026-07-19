@@ -18,6 +18,7 @@ test('resolveProjectRoot uses the launch directory even when LOCALLINK_ROOT is s
 
     assert.equal(resolveProjectRoot(), workspaceRoot);
     assert.equal(resolvePaths().root, workspaceRoot);
+    assert.equal(resolvePaths().runtimeStateFile, path.join(workspaceRoot, '.locallink', 'runtime.json'));
   } finally {
     process.chdir(originalCwd);
     if (originalRootEnv === undefined) {

@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises';
+
 import { ConfigRepository } from './config/files';
 import { createHttpServer } from './http/server';
 import { LogBroker } from './logs/broker';
@@ -12,6 +14,14 @@ import { logDebug, logInfo, mirrorBrokerEntry } from './shared/logger';
 import { normalizeLoopbackBindHost } from './shared/network';
 import { startStreamingCommand, type StreamingCommandHandle } from './shared/utils';
 import { TaskExecutor } from './tasks/executor';
+import {
+  buildWorkspaceProcessEnv,
+  deriveWorkspaceIdentity,
+  resolveWorkspaceBinding,
+  type WorkspaceBinding,
+  type WorkspaceIdentity,
+  type WorkspaceRuntimeDescriptor,
+} from './workspace/identity';
 import type {
   DashboardState,
   ExecuteTaskInput,
@@ -217,12 +227,52 @@ export class AppContext {
     return { result, snapshot };
   }
 
-  async getBinding(): Promise<{ host: string; port: number }> {
+  async getWorkspaceIdentity(): Promise<WorkspaceIdentity> {
     const model = await this.configRepository.loadProjectModel();
-    return {
-      host: normalizeLoopbackBindHost(model.env.LOCALLINK_BIND_HOST),
-      port: Number(model.env.LOCALLINK_WEB_PORT || '4010'),
+    return deriveWorkspaceIdentity(this.paths.root, model.env.LOCALLINK_WORKSPACE_ID);
+  }
+
+  async getBinding(): Promise<WorkspaceBinding> {
+    const model = await this.configRepository.loadProjectModel();
+    return resolveWorkspaceBinding(
+      model.env,
+      normalizeLoopbackBindHost(model.env.LOCALLINK_BIND_HOST),
+      this.portAllocator,
+    );
+  }
+
+  async recordRuntimeBinding(binding: WorkspaceBinding): Promise<WorkspaceRuntimeDescriptor> {
+    const identity = await this.getWorkspaceIdentity();
+    const descriptor: WorkspaceRuntimeDescriptor = {
+      ...identity,
+      ...binding,
+      pid: process.pid,
+      url: `http://${binding.host}:${binding.port}`,
+      startedAt: new Date().toISOString(),
     };
+    await fs.mkdir(this.paths.stateDir, { recursive: true });
+    const temporaryPath = `${this.paths.runtimeStateFile}.${process.pid}.tmp`;
+    await fs.writeFile(temporaryPath, `${JSON.stringify(descriptor, null, 2)}\n`, 'utf8');
+    await fs.rename(temporaryPath, this.paths.runtimeStateFile);
+    return descriptor;
+  }
+
+  async clearRuntimeBinding(pid = process.pid): Promise<void> {
+    try {
+      const descriptor = JSON.parse(
+        await fs.readFile(this.paths.runtimeStateFile, 'utf8'),
+      ) as Partial<WorkspaceRuntimeDescriptor>;
+      if (descriptor.pid === pid) {
+        await fs.unlink(this.paths.runtimeStateFile);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logDebug('Could not clear the workspace runtime descriptor.', {
+          workspaceRoot: this.paths.root,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   async getStartupDiagnostics(refresh = false): Promise<StartupDiagnostics> {
@@ -239,8 +289,12 @@ export class AppContext {
       return;
     }
 
+    const model = await this.configRepository.loadProjectModel();
+    const processEnv = buildWorkspaceProcessEnv(this.paths.root, model.env);
+
     this.dockerTail = startStreamingCommand('docker', ['compose', 'logs', '--tail', '20', '-f'], {
       cwd: this.paths.root,
+      env: processEnv,
       onStdoutLine: (line) => this.logs.append(line, 'Docker'),
       onStderrLine: (line) => this.logs.append(line, 'Docker', 'warn'),
     });
@@ -252,6 +306,7 @@ export class AppContext {
 
     this.pm2Tail = startStreamingCommand('pm2', ['logs', '--lines', '20', '--raw'], {
       cwd: this.paths.root,
+      env: processEnv,
       onStdoutLine: (line) => {
         if (!isPm2LogEcho(line)) {
           this.logs.append(line, 'PM2');

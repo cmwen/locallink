@@ -23,6 +23,24 @@ The core contract is deliberately small:
 LocalLink should explain missing declarations, but an extension-free workspace
 must remain useful and healthy.
 
+## Multiple workspaces on one machine
+
+Running one LocalLink workspace must not reserve a machine-wide LocalLink
+namespace. Every workspace has a stable identity derived from its root unless a
+user explicitly names it. That identity owns:
+
+- the dashboard runtime record and LocalLink state under `.locallink`;
+- a distinct Docker Compose project name;
+- a distinct PM2 home and daemon namespace;
+- generated extension configuration and secrets; and
+- an automatically selected dashboard port, unless the user pins one.
+
+Two workspaces with the same folder name but different roots must still remain
+isolated. Extension installation, onboarding progress, service discovery, and
+credentials are scoped to one workspace and must never be inferred from another
+workspace on the same host. `.locallink/runtime.json` is the local discovery
+record for users and coding agents that need the active dashboard URL.
+
 ## Optional capability layers
 
 Capabilities should be presented as explicit layers with clear dependencies and
@@ -94,6 +112,8 @@ The target separation is:
   are generated and should not be edited by hand.
 - Runtime state records installation and onboarding progress independently from
   desired configuration.
+- Workspace identity and runtime-manager namespaces prevent Docker, PM2, ports,
+  generated files, and extension state from colliding with another workspace.
 
 The current `.env`-centric model is still supported, but it should evolve toward
 this separation. In particular, one canonical credential must not be copied into
