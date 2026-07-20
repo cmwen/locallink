@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 
 import { ConfigRepository } from './config/files';
 import { buildExtensionLifecycles } from './extensions/lifecycle';
-import { ExtensionPlanner, type ExtensionApplyResult, type ExtensionInstallPlan } from './extensions/planner';
+import { ExtensionPlanner, type ExtensionApplyResult, type ExtensionInstallPlan, type ExtensionRouteApplyResult } from './extensions/planner';
 import { createHttpServer } from './http/server';
 import { LogBroker } from './logs/broker';
 import { PortAllocator } from './ports/allocator';
@@ -72,7 +72,8 @@ export class AppContext {
     this.paths = resolvePaths(root);
     this.configRepository = new ConfigRepository(this.paths.root);
     this.logs = new LogBroker(mirrorBrokerEntry);
-    this.extensionPlanner = new ExtensionPlanner(this.paths.root, this.configRepository);
+    this.workspaceState = new WorkspaceStateRepository(this.paths.workspaceStateFile);
+    this.extensionPlanner = new ExtensionPlanner(this.paths.root, this.configRepository, undefined, this.workspaceState);
     this.portAllocator = new PortAllocator();
     this.runtimeResolver = new RuntimeResolver(
       this.paths.root,
@@ -87,7 +88,6 @@ export class AppContext {
       appRoot: this.paths.appRoot,
       publicDir: this.paths.publicDir,
     });
-    this.workspaceState = new WorkspaceStateRepository(this.paths.workspaceStateFile);
   }
 
   async initialize(): Promise<void> {
@@ -166,6 +166,17 @@ export class AppContext {
       result.applied
         ? `${capability} workspace plan applied to ${result.changedFiles.join(', ')}.`
         : `${capability} workspace plan required no file changes.`,
+      'Lifecycle',
+    );
+    return result;
+  }
+
+  async applyExtensionRoutes(capability: string, confirmationToken: string): Promise<ExtensionRouteApplyResult> {
+    const result = await this.extensionPlanner.applyRoutes(capability, confirmationToken);
+    this.logs.append(
+      result.applied
+        ? `${result.appliedRoutes.length} ${capability} host route${result.appliedRoutes.length === 1 ? '' : 's'} applied and verified.`
+        : `${capability} host routes already matched the generated plan.`,
       'Lifecycle',
     );
     return result;

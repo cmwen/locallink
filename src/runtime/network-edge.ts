@@ -49,6 +49,8 @@ export interface PrivateEdgeRoutePlan {
   state: 'waiting-tailscale' | 'waiting-selection' | 'ready' | 'in-sync' | 'conflict';
   summary: string;
   mutatesHost: false;
+  requiresConfirmation: true;
+  confirmationToken?: string;
   routes: PrivateEdgePlannedRoute[];
 }
 
@@ -185,6 +187,7 @@ export async function planPrivateEdgeRoutes(
       state: 'waiting-selection',
       summary: 'Select at least one workspace service before generating Tailscale Serve routes.',
       mutatesHost: false,
+      requiresConfirmation: true,
       routes: [],
     };
   }
@@ -197,6 +200,7 @@ export async function planPrivateEdgeRoutes(
       state: 'waiting-tailscale',
       summary: 'Tailscale must be installed and connected before LocalLink can calculate live route conflicts.',
       mutatesHost: false,
+      requiresConfirmation: true,
       routes: [],
     };
   }
@@ -226,8 +230,8 @@ export async function planPrivateEdgeRoutes(
     const occupants = routesByListener.get(httpsPort) || [];
     const active = occupants.some((route) => route.targetPort === service.port);
     const conflict = !active && occupants.length > 0;
-    const apply = { command, args: ['serve', '--bg', `--https=${httpsPort}`, `http://127.0.0.1:${service.port}`] };
-    const rollback = { command, args: ['serve', `--https=${httpsPort}`, 'off'] };
+    const apply = { command, args: ['serve', '--bg', '--yes', `--https=${httpsPort}`, `http://127.0.0.1:${service.port}`] };
+    const rollback = { command, args: ['serve', '--yes', `--https=${httpsPort}`, 'off'] };
     return {
       serviceId: service.id,
       serviceName: service.name,
@@ -247,6 +251,9 @@ export async function planPrivateEdgeRoutes(
 
   const conflicts = routes.filter((route) => route.status === 'conflict').length;
   const missing = routes.filter((route) => route.status === 'missing').length;
+  const confirmationToken = conflicts === 0 && missing > 0
+    ? `private-edge:${createHash('sha256').update(JSON.stringify({ workspaceId, routes: routes.map((route) => route.apply) })).digest('hex')}`
+    : undefined;
   return {
     state: conflicts > 0 ? 'conflict' : missing > 0 ? 'ready' : 'in-sync',
     summary: conflicts > 0
@@ -255,6 +262,8 @@ export async function planPrivateEdgeRoutes(
         ? `${missing} reversible Tailscale Serve route${missing === 1 ? '' : 's'} can be applied after review.`
         : 'Every generated workspace route is already active.',
     mutatesHost: false,
+    requiresConfirmation: true,
+    confirmationToken,
     routes,
   };
 }

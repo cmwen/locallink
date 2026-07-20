@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   executeServiceAction,
   applyPrivateEdge,
+  applyPrivateEdgeRoutes,
   cancelVersionUpdate,
   inspectProcess,
   normalizeLog,
@@ -458,7 +459,7 @@ export function App() {
     }
   }
 
-  async function managePrivateEdge(action: 'plan' | 'apply') {
+  async function managePrivateEdge(action: 'plan' | 'apply' | 'routes') {
     if (source !== 'api') {
       setStatus('Private Edge planning needs the live LocalLink API.');
       return;
@@ -472,12 +473,26 @@ export function App() {
           setEdgeServiceSelection(plan.selection.selected.map((service) => service.id));
         }
         setStatus(plan.summary);
-      } else {
+      } else if (action === 'apply') {
         const result = await applyPrivateEdge(edgeSelectionTouched ? edgeServiceSelection : undefined);
         setExtensionPlan(result.plan);
         setStatus(result.applied
           ? `Private Edge workspace setup updated ${result.changedFiles.join(', ')}.`
           : 'Private Edge workspace files already match the plan.');
+        await refreshState();
+      } else {
+        const token = extensionPlan?.routePlan.confirmationToken;
+        if (!token) throw new Error('Preview a fresh conflict-free route plan before applying host routes.');
+        const routeSummary = extensionPlan.routePlan.routes
+          .filter((route) => route.status === 'missing')
+          .map((route) => `${route.url || `HTTPS :${route.httpsPort}`} → 127.0.0.1:${route.targetPort}`)
+          .join('\n');
+        if (!window.confirm(`Apply these private Tailscale Serve routes?\n\n${routeSummary}\n\nLocalLink will verify them and roll back routes created by this attempt if verification fails.`)) return;
+        const result = await applyPrivateEdgeRoutes(token);
+        setExtensionPlan(result.plan);
+        setStatus(result.applied
+          ? `${result.appliedRoutes.length} Private Edge route${result.appliedRoutes.length === 1 ? '' : 's'} applied and verified.`
+          : 'Private Edge routes already match the generated plan.');
         await refreshState();
       }
     } catch (error) {
@@ -959,7 +974,7 @@ function ExtensionsWorkspace({
   extensionApplying: boolean;
   edgeServiceSelection: string[];
   query: string;
-  managePrivateEdge: (action: 'plan' | 'apply') => Promise<void>;
+  managePrivateEdge: (action: 'plan' | 'apply' | 'routes') => Promise<void>;
   setEdgeServiceSelection: React.Dispatch<React.SetStateAction<string[]>>;
   setEdgeSelectionTouched: React.Dispatch<React.SetStateAction<boolean>>;
   queueUpdate: () => Promise<void>;
@@ -1026,6 +1041,9 @@ function ExtensionsWorkspace({
               <button className="btn" type="button" disabled={extensionApplying} onClick={() => void managePrivateEdge('plan')}>Preview Private Edge setup</button>
               {extensionPlan?.canApply ? (
                 <button className="btn" type="button" disabled={extensionApplying} onClick={() => void managePrivateEdge('apply')}>Apply workspace setup</button>
+              ) : null}
+              {!extensionPlan?.canApply && extensionPlan?.routePlan.state === 'ready' && extensionPlan.routePlan.confirmationToken ? (
+                <button className="btn" type="button" disabled={extensionApplying} onClick={() => void managePrivateEdge('routes')}>Apply private routes</button>
               ) : null}
               <a className="btn" href="./docs/pocket-id-tailscale.html" target="_blank" rel="noreferrer">Private SSO setup</a>
               <a className="btn ghost" href="./docs/extensions.html" target="_blank" rel="noreferrer">Extension guide</a>

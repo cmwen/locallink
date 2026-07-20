@@ -185,6 +185,8 @@ export interface ExtensionInstallPlan {
     state: 'waiting-tailscale' | 'waiting-selection' | 'ready' | 'in-sync' | 'conflict';
     summary: string;
     mutatesHost: false;
+    requiresConfirmation: true;
+    confirmationToken?: string;
     routes: Array<{
       serviceId: string;
       serviceName: string;
@@ -388,4 +390,16 @@ export interface WorkspaceState {
   temporaryRuntimes: TemporaryRuntimeRecord[];
   versionUpdates: VersionUpdateRecord[];
   portReservations: PortReservation[];
+  privateEdgeRoutes: Array<{
+    serviceId: string;
+    serviceName: string;
+    targetPort: string;
+    httpsPort: string;
+    url?: string;
+    command: string;
+    applyArgs: string[];
+    rollbackArgs: string[];
+    appliedAt: string;
+    status: 'active' | 'rollback-failed';
+  }>;
 }

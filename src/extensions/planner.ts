@@ -1,9 +1,12 @@
+import path from 'node:path';
+
 import { ConfigRepository } from '../config/files';
 import { planPrivateEdgeRoutes, type PrivateEdgeRoutePlan } from '../runtime/network-edge';
 import type { ExtensionLifecycleRecord, WorkspaceExtension } from '../shared/contracts';
 import { AppError } from '../shared/errors';
 import type { CommandRunner } from '../shared/utils';
 import { runCommand } from '../shared/utils';
+import { WorkspaceStateRepository } from '../state/workspace-state';
 import { deriveWorkspaceIdentity } from '../workspace/identity';
 import { buildExtensionLifecycles } from './lifecycle';
 
@@ -39,6 +42,19 @@ export interface ExtensionApplyResult {
   capability: InstallableCapabilityId;
   applied: boolean;
   changedFiles: string[];
+  plan: ExtensionInstallPlan;
+}
+
+export interface ExtensionRouteApplyResult {
+  capability: InstallableCapabilityId;
+  applied: boolean;
+  appliedRoutes: Array<{
+    serviceId: string;
+    serviceName: string;
+    targetPort: string;
+    httpsPort: string;
+    url?: string;
+  }>;
   plan: ExtensionInstallPlan;
 }
 
@@ -117,6 +133,7 @@ export class ExtensionPlanner {
     private readonly root: string,
     private readonly configRepository = new ConfigRepository(root),
     private readonly commandRunner: CommandRunner = runCommand,
+    private readonly workspaceState = new WorkspaceStateRepository(path.join(root, '.locallink', 'workspace-state.json')),
   ) {}
 
   async plan(capability: string, serviceSelectors?: string[]): Promise<ExtensionInstallPlan> {
@@ -299,5 +316,133 @@ export class ExtensionPlanner {
       changedFiles,
       plan: await this.plan('private-edge'),
     };
+  }
+
+  async applyRoutes(capability: string, confirmationToken: string): Promise<ExtensionRouteApplyResult> {
+    const before = await this.plan(capability);
+    if (before.canApply) {
+      throw new AppError(
+        'PRIVATE_EDGE_WORKSPACE_PLAN_PENDING',
+        'Apply the workspace-owned Private Edge declaration plan before applying host routes.',
+        409,
+      );
+    }
+    if (before.routePlan.state === 'in-sync') {
+      return { capability: 'private-edge', applied: false, appliedRoutes: [], plan: before };
+    }
+    if (before.routePlan.state !== 'ready' || !before.routePlan.confirmationToken) {
+      throw new AppError(
+        'PRIVATE_EDGE_ROUTES_NOT_READY',
+        before.routePlan.summary,
+        409,
+        { routePlan: before.routePlan },
+      );
+    }
+    if (confirmationToken !== before.routePlan.confirmationToken) {
+      throw new AppError(
+        'STALE_PRIVATE_EDGE_CONFIRMATION',
+        'The confirmation token does not match the current live route plan. Preview the plan again before applying it.',
+        409,
+      );
+    }
+
+    const routes = before.routePlan.routes.filter((route) => route.status === 'missing');
+    const applied: typeof routes = [];
+    try {
+      for (const route of routes) {
+        // Route commands are generated as argument arrays so no shell parsing is involved.
+        // eslint-disable-next-line no-await-in-loop
+        const result = await this.commandRunner(route.apply.command, route.apply.args, { timeoutMs: 10_000 });
+        if (!result.ok) {
+          throw new AppError(
+            'PRIVATE_EDGE_ROUTE_COMMAND_FAILED',
+            `Tailscale could not publish ${route.serviceName}: ${result.stderr || result.error || `exit ${result.code}`}.`,
+            502,
+          );
+        }
+        applied.push(route);
+      }
+
+      const verified = await this.plan(capability);
+      if (verified.routePlan.state !== 'in-sync') {
+        throw new AppError(
+          'PRIVATE_EDGE_ROUTE_VERIFICATION_FAILED',
+          `Tailscale accepted the route commands, but verification failed: ${verified.routePlan.summary}`,
+          502,
+        );
+      }
+
+      await this.workspaceState.load();
+      const appliedAt = new Date().toISOString();
+      await this.workspaceState.upsertPrivateEdgeRoutes(applied.map((route) => ({
+        serviceId: route.serviceId,
+        serviceName: route.serviceName,
+        targetPort: route.targetPort,
+        httpsPort: route.httpsPort,
+        url: route.url,
+        command: route.apply.command,
+        applyArgs: route.apply.args,
+        rollbackArgs: route.rollback.args,
+        appliedAt,
+        status: 'active',
+      })));
+      return {
+        capability: 'private-edge',
+        applied: applied.length > 0,
+        appliedRoutes: applied.map(({ serviceId, serviceName, targetPort, httpsPort, url }) => ({
+          serviceId, serviceName, targetPort, httpsPort, url,
+        })),
+        plan: verified,
+      };
+    } catch (error) {
+      const rollbackFailures: Array<{ route: (typeof routes)[number]; detail: string }> = [];
+      for (const route of [...applied].reverse()) {
+        // Re-check the listener before rollback so a concurrent replacement is never removed.
+        // eslint-disable-next-line no-await-in-loop
+        const rollbackPlan = await planPrivateEdgeRoutes(
+          before.workspace.id,
+          [{ id: route.serviceId, name: route.serviceName, port: route.targetPort }],
+          route.rollback.command,
+          this.commandRunner,
+          route.httpsPort,
+        );
+        if (rollbackPlan.state === 'ready') continue;
+        if (rollbackPlan.state !== 'in-sync') {
+          rollbackFailures.push({ route, detail: `Listener ownership changed before rollback: ${rollbackPlan.summary}` });
+          continue;
+        }
+        // eslint-disable-next-line no-await-in-loop
+        const result = await this.commandRunner(route.rollback.command, route.rollback.args, { timeoutMs: 10_000 });
+        if (!result.ok) rollbackFailures.push({ route, detail: result.stderr || result.error || `exit ${result.code}` });
+      }
+      if (rollbackFailures.length > 0) {
+        await this.workspaceState.load();
+        const appliedAt = new Date().toISOString();
+        await this.workspaceState.upsertPrivateEdgeRoutes(rollbackFailures.map(({ route }) => ({
+          serviceId: route.serviceId,
+          serviceName: route.serviceName,
+          targetPort: route.targetPort,
+          httpsPort: route.httpsPort,
+          url: route.url,
+          command: route.apply.command,
+          applyArgs: route.apply.args,
+          rollbackArgs: route.rollback.args,
+          appliedAt,
+          status: 'rollback-failed',
+        })));
+      }
+      throw new AppError(
+        'PRIVATE_EDGE_ROUTE_APPLY_FAILED',
+        rollbackFailures.length > 0
+          ? 'Private Edge route application failed, and one or more newly created routes could not be rolled back.'
+          : 'Private Edge route application failed; every route created by this attempt was rolled back.',
+        502,
+        {
+          cause: error instanceof Error ? error.message : String(error),
+          appliedBeforeFailure: applied.map((route) => route.serviceId),
+          rollbackFailures: rollbackFailures.map(({ route, detail }) => ({ serviceId: route.serviceId, detail })),
+        },
+      );
+    }
   }
 }

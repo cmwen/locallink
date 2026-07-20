@@ -20,6 +20,18 @@ test('workspace state persists preferences, runtime plans, updates, and reservat
   });
   await repository.addVersionUpdate({ id: 'update-1', from: '1.0.0', to: '1.1.0', status: 'queued', createdAt: new Date().toISOString() });
   await repository.addPortReservation({ id: 'port-1', service: 'Temp API', port: 6080, status: 'reserved', createdAt: new Date().toISOString() });
+  await repository.upsertPrivateEdgeRoutes([{
+    serviceId: 'api',
+    serviceName: 'API',
+    targetPort: '6080',
+    httpsPort: '7443',
+    url: 'https://workspace.tailnet.ts.net:7443',
+    command: 'tailscale',
+    applyArgs: ['serve', '--bg', '--yes', '--https=7443', 'http://127.0.0.1:6080'],
+    rollbackArgs: ['serve', '--yes', '--https=7443', 'off'],
+    appliedAt: new Date().toISOString(),
+    status: 'active',
+  }]);
 
   const restored = new WorkspaceStateRepository(file);
   const state = await restored.load();
@@ -28,6 +40,7 @@ test('workspace state persists preferences, runtime plans, updates, and reservat
   assert.equal(state.temporaryRuntimes[0]?.name, 'Temp API');
   assert.equal(state.versionUpdates[0]?.status, 'queued');
   assert.equal(state.portReservations[0]?.port, 6080);
+  assert.equal(state.privateEdgeRoutes[0]?.serviceId, 'api');
 
   await restored.cancelVersionUpdate('update-1');
   await restored.releasePortReservation('port-1');

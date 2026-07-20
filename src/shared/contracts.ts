@@ -354,6 +354,19 @@ export interface PortReservation {
   createdAt: string;
 }
 
+export interface PrivateEdgeRouteOwnership {
+  serviceId: string;
+  serviceName: string;
+  targetPort: string;
+  httpsPort: string;
+  url?: string;
+  command: string;
+  applyArgs: string[];
+  rollbackArgs: string[];
+  appliedAt: string;
+  status: 'active' | 'rollback-failed';
+}
+
 export interface WorkspacePreferences {
   dashboardEnabled: boolean;
   proxyEnabled: boolean;
@@ -366,6 +379,7 @@ export interface WorkspaceState {
   temporaryRuntimes: TemporaryRuntimeRecord[];
   versionUpdates: VersionUpdateRecord[];
   portReservations: PortReservation[];
+  privateEdgeRoutes: PrivateEdgeRouteOwnership[];
 }
 
 export interface InfraConfigFileView {

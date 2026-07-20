@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import type {
   PortReservation,
+  PrivateEdgeRouteOwnership,
   TemporaryRuntimeRecord,
   VersionUpdateRecord,
   WorkspacePreferences,
@@ -21,6 +22,7 @@ const DEFAULT_STATE: WorkspaceState = {
   temporaryRuntimes: [],
   versionUpdates: [],
   portReservations: [],
+  privateEdgeRoutes: [],
 };
 
 function normalizeState(value: Partial<WorkspaceState> | undefined): WorkspaceState {
@@ -29,6 +31,7 @@ function normalizeState(value: Partial<WorkspaceState> | undefined): WorkspaceSt
     temporaryRuntimes: value?.temporaryRuntimes || [],
     versionUpdates: value?.versionUpdates || [],
     portReservations: value?.portReservations || [],
+    privateEdgeRoutes: value?.privateEdgeRoutes || [],
   };
 }
 
@@ -90,6 +93,16 @@ export class WorkspaceStateRepository {
   async releasePortReservation(id: string): Promise<WorkspaceState> {
     return this.update({
       portReservations: this.state.portReservations.map((reservation) => reservation.id === id ? { ...reservation, status: 'released' } : reservation),
+    });
+  }
+
+  async upsertPrivateEdgeRoutes(routes: PrivateEdgeRouteOwnership[]): Promise<WorkspaceState> {
+    const incomingIds = new Set(routes.map((route) => route.serviceId));
+    return this.update({
+      privateEdgeRoutes: [
+        ...this.state.privateEdgeRoutes.filter((route) => !incomingIds.has(route.serviceId)),
+        ...routes,
+      ],
     });
   }
 }

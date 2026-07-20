@@ -197,9 +197,10 @@ test('planPrivateEdgeRoutes generates exact reversible commands without mutating
     url: 'https://minipc.tailnet.ts.net:7451',
     status: 'missing',
     detail: 'This listener can be added without replacing an observed root Serve route.',
-    apply: { command: 'tailscale', args: ['serve', '--bg', '--https=7451', 'http://127.0.0.1:1411'] },
-    rollback: { command: 'tailscale', args: ['serve', '--https=7451', 'off'] },
+    apply: { command: 'tailscale', args: ['serve', '--bg', '--yes', '--https=7451', 'http://127.0.0.1:1411'] },
+    rollback: { command: 'tailscale', args: ['serve', '--yes', '--https=7451', 'off'] },
   });
+  assert.match(plan.confirmationToken || '', /^private-edge:[a-f0-9]{64}$/);
 });
 
 test('planPrivateEdgeRoutes detects active listeners and conflicts instead of replacing them', async () => {

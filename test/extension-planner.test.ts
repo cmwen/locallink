@@ -126,3 +126,137 @@ test('extension planner rejects capabilities without an installer contract', asy
   const planner = new ExtensionPlanner(root);
   await assert.rejects(() => planner.plan('identity'), /currently supports "private-edge"/i);
 });
+
+test('Private Edge route apply requires a fresh token, verifies live state, and records ownership', async () => {
+  const root = await createWorkspace();
+  const liveRoutes = new Map<string, string>();
+  const commandRunner: CommandRunner = async (_command, args) => {
+    if (args[0] === 'status') return result({ stdout: JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'minipc.tailnet.ts.net.' } }) });
+    if (args[0] === 'serve' && args[1] === 'status') {
+      const tcp: Record<string, { HTTPS: boolean }> = {};
+      const web: Record<string, { Handlers: { '/': { Proxy: string } } }> = {};
+      for (const [httpsPort, targetPort] of liveRoutes) {
+        tcp[httpsPort] = { HTTPS: true };
+        web[`minipc.tailnet.ts.net:${httpsPort}`] = { Handlers: { '/': { Proxy: `http://127.0.0.1:${targetPort}` } } };
+      }
+      return result({ stdout: JSON.stringify({ TCP: tcp, Web: web }) });
+    }
+    const httpsPort = args.find((arg) => arg.startsWith('--https='))?.split('=')[1];
+    if (args.at(-1) === 'off') {
+      if (httpsPort) liveRoutes.delete(httpsPort);
+      return result();
+    }
+    const targetPort = args.at(-1)?.match(/:(\d+)$/)?.[1];
+    if (httpsPort && targetPort) liveRoutes.set(httpsPort, targetPort);
+    return result();
+  };
+  const planner = new ExtensionPlanner(root, new ConfigRepository(root), commandRunner);
+  await planner.apply('private-edge', ['api']);
+  const plan = await planner.plan('private-edge');
+
+  await assert.rejects(
+    () => planner.applyRoutes('private-edge', 'private-edge:stale'),
+    (error: any) => error?.code === 'STALE_PRIVATE_EDGE_CONFIRMATION',
+  );
+  assert.equal(liveRoutes.size, 0);
+
+  const applied = await planner.applyRoutes('private-edge', plan.routePlan.confirmationToken!);
+  assert.equal(applied.applied, true);
+  assert.equal(applied.plan.routePlan.state, 'in-sync');
+  assert.equal(liveRoutes.size, 1);
+  const workspaceState = JSON.parse(await fs.readFile(path.join(root, '.locallink', 'workspace-state.json'), 'utf8'));
+  assert.equal(workspaceState.privateEdgeRoutes[0].serviceId, 'api');
+  assert.equal(workspaceState.privateEdgeRoutes[0].status, 'active');
+});
+
+test('Private Edge route apply rolls back only routes created before a later command failure', async () => {
+  const root = await createWorkspace();
+  await fs.writeFile(
+    path.join(root, 'docker-compose.yml'),
+    'services:\n  api:\n    image: example/api\n    ports:\n      - "${API_PORT}:5050"\n  worker:\n    image: example/worker\n    ports:\n      - "6060:6060"\n',
+    'utf8',
+  );
+  const liveRoutes = new Map<string, string>();
+  let rollbackCalls = 0;
+  const commandRunner: CommandRunner = async (_command, args) => {
+    if (args[0] === 'status') return result({ stdout: JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'minipc.tailnet.ts.net.' } }) });
+    if (args[0] === 'serve' && args[1] === 'status') {
+      const tcp: Record<string, { HTTPS: boolean }> = {};
+      const web: Record<string, { Handlers: { '/': { Proxy: string } } }> = {};
+      for (const [httpsPort, targetPort] of liveRoutes) {
+        tcp[httpsPort] = { HTTPS: true };
+        web[`minipc.tailnet.ts.net:${httpsPort}`] = { Handlers: { '/': { Proxy: `http://127.0.0.1:${targetPort}` } } };
+      }
+      return result({ stdout: JSON.stringify({ TCP: tcp, Web: web }) });
+    }
+    const httpsPort = args.find((arg) => arg.startsWith('--https='))?.split('=')[1];
+    if (args.at(-1) === 'off') {
+      rollbackCalls += 1;
+      if (httpsPort) liveRoutes.delete(httpsPort);
+      return result();
+    }
+    const targetPort = args.at(-1)?.match(/:(\d+)$/)?.[1];
+    if (targetPort === '6060') return result({ ok: false, code: 1, stderr: 'simulated failure' });
+    if (httpsPort && targetPort) liveRoutes.set(httpsPort, targetPort);
+    return result();
+  };
+  const planner = new ExtensionPlanner(root, new ConfigRepository(root), commandRunner);
+  await planner.apply('private-edge', ['api', 'worker']);
+  const plan = await planner.plan('private-edge');
+
+  await assert.rejects(
+    () => planner.applyRoutes('private-edge', plan.routePlan.confirmationToken!),
+    (error: any) => error?.code === 'PRIVATE_EDGE_ROUTE_APPLY_FAILED' && /rolled back/i.test(error.message),
+  );
+  assert.equal(rollbackCalls, 1);
+  assert.equal(liveRoutes.size, 0);
+  await assert.rejects(() => fs.access(path.join(root, '.locallink', 'workspace-state.json')), { code: 'ENOENT' });
+});
+
+test('Private Edge rollback refuses to remove a listener replaced by another actor', async () => {
+  const root = await createWorkspace();
+  await fs.writeFile(
+    path.join(root, 'docker-compose.yml'),
+    'services:\n  api:\n    image: example/api\n    ports:\n      - "${API_PORT}:5050"\n  worker:\n    image: example/worker\n    ports:\n      - "6060:6060"\n',
+    'utf8',
+  );
+  const liveRoutes = new Map<string, string>();
+  let rollbackCalls = 0;
+  const commandRunner: CommandRunner = async (_command, args) => {
+    if (args[0] === 'status') return result({ stdout: JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'minipc.tailnet.ts.net.' } }) });
+    if (args[0] === 'serve' && args[1] === 'status') {
+      const tcp: Record<string, { HTTPS: boolean }> = {};
+      const web: Record<string, { Handlers: { '/': { Proxy: string } } }> = {};
+      for (const [httpsPort, targetPort] of liveRoutes) {
+        tcp[httpsPort] = { HTTPS: true };
+        web[`minipc.tailnet.ts.net:${httpsPort}`] = { Handlers: { '/': { Proxy: `http://127.0.0.1:${targetPort}` } } };
+      }
+      return result({ stdout: JSON.stringify({ TCP: tcp, Web: web }) });
+    }
+    const httpsPort = args.find((arg) => arg.startsWith('--https='))?.split('=')[1];
+    if (args.at(-1) === 'off') {
+      rollbackCalls += 1;
+      return result();
+    }
+    const targetPort = args.at(-1)?.match(/:(\d+)$/)?.[1];
+    if (targetPort === '6060') {
+      const firstListener = [...liveRoutes.keys()][0];
+      if (firstListener) liveRoutes.set(firstListener, '9999');
+      return result({ ok: false, code: 1, stderr: 'simulated failure after concurrent replacement' });
+    }
+    if (httpsPort && targetPort) liveRoutes.set(httpsPort, targetPort);
+    return result();
+  };
+  const planner = new ExtensionPlanner(root, new ConfigRepository(root), commandRunner);
+  await planner.apply('private-edge', ['api', 'worker']);
+  const plan = await planner.plan('private-edge');
+
+  await assert.rejects(
+    () => planner.applyRoutes('private-edge', plan.routePlan.confirmationToken!),
+    (error: any) => error?.code === 'PRIVATE_EDGE_ROUTE_APPLY_FAILED' && /could not be rolled back/i.test(error.message),
+  );
+  assert.equal(rollbackCalls, 0);
+  assert.equal([...liveRoutes.values()][0], '9999');
+  const workspaceState = JSON.parse(await fs.readFile(path.join(root, '.locallink', 'workspace-state.json'), 'utf8'));
+  assert.equal(workspaceState.privateEdgeRoutes[0].status, 'rollback-failed');
+});

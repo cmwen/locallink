@@ -290,6 +290,19 @@ export async function applyPrivateEdge(services?: string[]): Promise<ExtensionAp
   });
 }
 
+export async function applyPrivateEdgeRoutes(confirmationToken: string): Promise<{
+  capability: 'private-edge';
+  applied: boolean;
+  appliedRoutes: Array<{ serviceId: string; serviceName: string; targetPort: string; httpsPort: string; url?: string }>;
+  plan: ExtensionInstallPlan;
+}> {
+  return fetchJson('./api/extensions/routes/apply', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ capability: 'private-edge', confirmationToken }),
+  });
+}
+
 export async function persistTemporaryRuntime(input: { name: string; type: string; port: number; command: string }): Promise<WorkspaceState> {
   return fetchJson<WorkspaceState>('./api/workspace/runtimes', {
     method: 'POST',

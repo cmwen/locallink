@@ -160,6 +160,22 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
     async ({ capability, services }) => textResponse(JSON.stringify(await context.applyExtension(capability, services), null, 2)),
   );
 
+  server.registerTool(
+    'apply_private_edge_routes',
+    {
+      description: 'Apply and verify the exact live Tailscale Serve route plan represented by a fresh confirmation token; rolls back routes created by a failed attempt.',
+      inputSchema: z.object({
+        capability: z.literal('private-edge'),
+        confirmation_token: z.string().startsWith('private-edge:').min(77),
+      }),
+    },
+    async ({ capability, confirmation_token }) => textResponse(JSON.stringify(
+      await context.applyExtensionRoutes(capability, confirmation_token),
+      null,
+      2,
+    )),
+  );
+
   const orchestrateService = async ({
     runtime,
     service_name,

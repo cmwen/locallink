@@ -61,6 +61,10 @@ const extensionCapabilitySchema = z.object({
   capability: z.literal('private-edge'),
   services: z.array(z.string().min(1)).max(100).optional(),
 });
+const extensionRouteApplySchema = z.object({
+  capability: z.literal('private-edge'),
+  confirmationToken: z.string().startsWith('private-edge:').min(77),
+});
 
 function toErrorPayload(error: unknown) {
   if (isAppError(error)) {
@@ -153,6 +157,13 @@ export function createHttpServer(context: AppContext) {
     if (!parsed.success) throw new AppError('INVALID_BODY', parsed.error.issues[0]?.message || 'Invalid body.', 400);
     reply.header('Cache-Control', 'no-store');
     return context.applyExtension(parsed.data.capability, parsed.data.services);
+  });
+
+  app.post('/api/extensions/routes/apply', async (request, reply) => {
+    const parsed = extensionRouteApplySchema.safeParse(request.body);
+    if (!parsed.success) throw new AppError('INVALID_BODY', parsed.error.issues[0]?.message || 'Invalid body.', 400);
+    reply.header('Cache-Control', 'no-store');
+    return context.applyExtensionRoutes(parsed.data.capability, parsed.data.confirmationToken);
   });
 
   app.patch('/api/workspace/settings', async (request, reply) => {
