@@ -413,7 +413,23 @@ export interface EcosystemPatch {
   };
 }
 
-export type InfraPatch = EnvPatch | ComposePatch | EcosystemPatch;
+export interface ExtensionPatch {
+  kind: 'extension';
+  extensionId: string;
+  updates: {
+    name?: string;
+    kind?: ExtensionKind;
+    enabled?: boolean;
+    detail?: string;
+    command?: string;
+    exposedPorts?: string[];
+    requiredEnv?: string[];
+    dependsOn?: string[];
+    docsUrl?: string;
+  };
+}
+
+export type InfraPatch = EnvPatch | ComposePatch | EcosystemPatch | ExtensionPatch;
 
 export interface WriteInfraConfigInput {
   targetFile: TargetFile;

@@ -161,6 +161,31 @@ export interface ExtensionLifecycleRecord {
   checks: ExtensionLifecycleCheck[];
 }
 
+export interface ExtensionPlanStep {
+  id: string;
+  label: string;
+  owner: 'locallink' | 'user' | 'system';
+  status: 'complete' | 'pending' | 'blocked';
+  automatic: boolean;
+  detail: string;
+  targetFile?: string;
+}
+
+export interface ExtensionInstallPlan {
+  capability: 'private-edge';
+  state: 'ready-to-apply' | 'waiting-user' | 'complete';
+  summary: string;
+  canApply: boolean;
+  steps: ExtensionPlanStep[];
+}
+
+export interface ExtensionApplyResult {
+  capability: 'private-edge';
+  applied: boolean;
+  changedFiles: string[];
+  plan: ExtensionInstallPlan;
+}
+
 export interface ResourceProcess {
   pid: number;
   name: string;

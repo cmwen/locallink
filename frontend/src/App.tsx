@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   executeServiceAction,
+  applyPrivateEdge,
   cancelVersionUpdate,
   inspectProcess,
   normalizeLog,
   normalizeState,
   persistTemporaryRuntime,
+  planPrivateEdge,
   queueVersionUpdate,
   readDashboardState,
   readWorkspaceState,
@@ -16,6 +18,7 @@ import {
 } from './api';
 import type {
   DashboardState,
+  ExtensionInstallPlan,
   LogEntry,
   ProcessInspection,
   ProcessTerminationReview,
@@ -136,6 +139,8 @@ export function App() {
   const [selectedProcess, setSelectedProcess] = useState<ProcessInspection | null>(null);
   const [updateQueued, setUpdateQueued] = useState(false);
   const [queuedVersionId, setQueuedVersionId] = useState('');
+  const [extensionPlan, setExtensionPlan] = useState<ExtensionInstallPlan | null>(null);
+  const [extensionApplying, setExtensionApplying] = useState(false);
 
   const services = useMemo(() => [...state.services, ...tempServices], [state.services, tempServices]);
   const logs = useMemo(() => [...liveLogs, ...state.logs].slice(0, 180), [liveLogs, state.logs]);
@@ -451,6 +456,32 @@ export function App() {
     }
   }
 
+  async function managePrivateEdge(action: 'plan' | 'apply') {
+    if (source !== 'api') {
+      setStatus('Private Edge planning needs the live LocalLink API.');
+      return;
+    }
+    setExtensionApplying(true);
+    try {
+      if (action === 'plan') {
+        const plan = await planPrivateEdge();
+        setExtensionPlan(plan);
+        setStatus(plan.summary);
+      } else {
+        const result = await applyPrivateEdge();
+        setExtensionPlan(result.plan);
+        setStatus(result.applied
+          ? `Private Edge workspace setup updated ${result.changedFiles.join(', ')}.`
+          : 'Private Edge workspace files already match the plan.');
+        await refreshState();
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Private Edge planning failed.');
+    } finally {
+      setExtensionApplying(false);
+    }
+  }
+
   async function copyVisibleLogs() {
     const text = logs.map((log) => `${log.time} ${log.stream} ${log.level}: ${log.message}`).join('\n');
     await navigator.clipboard?.writeText(text);
@@ -523,7 +554,10 @@ export function App() {
           state={state}
           services={services}
           updateQueued={updateQueued}
+          extensionPlan={extensionPlan}
+          extensionApplying={extensionApplying}
           query={queries.extensions}
+          managePrivateEdge={managePrivateEdge}
           queueUpdate={queueUpdate}
           openService={openService}
         />
@@ -900,14 +934,20 @@ function ExtensionsWorkspace({
   state,
   services,
   updateQueued,
+  extensionPlan,
+  extensionApplying,
   query,
+  managePrivateEdge,
   queueUpdate,
   openService,
 }: {
   state: DashboardState;
   services: ServiceRecord[];
   updateQueued: boolean;
+  extensionPlan: ExtensionInstallPlan | null;
+  extensionApplying: boolean;
   query: string;
+  managePrivateEdge: (action: 'plan' | 'apply') => Promise<void>;
   queueUpdate: () => Promise<void>;
   openService: (id: string) => void;
 }) {
@@ -967,9 +1007,27 @@ function ExtensionsWorkspace({
               <ConfigLine label="Pocket ID issuer" value={pocketIdOption?.detectedValue || 'Set POCKET_ID_APP_URL to the private Tailscale Serve HTTPS URL.'} />
             </div>
             <div className="actions">
+              <button className="btn" type="button" disabled={extensionApplying} onClick={() => void managePrivateEdge('plan')}>Preview Private Edge setup</button>
+              {extensionPlan?.canApply ? (
+                <button className="btn" type="button" disabled={extensionApplying} onClick={() => void managePrivateEdge('apply')}>Apply workspace setup</button>
+              ) : null}
               <a className="btn" href="./docs/pocket-id-tailscale.html" target="_blank" rel="noreferrer">Private SSO setup</a>
               <a className="btn ghost" href="./docs/extensions.html" target="_blank" rel="noreferrer">Extension guide</a>
               <a className="btn ghost" href="https://tailscale.com/docs/features/tailscale-serve" target="_blank" rel="noreferrer">Tailscale Serve docs</a>
+            </div>
+          </article> : null}
+
+          {showConfig && extensionPlan ? <article className="config-card">
+            <strong>Private Edge onboarding plan</strong>
+            <p>{extensionPlan.summary}</p>
+            <div className="config-lines">
+              {extensionPlan.steps.map((step) => (
+                <ConfigLine
+                  key={step.id}
+                  label={`${step.label} · ${step.owner}`}
+                  value={`${step.status} / ${step.automatic ? 'automatic' : 'manual'}${step.targetFile ? ` / ${step.targetFile}` : ''}`}
+                />
+              ))}
             </div>
           </article> : null}
 

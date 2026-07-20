@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 
 import { ConfigRepository } from './config/files';
 import { buildExtensionLifecycles } from './extensions/lifecycle';
+import { ExtensionPlanner, type ExtensionApplyResult, type ExtensionInstallPlan } from './extensions/planner';
 import { createHttpServer } from './http/server';
 import { LogBroker } from './logs/broker';
 import { PortAllocator } from './ports/allocator';
@@ -47,6 +48,8 @@ export class AppContext {
 
   readonly logs;
 
+  readonly extensionPlanner;
+
   readonly portAllocator;
 
   readonly runtimeResolver;
@@ -69,6 +72,7 @@ export class AppContext {
     this.paths = resolvePaths(root);
     this.configRepository = new ConfigRepository(this.paths.root);
     this.logs = new LogBroker(mirrorBrokerEntry);
+    this.extensionPlanner = new ExtensionPlanner(this.paths.root, this.configRepository);
     this.portAllocator = new PortAllocator();
     this.runtimeResolver = new RuntimeResolver(
       this.paths.root,
@@ -150,6 +154,21 @@ export class AppContext {
     await this.configRepository.hydrateProcessEnv();
     const model = await this.configRepository.loadProjectModel();
     return buildExtensionLifecycles(model.extensions, undefined, model.definitions);
+  }
+
+  async planExtension(capability: string): Promise<ExtensionInstallPlan> {
+    return this.extensionPlanner.plan(capability);
+  }
+
+  async applyExtension(capability: string): Promise<ExtensionApplyResult> {
+    const result = await this.extensionPlanner.apply(capability);
+    this.logs.append(
+      result.applied
+        ? `${capability} workspace plan applied to ${result.changedFiles.join(', ')}.`
+        : `${capability} workspace plan required no file changes.`,
+      'Lifecycle',
+    );
+    return result;
   }
 
   async writeInfraConfig(input: WriteInfraConfigInput): Promise<WriteInfraConfigResult> {

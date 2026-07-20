@@ -56,6 +56,7 @@ function normalizeCommand(rawCommand: string | undefined): string {
     case 'mcp':
     case 'snapshot':
     case 'extensions':
+    case 'extension':
     case 'doctor':
     case 'init':
       return rawCommand;
@@ -79,6 +80,8 @@ function printHelp(): void {
       '  locallink [--log-level LEVEL] doctor    Print startup diagnostics and install guidance',
       '  locallink [--log-level LEVEL] snapshot  Print the current dashboard state as JSON',
       '  locallink [--log-level LEVEL] extensions Print declared, installed, manual, and healthy extension states',
+      '  locallink [--log-level LEVEL] extension plan private-edge  Preview safe workspace changes and manual checkpoints',
+      '  locallink [--log-level LEVEL] extension apply private-edge Apply only the workspace-owned part of the plan',
       '  locallink [--log-level LEVEL] init      Scaffold a starter LocalLink workspace here',
       '  locallink [--log-level LEVEL] init NAME Scaffold a starter LocalLink workspace in ./NAME',
       '',
@@ -175,9 +178,26 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
 
+  if (command === 'extension') {
+    const action = options.positionals[1];
+    const capability = options.positionals[2];
+    if (!capability || (action !== 'plan' && action !== 'apply')) {
+      throw new AppError(
+        'INVALID_EXTENSION_COMMAND',
+        'Use "locallink extension plan private-edge" or "locallink extension apply private-edge".',
+        400,
+      );
+    }
+    const result = action === 'plan'
+      ? await context.planExtension(capability)
+      : await context.applyExtension(capability);
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
   throw new AppError(
     'UNKNOWN_COMMAND',
-    `Unsupported command "${command}". Use "web", "mcp", "doctor", "snapshot", or "extensions".`,
+    `Unsupported command "${command}". Use "web", "mcp", "doctor", "snapshot", "extensions", or "extension".`,
     400,
   );
 }

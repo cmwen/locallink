@@ -98,6 +98,50 @@ test('ConfigRepository patches ecosystem.config.js with process.env references',
   assert.match(nextContent, /tags: \["api", "local"\]/);
 });
 
+test('ConfigRepository upserts extension declarations without dropping comments', async () => {
+  const root = await createTempProject();
+  const extensionsPath = path.join(root, 'locallink.extensions.yml');
+  await fs.writeFile(
+    extensionsPath,
+    '# workspace capabilities\nextensions:\n  - id: dashboard\n    name: Dashboard\n    kind: dashboard\n    enabled: true\n',
+    'utf8',
+  );
+
+  const repository = new ConfigRepository(root);
+  await repository.writeInfraConfig({
+    targetFile: 'locallink.extensions.yml',
+    patch: {
+      kind: 'extension',
+      extensionId: 'private-edge',
+      updates: {
+        name: 'Private Edge',
+        kind: 'network-edge',
+        enabled: true,
+        command: 'tailscale',
+        docsUrl: 'https://tailscale.com/docs/features/tailscale-serve',
+      },
+    },
+  });
+
+  const nextContent = await fs.readFile(extensionsPath, 'utf8');
+  assert.match(nextContent, /# workspace capabilities/);
+  assert.match(nextContent, /id: dashboard/);
+  assert.match(nextContent, /id: private-edge/);
+  assert.match(nextContent, /kind: network-edge/);
+
+  await repository.writeInfraConfig({
+    targetFile: 'locallink.extensions.yml',
+    patch: {
+      kind: 'extension',
+      extensionId: 'private-edge',
+      updates: { enabled: false },
+    },
+  });
+  const updatedContent = await fs.readFile(extensionsPath, 'utf8');
+  assert.equal((updatedContent.match(/id: private-edge/g) || []).length, 1);
+  assert.match(updatedContent, /id: private-edge[\s\S]*enabled: false/);
+});
+
 test('ConfigRepository loads optional service metadata from ecosystem and compose definitions', async () => {
   const root = await createTempProject();
   await fs.writeFile(

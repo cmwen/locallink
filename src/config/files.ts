@@ -5,12 +5,13 @@ import path from 'node:path';
 import vm from 'node:vm';
 
 import { parse, print, types } from 'recast';
-import { YAMLMap, parseDocument } from 'yaml';
+import { YAMLMap, YAMLSeq, parseDocument } from 'yaml';
 
 import {
   TARGET_FILES,
   type ComposePatch,
   type EcosystemPatch,
+  type ExtensionPatch,
   type EnvPatch,
   type EnvPatchValue,
   type InfraConfigFileView,
@@ -567,6 +568,32 @@ function applyComposePatch(content: string, patch: ComposePatch): string {
   return String(document);
 }
 
+function applyExtensionPatch(content: string, patch: ExtensionPatch): string {
+  const document = parseDocument(content.trim() ? content : 'extensions: []\n');
+  let extensionsNode = document.get('extensions', true) as YAMLSeq<unknown> | undefined;
+
+  if (!extensionsNode || !(extensionsNode instanceof YAMLSeq)) {
+    extensionsNode = document.createNode([]) as YAMLSeq<unknown>;
+    document.set('extensions', extensionsNode);
+  }
+
+  let extensionNode = extensionsNode.items.find((item) => (
+    item instanceof YAMLMap && String(item.get('id') || '') === patch.extensionId
+  )) as YAMLMap<unknown, unknown> | undefined;
+  if (!extensionNode) {
+    extensionNode = document.createNode({ id: patch.extensionId }) as YAMLMap<unknown, unknown>;
+    extensionsNode.add(extensionNode);
+  }
+
+  for (const [key, value] of Object.entries(patch.updates)) {
+    if (value !== undefined) {
+      extensionNode.set(key, Array.isArray(value) ? document.createNode(value) : value);
+    }
+  }
+
+  return String(document);
+}
+
 function propertyKeyEquals(property: any, key: string): boolean {
   if (n.Identifier.check(property.key)) {
     return property.key.name === key;
@@ -905,6 +932,9 @@ export class ConfigRepository {
           break;
         case 'ecosystem':
           nextContent = await applyEcosystemPatch(existingContent, input.patch);
+          break;
+        case 'extension':
+          nextContent = applyExtensionPatch(existingContent, input.patch);
           break;
         default:
           throw new AppError('UNSUPPORTED_PATCH', `Unsupported patch kind.`, 400);

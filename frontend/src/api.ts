@@ -1,6 +1,8 @@
 import type {
   DashboardState,
   ExtensionLifecycleRecord,
+  ExtensionApplyResult,
+  ExtensionInstallPlan,
   LogEntry,
   PortResolution,
   ProcessInspection,
@@ -269,6 +271,22 @@ export async function updateWorkspacePreferences(patch: Partial<WorkspaceState['
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
+  });
+}
+
+export async function planPrivateEdge(): Promise<ExtensionInstallPlan> {
+  return fetchJson<ExtensionInstallPlan>('./api/extensions/plan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ capability: 'private-edge' }),
+  });
+}
+
+export async function applyPrivateEdge(): Promise<ExtensionApplyResult> {
+  return fetchJson<ExtensionApplyResult>('./api/extensions/apply', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ capability: 'private-edge' }),
   });
 }
 

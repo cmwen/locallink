@@ -169,6 +169,7 @@ This folder was initialized by \`locallink init\`.
 locallink web
 locallink mcp
 locallink extensions
+locallink extension plan private-edge
 \`\`\`
 
 ## Helpful notes

@@ -37,11 +37,13 @@ See [the full product goal and capability boundaries](docs/product-goal.md).
   - `/template` dashboard template surface
   - `/docs` static project documentation
   - `manifest.webmanifest` + `sw.js`
-- MCP stdio server with four tools:
+- MCP stdio workspace toolset including:
   - `read_infra_config`
   - `write_infra_config`
   - `get_available_port`
   - `execute_task`
+  - `plan_extension_onboarding`
+  - `apply_extension_workspace_plan`
 - Infra source of truth in:
   - `.env`
   - `.env.example`
@@ -125,6 +127,8 @@ locallink web
 locallink mcp
 locallink snapshot --log-level debug
 locallink extensions
+locallink extension plan private-edge
+locallink extension apply private-edge
 ```
 
 When you launch `locallink` from another folder, it reads environment, service, extension, and runtime declarations from that current working directory.
@@ -208,6 +212,8 @@ All dashboard APIs are local-only and served from the same process as the UI.
 | --- | --- | --- |
 | `GET` | `/api/state` | Rebuilds the current dashboard snapshot from external runtime managers: services, ports, PWA status, logs, and constraints. |
 | `GET` | `/api/extensions` | Separates available capabilities, workspace declarations, host installation, manual onboarding, configuration, and runtime health. |
+| `POST` | `/api/extensions/plan` | Preview workspace-owned Private Edge changes and user-owned security checkpoints without writing files. |
+| `POST` | `/api/extensions/apply` | Idempotently apply only the declaration and local environment portion of a Private Edge plan. |
 | `GET` | `/api/configs` | Returns the raw infra files plus the derived service list. |
 | `POST` | `/api/configs` | Writes one infra file using full `content` or a structured `patch`. |
 | `POST` | `/api/ports/next` | Returns the next free local port, optionally starting from a supplied number. |
@@ -240,6 +246,8 @@ MCP inputs use snake_case:
 | `patch_workspace_blueprint` | `target_file`, `content?`, `patch_payload?` | Updates one source-of-truth file with either raw content or a supported structured patch. |
 | `allocate_system_port` | `preferred_start?` | Scans for the next sequentially free local port. |
 | `verify_blueprint_compliance` | `service_name` | Checks whether a declared local service has a readable Dockerfile blueprint. |
+| `plan_extension_onboarding` | `capability` | Previews workspace changes and manual security checkpoints without writing files. |
+| `apply_extension_workspace_plan` | `capability` | Applies only the workspace-owned portion of a reviewed extension plan. |
 | `orchestrate_service` | `runtime`, `service_name`, `action` | Runs Docker, PM2, or Taskfile lifecycle commands for a declared service. |
 
 ## Configuration model and patch expectations

@@ -57,6 +57,7 @@ const temporaryRuntimeSchema = z.object({
 
 const versionUpdateSchema = z.object({ from: z.string().min(1), to: z.string().min(1) });
 const portReservationSchema = z.object({ service: z.string().min(1), port: z.number().int().min(1024).max(65535) });
+const extensionCapabilitySchema = z.object({ capability: z.literal('private-edge') });
 
 function toErrorPayload(error: unknown) {
   if (isAppError(error)) {
@@ -135,6 +136,20 @@ export function createHttpServer(context: AppContext) {
   app.get('/api/extensions', async (_request, reply) => {
     reply.header('Cache-Control', 'no-store');
     return context.readExtensionLifecycle();
+  });
+
+  app.post('/api/extensions/plan', async (request, reply) => {
+    const parsed = extensionCapabilitySchema.safeParse(request.body);
+    if (!parsed.success) throw new AppError('INVALID_BODY', parsed.error.issues[0]?.message || 'Invalid body.', 400);
+    reply.header('Cache-Control', 'no-store');
+    return context.planExtension(parsed.data.capability);
+  });
+
+  app.post('/api/extensions/apply', async (request, reply) => {
+    const parsed = extensionCapabilitySchema.safeParse(request.body);
+    if (!parsed.success) throw new AppError('INVALID_BODY', parsed.error.issues[0]?.message || 'Invalid body.', 400);
+    reply.header('Cache-Control', 'no-store');
+    return context.applyExtension(parsed.data.capability);
   });
 
   app.patch('/api/workspace/settings', async (request, reply) => {

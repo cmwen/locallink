@@ -77,6 +77,35 @@ test('HTTP server exposes the per-workspace extension lifecycle', async () => {
   await server.close();
 });
 
+test('HTTP server plans before applying workspace-owned Private Edge changes', async () => {
+  const root = await createTempProject();
+  const context = new AppContext(root);
+  await context.initialize();
+  const server = context.createServer();
+
+  const planResponse = await server.inject({
+    method: 'POST',
+    url: '/api/extensions/plan',
+    payload: { capability: 'private-edge' },
+  });
+  assert.equal(planResponse.statusCode, 200);
+  assert.equal(planResponse.json().canApply, true);
+  assert.ok(planResponse.json().steps.some((step: { owner: string }) => step.owner === 'user'));
+  await assert.rejects(() => fs.access(path.join(root, 'locallink.extensions.yml')), { code: 'ENOENT' });
+
+  const applyResponse = await server.inject({
+    method: 'POST',
+    url: '/api/extensions/apply',
+    payload: { capability: 'private-edge' },
+  });
+  assert.equal(applyResponse.statusCode, 200);
+  assert.equal(applyResponse.json().applied, true);
+  assert.deepEqual(applyResponse.json().changedFiles, ['locallink.extensions.yml', '.env']);
+  assert.match(await fs.readFile(path.join(root, 'locallink.extensions.yml'), 'utf8'), /kind: network-edge/);
+  assert.match(await fs.readFile(path.join(root, '.env'), 'utf8'), /LOCALLINK_PHASE2_PREFERRED_EDGE=tailscale/);
+  await server.close();
+});
+
 test('HTTP health identifies the current workspace', async () => {
   const root = await createTempProject();
   const context = new AppContext(root);

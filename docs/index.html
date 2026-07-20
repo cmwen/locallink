@@ -408,6 +408,10 @@ POCKET_ID_PORT=1411</code></pre>
                 <td>Print available, declared, manual-onboarding, installed, and healthy capability states for this workspace.</td>
               </tr>
               <tr>
+                <td><code>locallink extension plan|apply private-edge</code></td>
+                <td>Preview or apply only workspace-owned Private Edge declaration changes while preserving explicit user security checkpoints.</td>
+              </tr>
+              <tr>
                 <td><code>locallink doctor</code></td>
                 <td>Print startup diagnostics and install guidance for runtime dependencies.</td>
               </tr>
@@ -430,6 +434,8 @@ POCKET_ID_PORT=1411</code></pre>
             <tbody>
               <tr><td><code>GET</code></td><td><code>/api/state</code></td><td>Full dashboard snapshot including services, diagnostics, phase2 advisor, logs, ports, and resources.</td></tr>
               <tr><td><code>GET</code></td><td><code>/api/extensions</code></td><td>Per-workspace extension catalog, declaration state, runtime checks, and next onboarding step.</td></tr>
+              <tr><td><code>POST</code></td><td><code>/api/extensions/plan</code></td><td>Read-only Private Edge onboarding plan.</td></tr>
+              <tr><td><code>POST</code></td><td><code>/api/extensions/apply</code></td><td>Apply workspace declaration and environment changes without performing external security actions.</td></tr>
               <tr><td><code>GET</code></td><td><code>/api/configs</code></td><td>Raw workspace blueprint files plus derived services.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/configs</code></td><td>Update a supported blueprint file with raw content or a structured patch.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/ports/next</code></td><td>Allocate the next free local port.</td></tr>

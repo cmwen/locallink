@@ -136,6 +136,28 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
     allocateSystemPort,
   );
 
+  server.registerTool(
+    'plan_extension_onboarding',
+    {
+      description: 'Preview workspace-owned extension changes and explicit user-owned onboarding checkpoints without mutating files.',
+      inputSchema: z.object({
+        capability: z.literal('private-edge'),
+      }),
+    },
+    async ({ capability }) => textResponse(JSON.stringify(await context.planExtension(capability), null, 2)),
+  );
+
+  server.registerTool(
+    'apply_extension_workspace_plan',
+    {
+      description: 'Apply only the workspace declaration and local environment portion of a previously reviewable extension plan.',
+      inputSchema: z.object({
+        capability: z.literal('private-edge'),
+      }),
+    },
+    async ({ capability }) => textResponse(JSON.stringify(await context.applyExtension(capability), null, 2)),
+  );
+
   const orchestrateService = async ({
     runtime,
     service_name,

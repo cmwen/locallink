@@ -500,6 +500,16 @@ export class RuntimeResolver {
           detail: 'Scans sequentially for the next completely open local port.',
         },
         {
+          name: 'plan_extension_onboarding',
+          input: 'capability',
+          detail: 'Previews LocalLink-owned changes and user-owned security checkpoints without writing workspace files.',
+        },
+        {
+          name: 'apply_extension_workspace_plan',
+          input: 'capability',
+          detail: 'Applies only the reviewed workspace declaration and local environment changes for an extension.',
+        },
+        {
           name: 'orchestrate_service',
           input: 'runtime + service_name + action',
           detail: 'Runs docker, pm2, or taskfile lifecycle commands and streams the terminal output.',
