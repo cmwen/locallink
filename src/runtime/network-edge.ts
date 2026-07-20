@@ -104,13 +104,15 @@ export async function discoverServiceEdgeUrls(
 ): Promise<Map<string, string[]>> {
   const networkEdge = extensions.find((extension) => extension.kind === 'network-edge' && extension.enabled && extension.status !== 'disabled');
   if (!networkEdge) return new Map();
+  const selectedPorts = new Set(networkEdge.exposedPorts.filter((port) => Boolean(port && port !== '—')));
+  if (selectedPorts.size === 0) return new Map();
 
   const urlsByService = new Map<string, string[]>();
   const pocketIdExtension = extensions.find((extension) => extension.kind === 'identity-provider' && extension.enabled && extension.status !== 'disabled');
   const pocketIdUrl = pocketIdExtension ? normalizeConfiguredEdgeUrl(env.POCKET_ID_APP_URL) : undefined;
   if (pocketIdExtension && pocketIdUrl) {
     const pocketIdService = services.find((service) => service.id === pocketIdExtension.id || service.runtimeName === pocketIdExtension.id);
-    if (pocketIdService) urlsByService.set(pocketIdService.id, [pocketIdUrl]);
+    if (pocketIdService?.port && selectedPorts.has(pocketIdService.port)) urlsByService.set(pocketIdService.id, [pocketIdUrl]);
   }
 
   const result = await commandRunner(networkEdge.command || 'tailscale', ['serve', 'status', '--json'], { timeoutMs: 2_000 });
@@ -119,7 +121,7 @@ export async function discoverServiceEdgeUrls(
   const routes = parseTailscaleServeRoutes(result.stdout);
   for (const service of services) {
     const port = service.port?.trim();
-    if (!port || port === '—') continue;
+    if (!port || port === '—' || !selectedPorts.has(port)) continue;
     const urls = routes.filter((route) => route.targetPort === port).map((route) => route.url);
     if (urls.length > 0) urlsByService.set(service.id, [...new Set([...(urlsByService.get(service.id) || []), ...urls])]);
   }

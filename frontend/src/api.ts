@@ -274,19 +274,19 @@ export async function updateWorkspacePreferences(patch: Partial<WorkspaceState['
   });
 }
 
-export async function planPrivateEdge(): Promise<ExtensionInstallPlan> {
+export async function planPrivateEdge(services?: string[]): Promise<ExtensionInstallPlan> {
   return fetchJson<ExtensionInstallPlan>('./api/extensions/plan', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ capability: 'private-edge' }),
+    body: JSON.stringify({ capability: 'private-edge', services }),
   });
 }
 
-export async function applyPrivateEdge(): Promise<ExtensionApplyResult> {
+export async function applyPrivateEdge(services?: string[]): Promise<ExtensionApplyResult> {
   return fetchJson<ExtensionApplyResult>('./api/extensions/apply', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ capability: 'private-edge' }),
+    body: JSON.stringify({ capability: 'private-edge', services }),
   });
 }
 

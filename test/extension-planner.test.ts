@@ -94,6 +94,33 @@ test('Private Edge apply re-enables an existing provider declaration instead of 
   assert.match(extensions, /id: tailscale[\s\S]*enabled: true/);
 });
 
+test('Private Edge selection validates and persists only explicitly selected workspace services', async () => {
+  const root = await createWorkspace();
+  const missingTailscale: CommandRunner = async () => result({
+    ok: false, code: null, error: 'spawn tailscale ENOENT', stderr: 'spawn tailscale ENOENT',
+  });
+  const planner = new ExtensionPlanner(root, new ConfigRepository(root), missingTailscale);
+
+  const plan = await planner.plan('private-edge', ['api']);
+  assert.equal(plan.selection.requested, true);
+  assert.deepEqual(plan.selection.selected, [{ id: 'api', name: 'Api', port: '5050' }]);
+  assert.equal(plan.steps.find((step) => step.id === 'persist-edge-selection')?.status, 'pending');
+
+  const applied = await planner.apply('private-edge', ['api']);
+  assert.equal(applied.applied, true);
+  const extensions = await fs.readFile(path.join(root, 'locallink.extensions.yml'), 'utf8');
+  assert.match(extensions, /exposedPorts:\n\s+- "?5050"?/);
+
+  await assert.rejects(
+    () => planner.plan('private-edge', ['other-workspace-service']),
+    /does not have a declared workspace port/i,
+  );
+
+  const cleared = await planner.apply('private-edge', []);
+  assert.equal(cleared.applied, true);
+  assert.match(await fs.readFile(path.join(root, 'locallink.extensions.yml'), 'utf8'), /exposedPorts: \[\]/);
+});
+
 test('extension planner rejects capabilities without an installer contract', async () => {
   const root = await createWorkspace();
   const planner = new ExtensionPlanner(root);

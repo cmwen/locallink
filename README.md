@@ -129,6 +129,7 @@ locallink snapshot --log-level debug
 locallink extensions
 locallink extension plan private-edge
 locallink extension apply private-edge
+locallink extension plan private-edge "My API"
 ```
 
 When you launch `locallink` from another folder, it reads environment, service, extension, and runtime declarations from that current working directory.
@@ -164,6 +165,8 @@ Use [the private Pocket ID + Tailscale setup guide](docs/pocket-id-tailscale.htm
 Client IDs, client secrets, Pocket ID encryption keys, and real issuer domains belong in local secret management—not committed templates. Applications without native OIDC can use an OIDC-aware proxy documented by Pocket ID.
 
 LocalLink's Dashboard, reverse proxy, Tailscale edge, Pocket ID, and observability capabilities are explained in [the out-of-box extension guide](docs/extensions.html). Workspace capability declarations live in `locallink.extensions.yml`; runtime services and secrets remain separately explicit. Extensions are optional: a workspace that enables none of them still retains the dashboard, service discovery, runtime state, ports, logs, and lifecycle controls.
+
+Private Edge service exposure is opt-in per workspace. LocalLink records selected service ports in the network-edge declaration and only associates Tailscale routes or dashboard edge URLs with those selected ports.
 
 ### Run the MCP server directly
 
@@ -212,8 +215,8 @@ All dashboard APIs are local-only and served from the same process as the UI.
 | --- | --- | --- |
 | `GET` | `/api/state` | Rebuilds the current dashboard snapshot from external runtime managers: services, ports, PWA status, logs, and constraints. |
 | `GET` | `/api/extensions` | Separates available capabilities, workspace declarations, host installation, manual onboarding, configuration, and runtime health. |
-| `POST` | `/api/extensions/plan` | Preview workspace-owned Private Edge changes and user-owned security checkpoints without writing files. |
-| `POST` | `/api/extensions/apply` | Idempotently apply only the declaration and local environment portion of a Private Edge plan. |
+| `POST` | `/api/extensions/plan` | Preview workspace-owned Private Edge changes, optional explicit service selections, and user-owned security checkpoints without writing files. |
+| `POST` | `/api/extensions/apply` | Idempotently apply only the declaration, selected service ports, and local environment portion of a Private Edge plan. |
 | `GET` | `/api/configs` | Returns the raw infra files plus the derived service list. |
 | `POST` | `/api/configs` | Writes one infra file using full `content` or a structured `patch`. |
 | `POST` | `/api/ports/next` | Returns the next free local port, optionally starting from a supplied number. |

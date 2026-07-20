@@ -180,6 +180,27 @@ function applyEnvPatch(content: string, patch: EnvPatch): string {
   return nextLines.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/u, '') + '\n';
 }
 
+function splitComposePortSegments(value: string): string[] {
+  const segments: string[] = [];
+  let current = '';
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  for (const character of value) {
+    if (character === '{') braceDepth += 1;
+    if (character === '}') braceDepth = Math.max(0, braceDepth - 1);
+    if (character === '[') bracketDepth += 1;
+    if (character === ']') bracketDepth = Math.max(0, bracketDepth - 1);
+    if (character === ':' && braceDepth === 0 && bracketDepth === 0) {
+      segments.push(current);
+      current = '';
+    } else {
+      current += character;
+    }
+  }
+  segments.push(current);
+  return segments;
+}
+
 function parseComposePort(serviceConfig: any, env: Record<string, string>, fallbackPort?: string): string {
   if (fallbackPort && env[fallbackPort]) {
     return env[fallbackPort];
@@ -188,10 +209,11 @@ function parseComposePort(serviceConfig: any, env: Record<string, string>, fallb
   const ports = Array.isArray(serviceConfig?.ports) ? serviceConfig.ports : [];
   const firstPort = ports[0];
   if (typeof firstPort === 'string') {
-    const candidate = firstPort.split(':')[0]?.trim();
-    const envMatch = candidate?.match(/^\$\{([^}]+)\}$/);
+    const segments = splitComposePortSegments(firstPort);
+    const candidate = (segments.length > 1 ? segments.at(-2) : segments[0])?.trim();
+    const envMatch = candidate?.match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}$/);
     if (envMatch) {
-      return env[envMatch[1]] ?? '—';
+      return env[envMatch[1]] || envMatch[2] || '—';
     }
     return candidate || '—';
   }

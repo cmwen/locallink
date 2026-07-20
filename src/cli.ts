@@ -80,8 +80,8 @@ function printHelp(): void {
       '  locallink [--log-level LEVEL] doctor    Print startup diagnostics and install guidance',
       '  locallink [--log-level LEVEL] snapshot  Print the current dashboard state as JSON',
       '  locallink [--log-level LEVEL] extensions Print declared, installed, manual, and healthy extension states',
-      '  locallink [--log-level LEVEL] extension plan private-edge  Preview safe workspace changes and manual checkpoints',
-      '  locallink [--log-level LEVEL] extension apply private-edge Apply only the workspace-owned part of the plan',
+      '  locallink [--log-level LEVEL] extension plan private-edge [SERVICE...]  Preview changes and select services',
+      '  locallink [--log-level LEVEL] extension apply private-edge [SERVICE...] Apply workspace declarations and selection',
       '  locallink [--log-level LEVEL] init      Scaffold a starter LocalLink workspace here',
       '  locallink [--log-level LEVEL] init NAME Scaffold a starter LocalLink workspace in ./NAME',
       '',
@@ -181,6 +181,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (command === 'extension') {
     const action = options.positionals[1];
     const capability = options.positionals[2];
+    const serviceArgs = options.positionals.slice(3);
+    const services = serviceArgs.length > 0 ? serviceArgs : undefined;
     if (!capability || (action !== 'plan' && action !== 'apply')) {
       throw new AppError(
         'INVALID_EXTENSION_COMMAND',
@@ -189,8 +191,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       );
     }
     const result = action === 'plan'
-      ? await context.planExtension(capability)
-      : await context.applyExtension(capability);
+      ? await context.planExtension(capability, services)
+      : await context.applyExtension(capability, services);
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return;
   }

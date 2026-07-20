@@ -153,15 +153,15 @@ export class AppContext {
   async readExtensionLifecycle(): Promise<ExtensionLifecycleRecord[]> {
     await this.configRepository.hydrateProcessEnv();
     const model = await this.configRepository.loadProjectModel();
-    return buildExtensionLifecycles(model.extensions, undefined, model.definitions);
+    return buildExtensionLifecycles(model.extensions);
   }
 
-  async planExtension(capability: string): Promise<ExtensionInstallPlan> {
-    return this.extensionPlanner.plan(capability);
+  async planExtension(capability: string, services?: string[]): Promise<ExtensionInstallPlan> {
+    return this.extensionPlanner.plan(capability, services);
   }
 
-  async applyExtension(capability: string): Promise<ExtensionApplyResult> {
-    const result = await this.extensionPlanner.apply(capability);
+  async applyExtension(capability: string, services?: string[]): Promise<ExtensionApplyResult> {
+    const result = await this.extensionPlanner.apply(capability, services);
     this.logs.append(
       result.applied
         ? `${capability} workspace plan applied to ${result.changedFiles.join(', ')}.`

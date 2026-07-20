@@ -57,7 +57,10 @@ const temporaryRuntimeSchema = z.object({
 
 const versionUpdateSchema = z.object({ from: z.string().min(1), to: z.string().min(1) });
 const portReservationSchema = z.object({ service: z.string().min(1), port: z.number().int().min(1024).max(65535) });
-const extensionCapabilitySchema = z.object({ capability: z.literal('private-edge') });
+const extensionCapabilitySchema = z.object({
+  capability: z.literal('private-edge'),
+  services: z.array(z.string().min(1)).max(100).optional(),
+});
 
 function toErrorPayload(error: unknown) {
   if (isAppError(error)) {
@@ -142,14 +145,14 @@ export function createHttpServer(context: AppContext) {
     const parsed = extensionCapabilitySchema.safeParse(request.body);
     if (!parsed.success) throw new AppError('INVALID_BODY', parsed.error.issues[0]?.message || 'Invalid body.', 400);
     reply.header('Cache-Control', 'no-store');
-    return context.planExtension(parsed.data.capability);
+    return context.planExtension(parsed.data.capability, parsed.data.services);
   });
 
   app.post('/api/extensions/apply', async (request, reply) => {
     const parsed = extensionCapabilitySchema.safeParse(request.body);
     if (!parsed.success) throw new AppError('INVALID_BODY', parsed.error.issues[0]?.message || 'Invalid body.', 400);
     reply.header('Cache-Control', 'no-store');
-    return context.applyExtension(parsed.data.capability);
+    return context.applyExtension(parsed.data.capability, parsed.data.services);
   });
 
   app.patch('/api/workspace/settings', async (request, reply) => {

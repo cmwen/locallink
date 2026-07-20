@@ -173,6 +173,32 @@ test('ConfigRepository loads optional service metadata from ecosystem and compos
   assert.equal(postgres.docsUrl, 'https://example.com/postgres');
 });
 
+test('ConfigRepository resolves loopback Compose bindings and environment fallbacks to the published port', async () => {
+  const root = await createTempProject();
+  await fs.writeFile(path.join(root, '.env'), 'API_PORT=5050\n', 'utf8');
+  await fs.writeFile(
+    path.join(root, 'docker-compose.yml'),
+    [
+      'services:',
+      '  api:',
+      '    image: example/api',
+      '    ports:',
+      '      - "127.0.0.1:${API_PORT}:3000"',
+      '  identity:',
+      '    image: example/identity',
+      '    ports:',
+      '      - "127.0.0.1:${IDENTITY_PORT:-1411}:1411"',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const model = await new ConfigRepository(root).loadProjectModel();
+
+  assert.equal(model.definitions.find((service) => service.runtimeName === 'api')?.port, '5050');
+  assert.equal(model.definitions.find((service) => service.runtimeName === 'identity')?.port, '1411');
+});
+
 test('ConfigRepository loads extension declarations and reports missing setup values', async () => {
   const root = await createTempProject();
   await fs.writeFile(path.join(root, '.env'), 'POCKET_ID_PORT=1411\nPOCKET_ID_APP_URL=https://pocket-id.example-tailnet.ts.net\n', 'utf8');

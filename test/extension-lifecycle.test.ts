@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { buildExtensionLifecycles } from '../src/extensions/lifecycle';
-import type { ServiceDefinition, WorkspaceExtension } from '../src/shared/contracts';
+import type { WorkspaceExtension } from '../src/shared/contracts';
 import type { CommandResult, CommandRunner } from '../src/shared/utils';
 
 function result(overrides: Partial<CommandResult> = {}): CommandResult {
@@ -14,13 +14,6 @@ function privateEdge(): WorkspaceExtension {
     id: 'tailscale', name: 'Tailscale Private Edge', kind: 'network-edge', enabled: true,
     detail: 'Private edge.', status: 'ready', command: 'tailscale', exposedPorts: [],
     requiredEnv: [], missingEnv: [], dependsOn: [],
-  };
-}
-
-function service(port: string): ServiceDefinition {
-  return {
-    id: `service-${port}`, name: `Service ${port}`, kind: 'PWA', group: 'pwa', port,
-    notes: 'Test service.', detail: 'Test service.', tags: 'test',
   };
 }
 
@@ -69,12 +62,15 @@ test('Private Edge distinguishes connected setup from healthy Serve routes', asy
           },
         },
       }) });
-  const healthy = (await buildExtensionLifecycles([privateEdge()], healthyRunner, [service('4010')]))[0];
+  const selectedEdge = privateEdge();
+  selectedEdge.exposedPorts = ['4010'];
+  const healthy = (await buildExtensionLifecycles([selectedEdge], healthyRunner))[0];
   assert.equal(healthy.state, 'healthy');
   assert.match(healthy.summary, /1 active workspace Tailscale Serve route/);
   assert.equal(healthy.checks.find((check) => check.id === 'tailscale-routes')?.status, 'ok');
 
-  const unrelated = (await buildExtensionLifecycles([privateEdge()], healthyRunner, [service('6012')]))[0];
+  selectedEdge.exposedPorts = ['6012'];
+  const unrelated = (await buildExtensionLifecycles([selectedEdge], healthyRunner))[0];
   assert.equal(unrelated.state, 'waiting-configuration');
   assert.match(unrelated.checks.find((check) => check.id === 'tailscale-routes')?.detail || '', /none target a service declared by this workspace/i);
 });

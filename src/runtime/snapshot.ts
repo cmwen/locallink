@@ -360,7 +360,7 @@ export class RuntimeResolver {
       buildPhase2Advisor(model.env, this.commandRunner),
       buildResourceDashboard(this.commandRunner, definitions, { root: this.root, env: model.env }),
       discoverServiceEdgeUrls(model.extensions, definitions, this.commandRunner, model.env),
-      buildExtensionLifecycles(model.extensions, this.commandRunner, definitions),
+      buildExtensionLifecycles(model.extensions, this.commandRunner),
     ]);
 
     const services = definitions.map<ServiceRecord>((definition) => {

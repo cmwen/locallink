@@ -59,7 +59,7 @@ function extension(enabled = true): WorkspaceExtension {
     status: enabled ? 'ready' : 'disabled',
     command: 'tailscale',
     detail: 'Private edge.',
-    exposedPorts: [],
+    exposedPorts: ['4010', '6012'],
     requiredEnv: [],
     missingEnv: [],
     dependsOn: [],
@@ -105,6 +105,21 @@ test('discoverServiceEdgeUrls skips probing when Network Edge is disabled', asyn
   assert.equal(routes.size, 0);
 });
 
+test('discoverServiceEdgeUrls does not infer exposure without an explicit workspace selection', async () => {
+  let probed = false;
+  const commandRunner: CommandRunner = async () => {
+    probed = true;
+    return { ok: true, code: 0, signal: null, stdout: SERVE_STATUS, stderr: '', timedOut: false };
+  };
+  const unselected = extension();
+  unselected.exposedPorts = [];
+
+  const routes = await discoverServiceEdgeUrls([unselected], [service('dashboard', '4010')], commandRunner);
+
+  assert.equal(probed, false);
+  assert.equal(routes.size, 0);
+});
+
 test('discoverServiceEdgeUrls includes the configured Pocket ID issuer owned by the edge sidecar', async () => {
   const commandRunner: CommandRunner = async () => ({
     ok: false,
@@ -120,9 +135,11 @@ test('discoverServiceEdgeUrls includes the configured Pocket ID issuer owned by 
     name: 'Pocket ID',
     kind: 'identity-provider',
   };
+  const selectedEdge = extension();
+  selectedEdge.exposedPorts = ['1411'];
 
   const routes = await discoverServiceEdgeUrls(
-    [extension(), pocketIdExtension],
+    [selectedEdge, pocketIdExtension],
     [service('pocket-id', '1411')],
     commandRunner,
     { POCKET_ID_APP_URL: 'https://pocket-id.example.ts.net:7452' },
@@ -134,8 +151,10 @@ test('discoverServiceEdgeUrls includes the configured Pocket ID issuer owned by 
 test('discoverServiceEdgeUrls ignores placeholder Pocket ID issuers', async () => {
   const commandRunner: CommandRunner = async () => ({ ok: false, code: 1, signal: null, stdout: '', stderr: '', timedOut: false });
   const pocketIdExtension: WorkspaceExtension = { ...extension(), id: 'pocket-id', kind: 'identity-provider' };
+  const selectedEdge = extension();
+  selectedEdge.exposedPorts = ['1411'];
   const routes = await discoverServiceEdgeUrls(
-    [extension(), pocketIdExtension],
+    [selectedEdge, pocketIdExtension],
     [service('pocket-id', '1411')],
     commandRunner,
     { POCKET_ID_APP_URL: 'https://pocket-id.example-tailnet.ts.net' },

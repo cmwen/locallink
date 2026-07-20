@@ -25,6 +25,11 @@ export interface ExtensionInstallPlan {
   state: 'ready-to-apply' | 'waiting-user' | 'complete';
   summary: string;
   canApply: boolean;
+  selection: {
+    requested: boolean;
+    selected: Array<{ id: string; name: string; port: string }>;
+    available: Array<{ id: string; name: string; port: string }>;
+  };
   steps: ExtensionPlanStep[];
 }
 
@@ -57,7 +62,7 @@ function syntheticPrivateEdge(existing?: WorkspaceExtension): WorkspaceExtension
   };
 }
 
-function runtimeSteps(lifecycle: ExtensionLifecycleRecord): ExtensionPlanStep[] {
+function runtimeSteps(lifecycle: ExtensionLifecycleRecord, hasSelectedServices: boolean): ExtensionPlanStep[] {
   if (lifecycle.state === 'healthy') {
     return [{
       id: 'verify-private-edge',
@@ -91,24 +96,20 @@ function runtimeSteps(lifecycle: ExtensionLifecycleRecord): ExtensionPlanStep[] 
     }];
   }
 
-  return [
-    {
-      id: 'select-edge-services',
-      label: 'Select services for private exposure',
-      owner: 'user',
-      status: 'pending',
-      automatic: false,
-      detail: 'Choose the declared workspace services that may be reachable through the tailnet. LocalLink will not expose every service implicitly.',
-    },
-    {
-      id: 'generate-tailscale-routes',
-      label: 'Generate and verify Tailscale Serve routes',
-      owner: 'locallink',
-      status: 'blocked',
-      automatic: true,
-      detail: 'Waiting for an explicit service selection before LocalLink can generate route changes.',
-    },
-  ];
+  return [{
+    id: 'generate-tailscale-routes',
+    label: 'Generate and verify Tailscale Serve routes',
+    owner: 'locallink',
+    status: 'blocked',
+    automatic: true,
+    detail: hasSelectedServices
+      ? 'Service selection is recorded. Live route mutation requires a separate reversible route plan before LocalLink can apply it.'
+      : 'Waiting for an explicit service selection before LocalLink can generate route changes.',
+  }];
+}
+
+function sameValues(left: string[], right: string[]): boolean {
+  return [...new Set(left)].sort().join('\n') === [...new Set(right)].sort().join('\n');
 }
 
 export class ExtensionPlanner {
@@ -118,7 +119,7 @@ export class ExtensionPlanner {
     private readonly commandRunner: CommandRunner = runCommand,
   ) {}
 
-  async plan(capability: string): Promise<ExtensionInstallPlan> {
+  async plan(capability: string, serviceSelectors?: string[]): Promise<ExtensionInstallPlan> {
     if (capability !== 'private-edge') {
       throw new AppError(
         'UNSUPPORTED_EXTENSION_CAPABILITY',
@@ -134,6 +135,27 @@ export class ExtensionPlanner {
     ]);
     const existing = model.extensions.find((extension) => extension.kind === 'network-edge');
     const privateEdge = syntheticPrivateEdge(existing);
+    const availableServices = model.definitions
+      .filter((service) => Boolean(service.port && service.port !== '—'))
+      .map((service) => ({ id: service.id, name: service.name, port: service.port! }));
+    const requestedSelection = serviceSelectors !== undefined;
+    const selectedServices = requestedSelection
+      ? serviceSelectors.map((selector) => {
+          const normalized = selector.toLowerCase();
+          const service = availableServices.find((candidate) => (
+            candidate.id.toLowerCase() === normalized || candidate.name.toLowerCase() === normalized
+          ));
+          if (!service) {
+            throw new AppError(
+              'UNKNOWN_EDGE_SERVICE',
+              `Service "${selector}" does not have a declared workspace port. Available services: ${availableServices.map((candidate) => `${candidate.name} (${candidate.id})`).join(', ') || 'none'}.`,
+              400,
+            );
+          }
+          return service;
+        }).filter((service, index, values) => values.findIndex((candidate) => candidate.id === service.id) === index)
+      : availableServices.filter((service) => privateEdge.exposedPorts.includes(service.port));
+    const selectedPorts = selectedServices.map((service) => service.port);
     const lifecycleExtensions = [
       ...model.extensions.filter((extension) => extension.kind !== 'network-edge'),
       privateEdge,
@@ -141,7 +163,6 @@ export class ExtensionPlanner {
     const lifecycle = (await buildExtensionLifecycles(
       lifecycleExtensions,
       this.commandRunner,
-      model.definitions,
     )).find((record) => record.id === 'private-edge');
     if (!lifecycle) {
       throw new AppError('EXTENSION_PLAN_FAILED', 'Private Edge lifecycle could not be evaluated.', 500);
@@ -150,6 +171,8 @@ export class ExtensionPlanner {
     const envContent = infra.files.find((file) => file.targetFile === '.env')?.content || '';
     const declarationReady = Boolean(existing?.enabled);
     const preferenceReady = envValue(envContent, 'LOCALLINK_PHASE2_PREFERRED_EDGE') === 'tailscale';
+    const selectionReady = selectedServices.length > 0;
+    const selectionPersisted = !requestedSelection || sameValues(privateEdge.exposedPorts, selectedPorts);
     const workspaceSteps: ExtensionPlanStep[] = [
       {
         id: 'declare-private-edge',
@@ -173,9 +196,30 @@ export class ExtensionPlanner {
           ? 'LOCALLINK_PHASE2_PREFERRED_EDGE already selects Tailscale.'
           : 'Set LOCALLINK_PHASE2_PREFERRED_EDGE=tailscale in the local workspace environment.',
       },
+      {
+        id: 'select-edge-services',
+        label: 'Select services for private exposure',
+        owner: 'user',
+        status: selectionReady ? 'complete' : 'pending',
+        automatic: false,
+        detail: selectionReady
+          ? `Selected: ${selectedServices.map((service) => `${service.name} (:${service.port})`).join(', ')}.`
+          : 'Choose the declared workspace services that may be reachable through the tailnet. LocalLink will not expose every service implicitly.',
+      },
+      {
+        id: 'persist-edge-selection',
+        label: 'Persist the workspace edge selection',
+        owner: 'locallink',
+        status: selectionPersisted ? 'complete' : 'pending',
+        automatic: true,
+        targetFile: 'locallink.extensions.yml',
+        detail: selectionPersisted
+          ? selectionReady ? 'The selected service ports are recorded in the network-edge declaration.' : 'No new service selection was requested.'
+          : `Record selected ports ${selectedPorts.join(', ')} in the network-edge declaration.`,
+      },
     ];
-    const steps = [...workspaceSteps, ...runtimeSteps(lifecycle)];
-    const canApply = workspaceSteps.some((step) => step.status === 'pending');
+    const steps = [...workspaceSteps, ...runtimeSteps(lifecycle, selectionReady)];
+    const canApply = workspaceSteps.some((step) => step.owner === 'locallink' && step.status === 'pending');
     const waitingUser = steps.some((step) => step.owner === 'user' && step.status !== 'complete');
     const complete = steps.every((step) => step.status === 'complete');
 
@@ -189,19 +233,25 @@ export class ExtensionPlanner {
           ? 'LocalLink can apply the workspace-owned declaration changes. External security decisions remain explicit steps.'
           : 'Workspace declarations are ready; Private Edge is waiting for user-owned or route-selection steps.',
       canApply,
+      selection: {
+        requested: requestedSelection,
+        selected: selectedServices,
+        available: availableServices,
+      },
       steps,
     };
   }
 
-  async apply(capability: string): Promise<ExtensionApplyResult> {
-    const before = await this.plan(capability);
+  async apply(capability: string, serviceSelectors?: string[]): Promise<ExtensionApplyResult> {
+    const before = await this.plan(capability, serviceSelectors);
     const changedFiles: string[] = [];
     if (!before.canApply) {
       return { capability: before.capability, applied: false, changedFiles, plan: before };
     }
 
     const declarationStep = before.steps.find((step) => step.id === 'declare-private-edge');
-    if (declarationStep?.status === 'pending') {
+    const selectionStep = before.steps.find((step) => step.id === 'persist-edge-selection');
+    if (declarationStep?.status === 'pending' || selectionStep?.status === 'pending') {
       const model = await this.configRepository.loadProjectModel();
       const existing = model.extensions.find((extension) => extension.kind === 'network-edge');
       await this.configRepository.writeInfraConfig({
@@ -216,6 +266,7 @@ export class ExtensionPlanner {
             detail: existing?.detail || 'Publishes selected workspace services privately through Tailscale Serve.',
             command: existing?.command || 'tailscale',
             docsUrl: existing?.docsUrl || 'https://tailscale.com/docs/features/tailscale-serve',
+            ...(before.selection.requested ? { exposedPorts: before.selection.selected.map((service) => service.port) } : {}),
           },
         },
       });

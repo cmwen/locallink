@@ -3,7 +3,6 @@ import type {
   ExtensionKind,
   ExtensionLifecycleCheck,
   ExtensionLifecycleRecord,
-  ServiceDefinition,
   WorkspaceExtension,
 } from '../shared/contracts';
 import { isCommandMissingResult, parseJsonOutput, runCommand, type CommandRunner } from '../shared/utils';
@@ -136,7 +135,6 @@ async function privateEdgeRecord(
   spec: CapabilitySpec,
   extension: WorkspaceExtension,
   commandRunner: CommandRunner,
-  services: ServiceDefinition[],
 ): Promise<ExtensionLifecycleRecord> {
   const base = baseDeclaredRecord(spec, extension);
   if (!extension.enabled || extension.missingEnv.length > 0) return base;
@@ -180,10 +178,7 @@ async function privateEdgeRecord(
 
   const serveResult = await commandRunner(extension.command || 'tailscale', ['serve', 'status', '--json'], { timeoutMs: 2_000 });
   const routes = serveResult.ok ? parseTailscaleServeRoutes(serveResult.stdout) : [];
-  const workspacePorts = new Set([
-    ...services.map((service) => service.port),
-    ...extension.exposedPorts,
-  ].filter((port): port is string => Boolean(port && port !== '—')));
+  const workspacePorts = new Set(extension.exposedPorts.filter((port) => Boolean(port && port !== '—')));
   const workspaceRoutes = routes.filter((route) => workspacePorts.has(route.targetPort));
   if (workspaceRoutes.length === 0) {
     return {
@@ -287,14 +282,13 @@ async function reverseProxyRecord(
 export async function buildExtensionLifecycles(
   extensions: WorkspaceExtension[],
   commandRunner: CommandRunner = runCommand,
-  services: ServiceDefinition[] = [],
 ): Promise<ExtensionLifecycleRecord[]> {
   const claimedDeclarations = new Set<string>();
   const records = await Promise.all(CAPABILITY_CATALOG.map(async (spec) => {
     const extension = extensions.find((candidate) => candidate.kind === spec.kind);
     if (!extension) return availableRecord(spec);
     claimedDeclarations.add(extension.id);
-    if (spec.kind === 'network-edge') return privateEdgeRecord(spec, extension, commandRunner, services);
+    if (spec.kind === 'network-edge') return privateEdgeRecord(spec, extension, commandRunner);
     if (spec.kind === 'reverse-proxy') return reverseProxyRecord(spec, extension, commandRunner);
     return baseDeclaredRecord(spec, extension);
   }));

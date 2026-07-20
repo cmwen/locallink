@@ -176,6 +176,11 @@ export interface ExtensionInstallPlan {
   state: 'ready-to-apply' | 'waiting-user' | 'complete';
   summary: string;
   canApply: boolean;
+  selection: {
+    requested: boolean;
+    selected: Array<{ id: string; name: string; port: string }>;
+    available: Array<{ id: string; name: string; port: string }>;
+  };
   steps: ExtensionPlanStep[];
 }
 

@@ -141,6 +141,8 @@ export function App() {
   const [queuedVersionId, setQueuedVersionId] = useState('');
   const [extensionPlan, setExtensionPlan] = useState<ExtensionInstallPlan | null>(null);
   const [extensionApplying, setExtensionApplying] = useState(false);
+  const [edgeServiceSelection, setEdgeServiceSelection] = useState<string[]>([]);
+  const [edgeSelectionTouched, setEdgeSelectionTouched] = useState(false);
 
   const services = useMemo(() => [...state.services, ...tempServices], [state.services, tempServices]);
   const logs = useMemo(() => [...liveLogs, ...state.logs].slice(0, 180), [liveLogs, state.logs]);
@@ -464,11 +466,14 @@ export function App() {
     setExtensionApplying(true);
     try {
       if (action === 'plan') {
-        const plan = await planPrivateEdge();
+        const plan = await planPrivateEdge(edgeSelectionTouched ? edgeServiceSelection : undefined);
         setExtensionPlan(plan);
+        if (edgeServiceSelection.length === 0 && plan.selection.selected.length > 0) {
+          setEdgeServiceSelection(plan.selection.selected.map((service) => service.id));
+        }
         setStatus(plan.summary);
       } else {
-        const result = await applyPrivateEdge();
+        const result = await applyPrivateEdge(edgeSelectionTouched ? edgeServiceSelection : undefined);
         setExtensionPlan(result.plan);
         setStatus(result.applied
           ? `Private Edge workspace setup updated ${result.changedFiles.join(', ')}.`
@@ -556,8 +561,11 @@ export function App() {
           updateQueued={updateQueued}
           extensionPlan={extensionPlan}
           extensionApplying={extensionApplying}
+          edgeServiceSelection={edgeServiceSelection}
           query={queries.extensions}
           managePrivateEdge={managePrivateEdge}
+          setEdgeServiceSelection={setEdgeServiceSelection}
+          setEdgeSelectionTouched={setEdgeSelectionTouched}
           queueUpdate={queueUpdate}
           openService={openService}
         />
@@ -936,8 +944,11 @@ function ExtensionsWorkspace({
   updateQueued,
   extensionPlan,
   extensionApplying,
+  edgeServiceSelection,
   query,
   managePrivateEdge,
+  setEdgeServiceSelection,
+  setEdgeSelectionTouched,
   queueUpdate,
   openService,
 }: {
@@ -946,8 +957,11 @@ function ExtensionsWorkspace({
   updateQueued: boolean;
   extensionPlan: ExtensionInstallPlan | null;
   extensionApplying: boolean;
+  edgeServiceSelection: string[];
   query: string;
   managePrivateEdge: (action: 'plan' | 'apply') => Promise<void>;
+  setEdgeServiceSelection: React.Dispatch<React.SetStateAction<string[]>>;
+  setEdgeSelectionTouched: React.Dispatch<React.SetStateAction<boolean>>;
   queueUpdate: () => Promise<void>;
   openService: (id: string) => void;
 }) {
@@ -971,6 +985,8 @@ function ExtensionsWorkspace({
   const showPorts = ports.length > 0 || matchesWorkspaceQuery(query, 'port list', 'configured ports', 'next open port');
   const showVersion = matchesWorkspaceQuery(query, 'version workflow', 'CLI 0.12.4 0.13.0', 'schedule update', 'cancel update');
   const hasResults = visibleExtensions.length > 0 || showConfig || showPorts || showVersion;
+  const edgeCandidates = extensionPlan?.selection.available
+    || services.filter((service) => Boolean(service.port && service.port !== '—')).map((service) => ({ id: service.id, name: service.name, port: service.port }));
 
   return (
     <main className="pane">
@@ -1014,6 +1030,26 @@ function ExtensionsWorkspace({
               <a className="btn" href="./docs/pocket-id-tailscale.html" target="_blank" rel="noreferrer">Private SSO setup</a>
               <a className="btn ghost" href="./docs/extensions.html" target="_blank" rel="noreferrer">Extension guide</a>
               <a className="btn ghost" href="https://tailscale.com/docs/features/tailscale-serve" target="_blank" rel="noreferrer">Tailscale Serve docs</a>
+            </div>
+            <div className="config-lines" aria-label="Private Edge service selection">
+              {edgeCandidates.length > 0 ? edgeCandidates.map((service) => (
+                <label key={service.id} className="config-line">
+                  <span>
+                    <input
+                      type="checkbox"
+                      checked={edgeServiceSelection.includes(service.id)}
+                      onChange={() => {
+                        setEdgeSelectionTouched(true);
+                        setEdgeServiceSelection((current) => current.includes(service.id)
+                          ? current.filter((id) => id !== service.id)
+                          : [...current, service.id]);
+                      }}
+                    />{' '}
+                    {service.name}
+                  </span>
+                  <strong className="mono">:{service.port}</strong>
+                </label>
+              )) : <p>Declare a service port before selecting Private Edge routes.</p>}
             </div>
           </article> : null}
 
