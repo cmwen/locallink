@@ -51,11 +51,12 @@ See [the full product goal and capability boundaries](docs/product-goal.md).
   - `ecosystem.config.js`
 - Sample topology already declared in `docker-compose.yml`, `ecosystem.config.js`, and `Taskfile.yml`
 - Backend endpoints for state, config editing, port allocation, task execution, and log streaming
+- Evidence-backed extension lifecycle reporting in the dashboard, `locallink extensions`, and `/api/extensions`
 - Live dashboard state rehydrated from Docker, PM2, and Windows process probes on each read, with last-known browser snapshot fallback for relaunches
 
-The sample topology currently includes:
+This repository's sample topology currently includes:
 
-- Docker: `pocket-id` (default identity extension, explicit `identity` profile) and `postgres`
+- Docker: `pocket-id` (sample identity extension, explicit `identity` profile) and `postgres`
 - PM2/PWA: `LocalLink MCP Core`, `Queue Worker`, `LocalLink Dashboard UI`
 - Taskfile-backed placeholders: `Windows File Indexer`, `AgentGateway Proxy`
 
@@ -123,6 +124,7 @@ pnpm add -g .
 locallink web
 locallink mcp
 locallink snapshot --log-level debug
+locallink extensions
 ```
 
 When you launch `locallink` from another folder, it reads environment, service, extension, and runtime declarations from that current working directory.
@@ -144,7 +146,7 @@ For a deeper implementation and operations guide, open [docs/index.html](docs/in
 
 ### Private Pocket ID application SSO
 
-Pocket ID is registered as a default, enabled application-identity extension and declared as an opt-in Docker Compose profile. Tailscale remains the network gate with its existing login provider; Pocket ID supplies passkey-backed OIDC sessions to internal applications after the user joins the tailnet.
+This repository registers Pocket ID as a sample application-identity extension and declares it as an opt-in Docker Compose profile. A newly initialized workspace does not install or enable it. Tailscale remains the network gate with its existing login provider; Pocket ID supplies passkey-backed OIDC sessions to internal applications after the user joins the tailnet.
 
 ```bash
 cp .env.example .env
@@ -205,6 +207,7 @@ All dashboard APIs are local-only and served from the same process as the UI.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/state` | Rebuilds the current dashboard snapshot from external runtime managers: services, ports, PWA status, logs, and constraints. |
+| `GET` | `/api/extensions` | Separates available capabilities, workspace declarations, host installation, manual onboarding, configuration, and runtime health. |
 | `GET` | `/api/configs` | Returns the raw infra files plus the derived service list. |
 | `POST` | `/api/configs` | Writes one infra file using full `content` or a structured `patch`. |
 | `POST` | `/api/ports/next` | Returns the next free local port, optionally starting from a supplied number. |

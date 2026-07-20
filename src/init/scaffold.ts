@@ -168,6 +168,7 @@ This folder was initialized by \`locallink init\`.
 \`\`\`bash
 locallink web
 locallink mcp
+locallink extensions
 \`\`\`
 
 ## Helpful notes

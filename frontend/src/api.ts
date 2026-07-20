@@ -1,5 +1,6 @@
 import type {
   DashboardState,
+  ExtensionLifecycleRecord,
   LogEntry,
   PortResolution,
   ProcessInspection,
@@ -11,6 +12,24 @@ import type {
   TaskRuntime,
   WorkspaceState,
 } from './types';
+
+const DEFAULT_EXTENSION_LIFECYCLE: ExtensionLifecycleRecord[] = [
+  ['private-edge', 'Private Edge', 'network-edge', 'Publish selected loopback services to an authenticated private network.'],
+  ['reverse-proxy', 'Reverse Proxy', 'reverse-proxy', 'Route stable workspace origins to local service ports.'],
+  ['identity', 'Identity', 'identity-provider', 'Add provider-neutral OIDC sign-in to private applications.'],
+  ['observability', 'Observability', 'observability', 'Connect services to an OTLP-compatible telemetry backend.'],
+].map(([id, name, kind, summary]) => ({
+  id,
+  name,
+  kind: kind as ExtensionLifecycleRecord['kind'],
+  declared: false,
+  enabled: false,
+  state: 'available',
+  automation: 'guided',
+  summary: `${summary} This capability is not declared in the current workspace.`,
+  nextStep: `Add the ${name} capability to this workspace before LocalLink changes runtime configuration.`,
+  checks: [],
+}));
 
 const DEFAULT_STATE: DashboardState = {
   app: {
@@ -46,6 +65,7 @@ const DEFAULT_STATE: DashboardState = {
     options: [],
   },
   extensions: [],
+  extensionLifecycle: DEFAULT_EXTENSION_LIFECYCLE,
   services: [],
   logs: [],
   ports: {
@@ -172,6 +192,9 @@ export function normalizeState(input: Partial<DashboardState> = {}): DashboardSt
       options: input.phase2?.options || [],
     },
     extensions: Array.isArray(input.extensions) ? input.extensions : [],
+    extensionLifecycle: Array.isArray(input.extensionLifecycle) && input.extensionLifecycle.length > 0
+      ? input.extensionLifecycle
+      : DEFAULT_EXTENSION_LIFECYCLE,
     services,
     logs: (input.logs || []).map(normalizeLog),
     ports: {

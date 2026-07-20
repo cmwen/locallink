@@ -55,6 +55,7 @@ function normalizeCommand(rawCommand: string | undefined): string {
       return 'web';
     case 'mcp':
     case 'snapshot':
+    case 'extensions':
     case 'doctor':
     case 'init':
       return rawCommand;
@@ -77,6 +78,7 @@ function printHelp(): void {
       '  locallink [--log-level LEVEL] mcp       Start the MCP stdio server',
       '  locallink [--log-level LEVEL] doctor    Print startup diagnostics and install guidance',
       '  locallink [--log-level LEVEL] snapshot  Print the current dashboard state as JSON',
+      '  locallink [--log-level LEVEL] extensions Print declared, installed, manual, and healthy extension states',
       '  locallink [--log-level LEVEL] init      Scaffold a starter LocalLink workspace here',
       '  locallink [--log-level LEVEL] init NAME Scaffold a starter LocalLink workspace in ./NAME',
       '',
@@ -166,9 +168,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
 
+  if (command === 'extensions') {
+    const workspace = await context.getWorkspaceIdentity();
+    const extensions = await context.readExtensionLifecycle();
+    process.stdout.write(`${JSON.stringify({ workspace, extensions }, null, 2)}\n`);
+    return;
+  }
+
   throw new AppError(
     'UNKNOWN_COMMAND',
-    `Unsupported command "${command}". Use "web", "mcp", "doctor", or "snapshot".`,
+    `Unsupported command "${command}". Use "web", "mcp", "doctor", "snapshot", or "extensions".`,
     400,
   );
 }

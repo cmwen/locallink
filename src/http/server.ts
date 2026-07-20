@@ -132,6 +132,11 @@ export function createHttpServer(context: AppContext) {
     return context.workspaceState.read();
   });
 
+  app.get('/api/extensions', async (_request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    return context.readExtensionLifecycle();
+  });
+
   app.patch('/api/workspace/settings', async (request, reply) => {
     const parsed = preferencesSchema.safeParse(request.body ?? {});
     if (!parsed.success) throw new AppError('INVALID_BODY', parsed.error.issues[0]?.message || 'Invalid body.', 400);

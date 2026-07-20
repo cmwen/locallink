@@ -127,6 +127,40 @@ export interface WorkspaceExtension {
   docsUrl?: string;
 }
 
+export type ExtensionLifecycleState =
+  | 'available'
+  | 'declared'
+  | 'disabled'
+  | 'waiting-external'
+  | 'waiting-user'
+  | 'waiting-configuration'
+  | 'installed'
+  | 'healthy'
+  | 'error';
+
+export interface ExtensionLifecycleCheck {
+  id: string;
+  label: string;
+  status: 'ok' | 'warning' | 'missing';
+  detail: string;
+  owner: 'locallink' | 'user' | 'system';
+}
+
+export interface ExtensionLifecycleRecord {
+  id: string;
+  declarationId?: string;
+  name: string;
+  kind: WorkspaceExtension['kind'];
+  declared: boolean;
+  enabled: boolean;
+  state: ExtensionLifecycleState;
+  automation: 'automatic' | 'guided' | 'manual';
+  summary: string;
+  nextStep?: string;
+  docsUrl?: string;
+  checks: ExtensionLifecycleCheck[];
+}
+
 export interface ResourceProcess {
   pid: number;
   name: string;
@@ -237,6 +271,7 @@ export interface DashboardState {
   diagnostics: StartupDiagnostics;
   phase2: Phase2Advisor;
   extensions: WorkspaceExtension[];
+  extensionLifecycle: ExtensionLifecycleRecord[];
   services: ServiceRecord[];
   logs: LogEntry[];
   ports: PortResolution;

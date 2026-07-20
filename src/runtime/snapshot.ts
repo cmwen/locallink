@@ -29,6 +29,7 @@ import {
 } from '../shared/utils';
 import { logDebug, logWarn } from '../shared/logger';
 import { buildWorkspaceProcessEnv, deriveWorkspaceIdentity } from '../workspace/identity';
+import { buildExtensionLifecycles } from '../extensions/lifecycle';
 
 interface DockerPsRow {
   ID?: string;
@@ -352,13 +353,14 @@ export class RuntimeResolver {
     const model = await this.configRepository.loadProjectModel();
     const identity = deriveWorkspaceIdentity(this.root, model.env.LOCALLINK_WORKSPACE_ID);
     const definitions = await Promise.all(model.definitions.map((definition) => enrichServiceDefinition(definition)));
-    const [dockerStates, pm2States, windowsStates, phase2, resources, edgeUrlsByService] = await Promise.all([
+    const [dockerStates, pm2States, windowsStates, phase2, resources, edgeUrlsByService, extensionLifecycle] = await Promise.all([
       collectDockerStates(this.root, definitions, model.env, this.commandRunner),
       collectPm2States(this.root, definitions, model.env, this.commandRunner),
       collectWindowsStates(definitions, this.commandRunner),
       buildPhase2Advisor(model.env, this.commandRunner),
       buildResourceDashboard(this.commandRunner, definitions, { root: this.root, env: model.env }),
       discoverServiceEdgeUrls(model.extensions, definitions, this.commandRunner, model.env),
+      buildExtensionLifecycles(model.extensions, this.commandRunner, definitions),
     ]);
 
     const services = definitions.map<ServiceRecord>((definition) => {
@@ -473,6 +475,7 @@ export class RuntimeResolver {
       diagnostics,
       phase2,
       extensions: model.extensions,
+      extensionLifecycle,
       filters: [
         { label: 'All', value: 'all' },
         { label: 'Docker', value: 'docker' },

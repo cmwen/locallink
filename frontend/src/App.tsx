@@ -13,7 +13,6 @@ import {
   requestPort,
   reviewProcessTermination,
   terminateProcess,
-  updateWorkspacePreferences,
 } from './api';
 import type {
   DashboardState,
@@ -135,13 +134,7 @@ export function App() {
   const [killReason, setKillReason] = useState('');
   const [pauseLogs, setPauseLogs] = useState(false);
   const [selectedProcess, setSelectedProcess] = useState<ProcessInspection | null>(null);
-  const [extensionState, setExtensionState] = useState({
-    dashboard: true,
-    proxy: true,
-    pocketId: true,
-    edge: false,
-    updateQueued: false,
-  });
+  const [updateQueued, setUpdateQueued] = useState(false);
   const [queuedVersionId, setQueuedVersionId] = useState('');
 
   const services = useMemo(() => [...state.services, ...tempServices], [state.services, tempServices]);
@@ -240,13 +233,7 @@ export function App() {
             recent: [...activeReservations, ...result.state.ports.recent.filter((entry) => !activeReservations.some((reservation) => reservation.port === entry.port))],
           },
         }));
-        setExtensionState({
-          dashboard: persisted.preferences.dashboardEnabled,
-          proxy: persisted.preferences.proxyEnabled,
-          pocketId: persisted.preferences.pocketIdEnabled,
-          edge: persisted.preferences.edgeEnabled,
-          updateQueued: persisted.versionUpdates.some((update) => update.status === 'queued'),
-        });
+        setUpdateQueued(persisted.versionUpdates.some((update) => update.status === 'queued'));
         setQueuedVersionId(persisted.versionUpdates.find((update) => update.status === 'queued')?.id || '');
         setTempServices(persisted.temporaryRuntimes.map((runtime) => ({
           id: runtime.id,
@@ -438,39 +425,16 @@ export function App() {
     }
   }
 
-  async function updateExtension(key: 'dashboard' | 'proxy' | 'pocketId' | 'edge') {
-    const next = !extensionState[key];
-    setExtensionState((current) => ({ ...current, [key]: next }));
-    if (source === 'api') {
-      const preferenceKey = key === 'dashboard'
-        ? 'dashboardEnabled'
-        : key === 'proxy'
-          ? 'proxyEnabled'
-          : key === 'pocketId'
-            ? 'pocketIdEnabled'
-            : 'edgeEnabled';
-      try {
-        await updateWorkspacePreferences({ [preferenceKey]: next });
-        setStatus('Extension preference persisted to this workspace.');
-      } catch (error) {
-        setExtensionState((current) => ({ ...current, [key]: !next }));
-        setStatus(error instanceof Error ? error.message : 'Extension preference could not be persisted.');
-      }
-    } else {
-      setStatus('Extension preference updated for this dashboard session.');
-    }
-  }
-
   async function queueUpdate() {
-    const next = !extensionState.updateQueued;
-    setExtensionState((current) => ({ ...current, updateQueued: next }));
+    const next = !updateQueued;
+    setUpdateQueued(next);
     if (source === 'api' && next) {
       try {
         const workspace = await queueVersionUpdate('0.12.4', '0.13.0');
         setQueuedVersionId(workspace.versionUpdates.find((update) => update.status === 'queued')?.id || '');
         setStatus('Version update plan queued in the workspace.');
       } catch (error) {
-        setExtensionState((current) => ({ ...current, updateQueued: false }));
+        setUpdateQueued(false);
         setStatus(error instanceof Error ? error.message : 'Version update could not be queued.');
       }
     } else if (source === 'api' && queuedVersionId) {
@@ -479,7 +443,7 @@ export function App() {
         setQueuedVersionId('');
         setStatus('Version update plan cancelled in the workspace.');
       } catch (error) {
-        setExtensionState((current) => ({ ...current, updateQueued: true }));
+        setUpdateQueued(true);
         setStatus(error instanceof Error ? error.message : 'Version update could not be cancelled.');
       }
     } else {
@@ -539,7 +503,7 @@ export function App() {
           attentionCount={attentionItems.length}
           portsHeld={state.ports.recent.length || state.ports.busy.length}
           pendingServices={pendingServices}
-          networkEdgeEnabled={extensionState.edge && state.extensions.some((extension) => extension.kind === 'network-edge' && extension.enabled)}
+          networkEdgeEnabled={state.extensions.some((extension) => extension.kind === 'network-edge' && extension.enabled)}
           setHealthFilter={setHealthFilter}
           selectService={(id) => {
             setSelectedServiceId(id);
@@ -558,9 +522,8 @@ export function App() {
         <ExtensionsWorkspace
           state={state}
           services={services}
-          extensionState={extensionState}
+          updateQueued={updateQueued}
           query={queries.extensions}
-          updateExtension={updateExtension}
           queueUpdate={queueUpdate}
           openService={openService}
         />
@@ -936,51 +899,31 @@ function ServiceDetail({
 function ExtensionsWorkspace({
   state,
   services,
-  extensionState,
+  updateQueued,
   query,
-  updateExtension,
   queueUpdate,
   openService,
 }: {
   state: DashboardState;
   services: ServiceRecord[];
-  extensionState: { dashboard: boolean; proxy: boolean; pocketId: boolean; edge: boolean; updateQueued: boolean };
+  updateQueued: boolean;
   query: string;
-  updateExtension: (key: 'dashboard' | 'proxy' | 'pocketId' | 'edge') => Promise<void>;
   queueUpdate: () => Promise<void>;
   openService: (id: string) => void;
 }) {
-  const edgeOption = state.phase2.options.find((option) => option.id === 'tailscale')
-    || state.phase2.options.find((option) => option.id === 'reverse-proxy');
   const pocketIdOption = state.phase2.options.find((option) => option.id === 'pocket-id');
-  const declaredExtensions = state.extensions.length > 0 ? state.extensions : [
-    { id: 'dashboard', name: 'Dashboard', kind: 'dashboard' as const, enabled: true, detail: 'Local command center.', status: 'ready' as const, exposedPorts: [], requiredEnv: [], missingEnv: [], dependsOn: [] },
-    { id: 'proxy', name: 'Proxy', kind: 'reverse-proxy' as const, enabled: true, detail: 'Stable URLs for local services.', status: 'ready' as const, exposedPorts: [], requiredEnv: [], missingEnv: [], dependsOn: [] },
-    { id: 'pocket-id', name: 'Pocket ID', kind: 'identity-provider' as const, enabled: true, detail: 'Private passkey SSO for internal applications.', status: pocketIdOption?.status === 'available' ? 'ready' as const : 'setup' as const, exposedPorts: [], requiredEnv: [], missingEnv: [], dependsOn: [] },
-    { id: 'tailscale', name: 'Network edge', kind: 'network-edge' as const, enabled: true, detail: edgeOption?.title || 'Private tailnet access.', status: edgeOption?.status === 'available' ? 'ready' as const : 'setup' as const, exposedPorts: [], requiredEnv: [], missingEnv: [], dependsOn: [] },
-  ];
-  const extensions = declaredExtensions.map((extension) => {
-    const key = extension.id === 'dashboard' || extension.kind === 'dashboard'
-      ? 'dashboard' as const
-      : extension.id === 'pocket-id' || extension.kind === 'identity-provider'
-        ? 'pocketId' as const
-        : extension.kind === 'reverse-proxy'
-          ? 'proxy' as const
-          : extension.kind === 'network-edge'
-            ? 'edge' as const
-            : undefined;
-    const enabled = extension.enabled && (key ? extensionState[key] : true);
-    const setupDetail = extension.missingEnv.length > 0 ? ` Missing: ${extension.missingEnv.join(', ')}.` : '';
+  const extensions = state.extensionLifecycle.map((extension) => {
+    const detail = `${extension.summary}${extension.nextStep ? ` Next: ${extension.nextStep}` : ''}`;
     return {
       id: extension.id,
-      key,
       title: extension.name,
-      detail: `${extension.detail}${setupDetail}`,
-      enabled,
-      warn: extension.status === 'setup',
+      detail,
+      state: extension.state,
+      healthy: extension.state === 'healthy',
+      warn: extension.state.startsWith('waiting') || extension.state === 'error',
     };
   });
-  const visibleExtensions = extensions.filter((extension) => matchesWorkspaceQuery(query, extension.title, extension.detail, extension.enabled ? 'on enabled' : 'off disabled'));
+  const visibleExtensions = extensions.filter((extension) => matchesWorkspaceQuery(query, extension.title, extension.detail, extension.state));
   const ports = state.ports.recent
     .filter((entry) => matchesWorkspaceQuery(query, entry.service, entry.port, entry.status, 'port'))
     .slice(0, 5);
@@ -988,10 +931,6 @@ function ExtensionsWorkspace({
   const showPorts = ports.length > 0 || matchesWorkspaceQuery(query, 'port list', 'configured ports', 'next open port');
   const showVersion = matchesWorkspaceQuery(query, 'version workflow', 'CLI 0.12.4 0.13.0', 'schedule update', 'cancel update');
   const hasResults = visibleExtensions.length > 0 || showConfig || showPorts || showVersion;
-
-  function toggle(key: 'dashboard' | 'proxy' | 'pocketId' | 'edge') {
-    void updateExtension(key);
-  }
 
   return (
     <main className="pane">
@@ -1006,7 +945,7 @@ function ExtensionsWorkspace({
         {visibleExtensions.length > 0 ? (
           <section className="extension-row" aria-label="Connections">
             {visibleExtensions.map((extension) => (
-              <ExtensionButton key={extension.id} title={extension.title} detail={extension.detail} enabled={extension.enabled} warn={extension.warn} onChange={extension.key ? () => toggle(extension.key!) : undefined} />
+              <ExtensionButton key={extension.id} title={extension.title} detail={extension.detail} status={extension.state} healthy={extension.healthy} warn={extension.warn} />
             ))}
           </section>
         ) : null}
@@ -1015,14 +954,14 @@ function ExtensionsWorkspace({
           {showConfig ? <article className="config-card">
             <strong>Extension config</strong>
             <p>
-              Extension capabilities come from <span className="mono">locallink.extensions.yml</span>. Known dashboard preferences are saved locally; runtime enablement and secrets remain declaration-first.
+              Available capabilities are built into LocalLink. Workspace declarations come from <span className="mono">locallink.extensions.yml</span>; runtime probes separately report what is installed, waiting for a person, or healthy.
             </p>
             <div className="config-lines">
-              {declaredExtensions.map((extension) => (
+              {state.extensionLifecycle.map((extension) => (
                 <ConfigLine
                   key={extension.id}
                   label={extension.name}
-                  value={`${extension.status}${extension.exposedPorts.length ? ` / ports: ${extension.exposedPorts.join(', ')}` : ''}${extension.dependsOn.length ? ` / needs: ${extension.dependsOn.join(', ')}` : ''}`}
+                  value={`${extension.state} / ${extension.declared ? `declared as ${extension.declarationId}` : 'not declared'} / ${extension.automation}`}
                 />
               ))}
               <ConfigLine label="Pocket ID issuer" value={pocketIdOption?.detectedValue || 'Set POCKET_ID_APP_URL to the private Tailscale Serve HTTPS URL.'} />
@@ -1077,7 +1016,7 @@ function ExtensionsWorkspace({
                 void queueUpdate();
               }}
             >
-              {extensionState.updateQueued ? 'Cancel scheduled update' : 'Schedule update'}
+              {updateQueued ? 'Cancel scheduled update' : 'Schedule update'}
             </button>
           </article>
         </section> : null}
@@ -1505,25 +1444,24 @@ function InfoCard({ title, value, mono, action }: { title: string; value: string
 function ExtensionButton({
   title,
   detail,
-  enabled,
+  status,
+  healthy,
   warn,
-  onChange,
 }: {
   title: string;
   detail: string;
-  enabled: boolean;
+  status: string;
+  healthy: boolean;
   warn?: boolean;
-  onChange?: () => void;
 }) {
   return (
-    <label className="extension">
+    <div className="extension">
       <span className="extension-copy">
         <strong>{title}</strong>
         <span>{detail}</span>
       </span>
-      <span className={`pill ${enabled ? 'ok' : warn ? 'warn' : ''}`}>{enabled ? 'on' : 'off'}</span>
-      <input className="extension-switch" type="checkbox" role="switch" checked={enabled} disabled={!onChange} onChange={onChange} aria-label={`${title}: ${enabled ? 'on' : 'off'}`} />
-    </label>
+      <span className={`pill ${healthy ? 'ok' : warn ? 'warn' : ''}`}>{status}</span>
+    </div>
   );
 }
 

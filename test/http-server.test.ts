@@ -49,6 +49,7 @@ test('HTTP server exposes the dashboard state endpoint', async () => {
   assert.equal(payload.app.name, 'LocalLink');
   assert.ok(Array.isArray(payload.services));
   assert.ok(Array.isArray(payload.extensions));
+  assert.ok(Array.isArray(payload.extensionLifecycle));
   assert.equal(payload.pwa.manifest, 'Valid');
   assert.ok(Array.isArray(payload.diagnostics.checks));
   assert.ok(payload.resources.system.cpuPercent >= 0);
@@ -57,6 +58,22 @@ test('HTTP server exposes the dashboard state endpoint', async () => {
   assert.ok(Array.isArray(payload.resources.topCpu));
   assert.ok(Array.isArray(payload.resources.topMemory));
 
+  await server.close();
+});
+
+test('HTTP server exposes the per-workspace extension lifecycle', async () => {
+  const root = await createTempProject();
+  const context = new AppContext(root);
+  await context.initialize();
+  const server = context.createServer();
+
+  const response = await server.inject({ method: 'GET', url: '/api/extensions' });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json().map((record: { id: string }) => record.id), [
+    'private-edge', 'reverse-proxy', 'identity', 'observability',
+  ]);
+  assert.ok(response.json().every((record: { state: string }) => record.state === 'available'));
   await server.close();
 });
 

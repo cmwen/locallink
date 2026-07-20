@@ -31,6 +31,7 @@
     "mcp": "node ./bin/locallink.js mcp",
     "doctor": "node ./bin/locallink.js doctor",
     "snapshot": "node ./bin/locallink.js snapshot",
+    "extensions": "node ./bin/locallink.js extensions",
     "dev": "tsx src/cli.ts web",
     "dev:frontend": "vite --config frontend/vite.config.ts",
     "dev:mcp": "tsx src/cli.ts mcp",

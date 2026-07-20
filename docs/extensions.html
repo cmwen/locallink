@@ -12,13 +12,13 @@
         <div class="eyebrow">Workspace capabilities</div>
         <h1>How LocalLink out-of-box extensions work</h1>
         <p>Extensions declare optional capabilities around the service topology. The LocalLink dashboard and local web server do not depend on them: an extension-free workspace can still declare services, resolve ports, inspect runtime state and logs, and run lifecycle actions.</p>
-        <p>Enabling an extension expresses desired capability; it does not currently mean that LocalLink has installed software, published ports, or created credentials. Future installer flows must show the difference between declared, waiting for external setup, installed, waiting for first-user setup, and healthy.</p>
+        <p>Enabling an extension expresses desired capability; it does not mean that LocalLink has installed software, published ports, or created credentials. The dashboard and <code>locallink extensions</code> now separate available, declared, waiting for external installation, waiting for a user, waiting for configuration, installed, and healthy states.</p>
       </header>
 
       <section class="section">
         <h2>The declaration model</h2>
         <p><code>locallink.extensions.yml</code> is the committable capability inventory. LocalLink resolves exposed ports from <code>.env</code>, reports missing required variables as setup work, and displays each extension in Connections. Runtime services remain in <code>docker-compose.yml</code> or <code>locallink.services.yml</code>; private values currently remain in <code>.env</code>.</p>
-        <p>An extension marked ready has its declared configuration present. Use the related service card and runtime checks to confirm live connectivity and external authentication.</p>
+        <p>Declaration readiness only means required values are present. Lifecycle checks separately verify host tools, external authentication, and private routes. For Private Edge, installing Tailscale and joining a tailnet remain explicit user-owned steps; route generation and verification are LocalLink-owned automation targets.</p>
         <pre><code>extension declaration → readiness in dashboard
 service declaration   → lifecycle and runtime status
 .env                   → local ports, URLs, and secrets</code></pre>
@@ -26,7 +26,7 @@ service declaration   → lifecycle and runtime status
 
       <section id="dashboard" class="section">
         <h2>Dashboard</h2>
-        <p>The local control surface. It reads the workspace model, runtime probes, connection declarations, resource state, and saved display preferences. Enabling its preference does not override the configured bind host or launch an undeclared service.</p>
+        <p>The local control surface reads the workspace model, runtime probes, connection declarations, and resource state. Capability cards are evidence-backed status displays; they do not claim that switching a preference installed or launched external software.</p>
       </section>
 
       <section id="reverse-proxy" class="section">
@@ -64,8 +64,8 @@ service declaration   → lifecycle and runtime status
           <li>No extension writes secrets into committed files.</li>
           <li>No network edge is assumed public.</li>
           <li>Missing required variables produce setup status rather than fake readiness.</li>
-          <li>Extension preferences do not replace Docker, PM2, Taskfile, proxy, or Tailscale configuration.</li>
-          <li>Disabling a dashboard preference does not destructively stop an external runtime.</li>
+          <li>Capability declarations do not replace Docker, PM2, Taskfile, proxy, or Tailscale configuration.</li>
+          <li>The dashboard does not expose a toggle that pretends to install or stop an external runtime.</li>
           <li>Derived URLs, encoded headers, proxy routes, and generated credentials should not become duplicated human-maintained inputs.</li>
         </ul>
       </section>

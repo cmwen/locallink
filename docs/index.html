@@ -362,7 +362,7 @@ locallink: {
           </div>
           <div class="card">
             <strong>Pocket ID identity</strong>
-            <small>Pocket ID is the default application identity extension. Keep it private behind Tailscale Serve and register internal services as OIDC clients. <a href="./pocket-id-tailscale.html">Open the private SSO guide.</a></small>
+            <small>Pocket ID is an optional application identity provider. A new workspace remains extension-free until identity is declared. Keep Pocket ID private behind Tailscale Serve and register internal services through a generic OIDC contract. <a href="./pocket-id-tailscale.html">Open the private SSO guide.</a></small>
           </div>
           <div class="card">
             <strong>Reverse-proxy detection</strong>
@@ -404,6 +404,10 @@ POCKET_ID_PORT=1411</code></pre>
                 <td>Print the current dashboard state payload as JSON.</td>
               </tr>
               <tr>
+                <td><code>locallink extensions</code></td>
+                <td>Print available, declared, manual-onboarding, installed, and healthy capability states for this workspace.</td>
+              </tr>
+              <tr>
                 <td><code>locallink doctor</code></td>
                 <td>Print startup diagnostics and install guidance for runtime dependencies.</td>
               </tr>
@@ -425,6 +429,7 @@ POCKET_ID_PORT=1411</code></pre>
             </thead>
             <tbody>
               <tr><td><code>GET</code></td><td><code>/api/state</code></td><td>Full dashboard snapshot including services, diagnostics, phase2 advisor, logs, ports, and resources.</td></tr>
+              <tr><td><code>GET</code></td><td><code>/api/extensions</code></td><td>Per-workspace extension catalog, declaration state, runtime checks, and next onboarding step.</td></tr>
               <tr><td><code>GET</code></td><td><code>/api/configs</code></td><td>Raw workspace blueprint files plus derived services.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/configs</code></td><td>Update a supported blueprint file with raw content or a structured patch.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/ports/next</code></td><td>Allocate the next free local port.</td></tr>

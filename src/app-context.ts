@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 
 import { ConfigRepository } from './config/files';
+import { buildExtensionLifecycles } from './extensions/lifecycle';
 import { createHttpServer } from './http/server';
 import { LogBroker } from './logs/broker';
 import { PortAllocator } from './ports/allocator';
@@ -24,6 +25,7 @@ import {
 } from './workspace/identity';
 import type {
   DashboardState,
+  ExtensionLifecycleRecord,
   ExecuteTaskInput,
   InfraConfigView,
   ProcessInspection,
@@ -142,6 +144,12 @@ export class AppContext {
 
   async readInfraConfig(): Promise<InfraConfigView> {
     return this.configRepository.readInfraConfig();
+  }
+
+  async readExtensionLifecycle(): Promise<ExtensionLifecycleRecord[]> {
+    await this.configRepository.hydrateProcessEnv();
+    const model = await this.configRepository.loadProjectModel();
+    return buildExtensionLifecycles(model.extensions, undefined, model.definitions);
   }
 
   async writeInfraConfig(input: WriteInfraConfigInput): Promise<WriteInfraConfigResult> {

@@ -19,6 +19,18 @@ export type ResourceScope = 'workspace' | 'host';
 export type AttributionConfidence = 'exact' | 'heuristic' | 'unknown';
 export type ExtensionKind = 'dashboard' | 'reverse-proxy' | 'network-edge' | 'identity-provider' | 'observability' | 'custom';
 export type ExtensionStatus = 'ready' | 'setup' | 'disabled';
+export type ExtensionLifecycleState =
+  | 'available'
+  | 'declared'
+  | 'disabled'
+  | 'waiting-external'
+  | 'waiting-user'
+  | 'waiting-configuration'
+  | 'installed'
+  | 'healthy'
+  | 'error';
+export type ExtensionAutomation = 'automatic' | 'guided' | 'manual';
+export type ExtensionCheckStatus = 'ok' | 'warning' | 'missing';
 
 export interface FilterOption {
   label: string;
@@ -145,6 +157,7 @@ export interface DashboardState {
   diagnostics: StartupDiagnostics;
   phase2: Phase2Advisor;
   extensions: WorkspaceExtension[];
+  extensionLifecycle: ExtensionLifecycleRecord[];
   filters: FilterOption[];
   services: ServiceRecord[];
   tools: ToolSummary[];
@@ -168,6 +181,29 @@ export interface WorkspaceExtension {
   missingEnv: string[];
   dependsOn: string[];
   docsUrl?: string;
+}
+
+export interface ExtensionLifecycleCheck {
+  id: string;
+  label: string;
+  status: ExtensionCheckStatus;
+  detail: string;
+  owner: 'locallink' | 'user' | 'system';
+}
+
+export interface ExtensionLifecycleRecord {
+  id: string;
+  declarationId?: string;
+  name: string;
+  kind: ExtensionKind;
+  declared: boolean;
+  enabled: boolean;
+  state: ExtensionLifecycleState;
+  automation: ExtensionAutomation;
+  summary: string;
+  nextStep?: string;
+  docsUrl?: string;
+  checks: ExtensionLifecycleCheck[];
 }
 
 export interface ServiceBlueprint {
