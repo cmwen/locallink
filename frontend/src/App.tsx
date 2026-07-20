@@ -1065,6 +1065,17 @@ function ExtensionsWorkspace({
                 />
               ))}
             </div>
+            {extensionPlan.routePlan.routes.length > 0 ? (
+              <div className="config-lines" aria-label="Generated Tailscale Serve route plan">
+                {extensionPlan.routePlan.routes.map((route) => (
+                  <ConfigLine
+                    key={route.serviceId}
+                    label={`${route.serviceName} · ${route.status}`}
+                    value={`${route.url || `HTTPS :${route.httpsPort}`} → 127.0.0.1:${route.targetPort}`}
+                  />
+                ))}
+              </div>
+            ) : null}
           </article> : null}
 
           {showPorts ? <article className="config-card">

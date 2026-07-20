@@ -69,6 +69,11 @@ test('Private Edge distinguishes connected setup from healthy Serve routes', asy
   assert.match(healthy.summary, /1 active workspace Tailscale Serve route/);
   assert.equal(healthy.checks.find((check) => check.id === 'tailscale-routes')?.status, 'ok');
 
+  selectedEdge.exposedPorts = ['4010', '6012'];
+  const partial = (await buildExtensionLifecycles([selectedEdge], healthyRunner))[0];
+  assert.equal(partial.state, 'waiting-configuration');
+  assert.match(partial.checks.find((check) => check.id === 'tailscale-routes')?.detail || '', /missing routes.*6012/i);
+
   selectedEdge.exposedPorts = ['6012'];
   const unrelated = (await buildExtensionLifecycles([selectedEdge], healthyRunner))[0];
   assert.equal(unrelated.state, 'waiting-configuration');

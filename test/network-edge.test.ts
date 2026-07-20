@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { discoverServiceEdgeUrls, parseTailscaleServeRoutes } from '../src/runtime/network-edge';
+import { discoverServiceEdgeUrls, parseTailscaleServeRoutes, planPrivateEdgeRoutes } from '../src/runtime/network-edge';
 import type { ServiceDefinition, WorkspaceExtension } from '../src/shared/contracts';
 import type { CommandRunner } from '../src/shared/utils';
 
@@ -166,4 +166,120 @@ test('discoverServiceEdgeUrls ignores placeholder Pocket ID issuers', async () =
 test('parseTailscaleServeRoutes tolerates unavailable or malformed status output', () => {
   assert.deepEqual(parseTailscaleServeRoutes(''), []);
   assert.deepEqual(parseTailscaleServeRoutes('{not json'), []);
+});
+
+test('planPrivateEdgeRoutes generates exact reversible commands without mutating Tailscale', async () => {
+  const calls: string[][] = [];
+  const commandRunner: CommandRunner = async (_command, args) => {
+    calls.push(args);
+    if (args[0] === 'status') {
+      return { ok: true, code: 0, signal: null, stdout: JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'minipc.tailnet.ts.net.' } }), stderr: '', timedOut: false };
+    }
+    return { ok: true, code: 0, signal: null, stdout: '{}', stderr: '', timedOut: false };
+  };
+
+  const plan = await planPrivateEdgeRoutes(
+    'workspace-a',
+    [{ id: 'pocket-id', name: 'Pocket ID', port: '1411' }],
+    'tailscale',
+    commandRunner,
+    '7451',
+  );
+
+  assert.equal(plan.state, 'ready');
+  assert.equal(plan.mutatesHost, false);
+  assert.deepEqual(calls, [['status', '--json'], ['serve', 'status', '--json']]);
+  assert.deepEqual(plan.routes[0], {
+    serviceId: 'pocket-id',
+    serviceName: 'Pocket ID',
+    targetPort: '1411',
+    httpsPort: '7451',
+    url: 'https://minipc.tailnet.ts.net:7451',
+    status: 'missing',
+    detail: 'This listener can be added without replacing an observed root Serve route.',
+    apply: { command: 'tailscale', args: ['serve', '--bg', '--https=7451', 'http://127.0.0.1:1411'] },
+    rollback: { command: 'tailscale', args: ['serve', '--https=7451', 'off'] },
+  });
+});
+
+test('planPrivateEdgeRoutes detects active listeners and conflicts instead of replacing them', async () => {
+  const status = JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'minipc.tailnet.ts.net.' } });
+  const runnerWithTarget = (targetPort: string): CommandRunner => async (_command, args) => ({
+    ok: true,
+    code: 0,
+    signal: null,
+    stdout: args[0] === 'status' ? status : JSON.stringify({
+      TCP: { 7451: { HTTPS: true } },
+      Web: { 'minipc.tailnet.ts.net:7451': { Handlers: { '/': { Proxy: `http://127.0.0.1:${targetPort}` } } } },
+    }),
+    stderr: '',
+    timedOut: false,
+  });
+
+  const selected = [{ id: 'pocket-id', name: 'Pocket ID', port: '1411' }];
+  const active = await planPrivateEdgeRoutes('workspace-a', selected, 'tailscale', runnerWithTarget('1411'), '7451');
+  assert.equal(active.state, 'in-sync');
+  assert.equal(active.routes[0]?.status, 'active');
+
+  const conflict = await planPrivateEdgeRoutes('workspace-a', selected, 'tailscale', runnerWithTarget('4010'), '7451');
+  assert.equal(conflict.state, 'conflict');
+  assert.equal(conflict.routes[0]?.status, 'conflict');
+  assert.match(conflict.routes[0]?.detail || '', /already owned/i);
+});
+
+test('planPrivateEdgeRoutes does not treat a Tailscale Service virtual IP listener as a node listener conflict', async () => {
+  const commandRunner: CommandRunner = async (_command, args) => ({
+    ok: true,
+    code: 0,
+    signal: null,
+    stdout: args[0] === 'status'
+      ? JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'minipc.tailnet.ts.net.' } })
+      : JSON.stringify({
+          Services: {
+            'svc:other-workspace': {
+              TCP: { 7451: { HTTPS: true } },
+              Web: { 'other.tailnet.ts.net:7451': { Handlers: { '/': { Proxy: 'http://127.0.0.1:4010' } } } },
+            },
+          },
+        }),
+    stderr: '',
+    timedOut: false,
+  });
+
+  const plan = await planPrivateEdgeRoutes(
+    'workspace-a',
+    [{ id: 'pocket-id', name: 'Pocket ID', port: '1411' }],
+    'tailscale',
+    commandRunner,
+    '7451',
+  );
+
+  assert.equal(plan.state, 'ready');
+  assert.equal(plan.routes[0]?.status, 'missing');
+});
+
+test('default generated listener stays stable when another service is selected later', async () => {
+  const commandRunner: CommandRunner = async (_command, args) => ({
+    ok: true,
+    code: 0,
+    signal: null,
+    stdout: args[0] === 'status'
+      ? JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'minipc.tailnet.ts.net.' } })
+      : '{}',
+    stderr: '',
+    timedOut: false,
+  });
+  const pocketId = { id: 'pocket-id', name: 'Pocket ID', port: '1411' };
+  const first = await planPrivateEdgeRoutes('workspace-a', [pocketId], 'tailscale', commandRunner);
+  const expanded = await planPrivateEdgeRoutes(
+    'workspace-a',
+    [{ id: 'dashboard', name: 'Dashboard', port: '4010' }, pocketId],
+    'tailscale',
+    commandRunner,
+  );
+
+  assert.equal(
+    first.routes.find((route) => route.serviceId === 'pocket-id')?.httpsPort,
+    expanded.routes.find((route) => route.serviceId === 'pocket-id')?.httpsPort,
+  );
 });

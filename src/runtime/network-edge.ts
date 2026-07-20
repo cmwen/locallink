@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type { ServiceDefinition, WorkspaceExtension } from '../shared/contracts';
 import type { CommandRunner } from '../shared/utils';
 
@@ -24,6 +26,35 @@ interface TailscaleServeConfig {
 export interface NetworkEdgeRoute {
   url: string;
   targetPort: string;
+}
+
+export interface PrivateEdgeRouteCommand {
+  command: string;
+  args: string[];
+}
+
+export interface PrivateEdgePlannedRoute {
+  serviceId: string;
+  serviceName: string;
+  targetPort: string;
+  httpsPort: string;
+  url?: string;
+  status: 'active' | 'missing' | 'conflict';
+  detail: string;
+  apply: PrivateEdgeRouteCommand;
+  rollback: PrivateEdgeRouteCommand;
+}
+
+export interface PrivateEdgeRoutePlan {
+  state: 'waiting-tailscale' | 'waiting-selection' | 'ready' | 'in-sync' | 'conflict';
+  summary: string;
+  mutatesHost: false;
+  routes: PrivateEdgePlannedRoute[];
+}
+
+interface TailscaleStatus {
+  BackendState?: string;
+  Self?: { DNSName?: string };
 }
 
 function normalizeConfiguredEdgeUrl(value: string | undefined): string | undefined {
@@ -85,6 +116,18 @@ function collectRoutes(config: TailscaleServeConfig, routes: NetworkEdgeRoute[])
   for (const foreground of Object.values(config.Foreground || {})) collectRoutes(foreground, routes);
 }
 
+function parseTailscaleNodeServeRoutes(raw: string): NetworkEdgeRoute[] {
+  try {
+    const config = JSON.parse(raw) as TailscaleServeConfig;
+    const nodeConfig = { ...config, Services: undefined };
+    const routes: NetworkEdgeRoute[] = [];
+    collectRoutes(nodeConfig, routes);
+    return routes.filter((route, index) => routes.findIndex((candidate) => candidate.url === route.url && candidate.targetPort === route.targetPort) === index);
+  } catch {
+    return [];
+  }
+}
+
 export function parseTailscaleServeRoutes(raw: string): NetworkEdgeRoute[] {
   try {
     const config = JSON.parse(raw) as TailscaleServeConfig;
@@ -94,6 +137,126 @@ export function parseTailscaleServeRoutes(raw: string): NetworkEdgeRoute[] {
   } catch {
     return [];
   }
+}
+
+function parseTailscaleStatus(raw: string): TailscaleStatus | undefined {
+  try {
+    return JSON.parse(raw) as TailscaleStatus;
+  } catch {
+    return undefined;
+  }
+}
+
+function listenerPort(route: NetworkEdgeRoute): string | undefined {
+  try {
+    const url = new URL(route.url);
+    if (url.protocol !== 'https:' || (url.pathname && url.pathname !== '/')) return undefined;
+    return url.port || '443';
+  } catch {
+    return undefined;
+  }
+}
+
+function configuredHttpsPortStart(configuredStart?: string): number | undefined {
+  const configured = Number(configuredStart);
+  if (Number.isInteger(configured) && configured >= 1024 && configured <= 65500) return configured;
+  return undefined;
+}
+
+function generatedHttpsPort(workspaceId: string, serviceId: string): number {
+  const hash = createHash('sha256').update(`${workspaceId}\0${serviceId}`).digest().readUInt32BE(0);
+  return 10000 + (hash % 50000);
+}
+
+function routeUrl(hostname: string | undefined, httpsPort: string): string | undefined {
+  if (!hostname) return undefined;
+  return `https://${hostname}${httpsPort === '443' ? '' : `:${httpsPort}`}`;
+}
+
+export async function planPrivateEdgeRoutes(
+  workspaceId: string,
+  services: Array<{ id: string; name: string; port: string }>,
+  command: string,
+  commandRunner: CommandRunner,
+  configuredPortStart?: string,
+): Promise<PrivateEdgeRoutePlan> {
+  if (services.length === 0) {
+    return {
+      state: 'waiting-selection',
+      summary: 'Select at least one workspace service before generating Tailscale Serve routes.',
+      mutatesHost: false,
+      routes: [],
+    };
+  }
+
+  const statusResult = await commandRunner(command, ['status', '--json'], { timeoutMs: 2_000 });
+  const status = statusResult.ok ? parseTailscaleStatus(statusResult.stdout) : undefined;
+  const connected = statusResult.ok && (!status?.BackendState || status.BackendState.toLowerCase() === 'running');
+  if (!connected) {
+    return {
+      state: 'waiting-tailscale',
+      summary: 'Tailscale must be installed and connected before LocalLink can calculate live route conflicts.',
+      mutatesHost: false,
+      routes: [],
+    };
+  }
+
+  const serveResult = await commandRunner(command, ['serve', 'status', '--json'], { timeoutMs: 2_000 });
+  const currentRoutes = serveResult.ok ? parseTailscaleNodeServeRoutes(serveResult.stdout) : [];
+  const routesByListener = new Map<string, NetworkEdgeRoute[]>();
+  for (const route of currentRoutes) {
+    const port = listenerPort(route);
+    if (!port) continue;
+    routesByListener.set(port, [...(routesByListener.get(port) || []), route]);
+  }
+
+  const hostname = status?.Self?.DNSName?.replace(/\.$/, '')
+    || currentRoutes.map((route) => {
+      try { return new URL(route.url).hostname; } catch { return undefined; }
+    }).find(Boolean);
+  const configuredStart = configuredHttpsPortStart(configuredPortStart);
+  const ordered = [...services].sort((left, right) => left.id.localeCompare(right.id));
+  const generatedPorts = new Set<number>();
+  const routes = ordered.map((service, index): PrivateEdgePlannedRoute => {
+    let numericPort = configuredStart === undefined ? generatedHttpsPort(workspaceId, service.id) : configuredStart + index;
+    if (numericPort > 65535) numericPort = 1024 + (numericPort - 65536);
+    while (generatedPorts.has(numericPort)) numericPort = numericPort === 65535 ? 1024 : numericPort + 1;
+    generatedPorts.add(numericPort);
+    const httpsPort = String(numericPort);
+    const occupants = routesByListener.get(httpsPort) || [];
+    const active = occupants.some((route) => route.targetPort === service.port);
+    const conflict = !active && occupants.length > 0;
+    const apply = { command, args: ['serve', '--bg', `--https=${httpsPort}`, `http://127.0.0.1:${service.port}`] };
+    const rollback = { command, args: ['serve', `--https=${httpsPort}`, 'off'] };
+    return {
+      serviceId: service.id,
+      serviceName: service.name,
+      targetPort: service.port,
+      httpsPort,
+      url: routeUrl(hostname, httpsPort),
+      status: active ? 'active' : conflict ? 'conflict' : 'missing',
+      detail: active
+        ? 'The generated listener already targets this workspace service.'
+        : conflict
+          ? `HTTPS port ${httpsPort} is already owned by another Tailscale Serve route.`
+          : 'This listener can be added without replacing an observed root Serve route.',
+      apply,
+      rollback,
+    };
+  });
+
+  const conflicts = routes.filter((route) => route.status === 'conflict').length;
+  const missing = routes.filter((route) => route.status === 'missing').length;
+  return {
+    state: conflicts > 0 ? 'conflict' : missing > 0 ? 'ready' : 'in-sync',
+    summary: conflicts > 0
+      ? `${conflicts} generated HTTPS listener${conflicts === 1 ? '' : 's'} conflict with existing Tailscale Serve configuration.`
+      : missing > 0
+        ? `${missing} reversible Tailscale Serve route${missing === 1 ? '' : 's'} can be applied after review.`
+        : 'Every generated workspace route is already active.',
+    mutatesHost: false,
+    routes,
+  };
 }
 
 export async function discoverServiceEdgeUrls(

@@ -173,13 +173,29 @@ export interface ExtensionPlanStep {
 
 export interface ExtensionInstallPlan {
   capability: 'private-edge';
-  state: 'ready-to-apply' | 'waiting-user' | 'complete';
+  state: 'ready-to-apply' | 'ready-to-route' | 'waiting-user' | 'complete';
   summary: string;
   canApply: boolean;
   selection: {
     requested: boolean;
     selected: Array<{ id: string; name: string; port: string }>;
     available: Array<{ id: string; name: string; port: string }>;
+  };
+  routePlan: {
+    state: 'waiting-tailscale' | 'waiting-selection' | 'ready' | 'in-sync' | 'conflict';
+    summary: string;
+    mutatesHost: false;
+    routes: Array<{
+      serviceId: string;
+      serviceName: string;
+      targetPort: string;
+      httpsPort: string;
+      url?: string;
+      status: 'active' | 'missing' | 'conflict';
+      detail: string;
+      apply: { command: string; args: string[] };
+      rollback: { command: string; args: string[] };
+    }>;
   };
   steps: ExtensionPlanStep[];
 }

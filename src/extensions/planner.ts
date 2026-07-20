@@ -1,4 +1,5 @@
 import { ConfigRepository } from '../config/files';
+import { planPrivateEdgeRoutes, type PrivateEdgeRoutePlan } from '../runtime/network-edge';
 import type { ExtensionLifecycleRecord, WorkspaceExtension } from '../shared/contracts';
 import { AppError } from '../shared/errors';
 import type { CommandRunner } from '../shared/utils';
@@ -22,7 +23,7 @@ export interface ExtensionPlanStep {
 export interface ExtensionInstallPlan {
   workspace: ReturnType<typeof deriveWorkspaceIdentity>;
   capability: InstallableCapabilityId;
-  state: 'ready-to-apply' | 'waiting-user' | 'complete';
+  state: 'ready-to-apply' | 'ready-to-route' | 'waiting-user' | 'complete';
   summary: string;
   canApply: boolean;
   selection: {
@@ -30,6 +31,7 @@ export interface ExtensionInstallPlan {
     selected: Array<{ id: string; name: string; port: string }>;
     available: Array<{ id: string; name: string; port: string }>;
   };
+  routePlan: PrivateEdgeRoutePlan;
   steps: ExtensionPlanStep[];
 }
 
@@ -62,15 +64,15 @@ function syntheticPrivateEdge(existing?: WorkspaceExtension): WorkspaceExtension
   };
 }
 
-function runtimeSteps(lifecycle: ExtensionLifecycleRecord, hasSelectedServices: boolean): ExtensionPlanStep[] {
-  if (lifecycle.state === 'healthy') {
+function runtimeSteps(lifecycle: ExtensionLifecycleRecord, routePlan: PrivateEdgeRoutePlan): ExtensionPlanStep[] {
+  if (routePlan.state === 'in-sync') {
     return [{
       id: 'verify-private-edge',
       label: 'Verify workspace routes',
       owner: 'locallink',
       status: 'complete',
       automatic: true,
-      detail: lifecycle.summary,
+      detail: routePlan.summary,
     }];
   }
 
@@ -100,11 +102,9 @@ function runtimeSteps(lifecycle: ExtensionLifecycleRecord, hasSelectedServices: 
     id: 'generate-tailscale-routes',
     label: 'Generate and verify Tailscale Serve routes',
     owner: 'locallink',
-    status: 'blocked',
+    status: routePlan.state === 'ready' ? 'pending' : 'blocked',
     automatic: true,
-    detail: hasSelectedServices
-      ? 'Service selection is recorded. Live route mutation requires a separate reversible route plan before LocalLink can apply it.'
-      : 'Waiting for an explicit service selection before LocalLink can generate route changes.',
+    detail: routePlan.summary,
   }];
 }
 
@@ -156,6 +156,7 @@ export class ExtensionPlanner {
         }).filter((service, index, values) => values.findIndex((candidate) => candidate.id === service.id) === index)
       : availableServices.filter((service) => privateEdge.exposedPorts.includes(service.port));
     const selectedPorts = selectedServices.map((service) => service.port);
+    const workspace = deriveWorkspaceIdentity(this.root, model.env.LOCALLINK_WORKSPACE_ID);
     const lifecycleExtensions = [
       ...model.extensions.filter((extension) => extension.kind !== 'network-edge'),
       privateEdge,
@@ -167,6 +168,13 @@ export class ExtensionPlanner {
     if (!lifecycle) {
       throw new AppError('EXTENSION_PLAN_FAILED', 'Private Edge lifecycle could not be evaluated.', 500);
     }
+    const routePlan = await planPrivateEdgeRoutes(
+      workspace.id,
+      selectedServices,
+      privateEdge.command || 'tailscale',
+      this.commandRunner,
+      model.env.LOCALLINK_PRIVATE_EDGE_PORT_START,
+    );
 
     const envContent = infra.files.find((file) => file.targetFile === '.env')?.content || '';
     const declarationReady = Boolean(existing?.enabled);
@@ -218,26 +226,26 @@ export class ExtensionPlanner {
           : `Record selected ports ${selectedPorts.join(', ')} in the network-edge declaration.`,
       },
     ];
-    const steps = [...workspaceSteps, ...runtimeSteps(lifecycle, selectionReady)];
+    const steps = [...workspaceSteps, ...runtimeSteps(lifecycle, routePlan)];
     const canApply = workspaceSteps.some((step) => step.owner === 'locallink' && step.status === 'pending');
-    const waitingUser = steps.some((step) => step.owner === 'user' && step.status !== 'complete');
     const complete = steps.every((step) => step.status === 'complete');
 
     return {
-      workspace: deriveWorkspaceIdentity(this.root, model.env.LOCALLINK_WORKSPACE_ID),
+      workspace,
       capability: 'private-edge',
-      state: complete ? 'complete' : canApply ? 'ready-to-apply' : waitingUser ? 'waiting-user' : 'ready-to-apply',
+      state: complete ? 'complete' : canApply ? 'ready-to-apply' : routePlan.state === 'ready' ? 'ready-to-route' : 'waiting-user',
       summary: complete
         ? 'Private Edge is declared and healthy for this workspace.'
         : canApply
           ? 'LocalLink can apply the workspace-owned declaration changes. External security decisions remain explicit steps.'
-          : 'Workspace declarations are ready; Private Edge is waiting for user-owned or route-selection steps.',
+          : routePlan.summary,
       canApply,
       selection: {
         requested: requestedSelection,
         selected: selectedServices,
         available: availableServices,
       },
+      routePlan,
       steps,
     };
   }

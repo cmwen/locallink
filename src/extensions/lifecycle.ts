@@ -180,7 +180,9 @@ async function privateEdgeRecord(
   const routes = serveResult.ok ? parseTailscaleServeRoutes(serveResult.stdout) : [];
   const workspacePorts = new Set(extension.exposedPorts.filter((port) => Boolean(port && port !== '—')));
   const workspaceRoutes = routes.filter((route) => workspacePorts.has(route.targetPort));
-  if (workspaceRoutes.length === 0) {
+  const routedPorts = new Set(workspaceRoutes.map((route) => route.targetPort));
+  const missingPorts = [...workspacePorts].filter((port) => !routedPorts.has(port));
+  if (workspacePorts.size === 0 || missingPorts.length > 0) {
     return {
       ...base,
       state: 'waiting-configuration',
@@ -199,8 +201,10 @@ async function privateEdgeRecord(
           id: 'tailscale-routes',
           label: 'Private routes',
           status: 'missing',
-          detail: routes.length > 0
-            ? 'Tailscale Serve routes exist, but none target a service declared by this workspace.'
+          detail: workspacePorts.size > 0 && workspaceRoutes.length > 0
+            ? `Tailscale Serve is still missing routes for selected workspace ports: ${missingPorts.join(', ')}.`
+            : routes.length > 0
+              ? 'Tailscale Serve routes exist, but none target a service declared by this workspace.'
             : 'No active Tailscale Serve routes were detected.',
           owner: 'locallink',
         },

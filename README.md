@@ -167,6 +167,7 @@ Client IDs, client secrets, Pocket ID encryption keys, and real issuer domains b
 LocalLink's Dashboard, reverse proxy, Tailscale edge, Pocket ID, and observability capabilities are explained in [the out-of-box extension guide](docs/extensions.html). Workspace capability declarations live in `locallink.extensions.yml`; runtime services and secrets remain separately explicit. Extensions are optional: a workspace that enables none of them still retains the dashboard, service discovery, runtime state, ports, logs, and lifecycle controls.
 
 Private Edge service exposure is opt-in per workspace. LocalLink records selected service ports in the network-edge declaration and only associates Tailscale routes or dashboard edge URLs with those selected ports.
+The read-only onboarding plan also derives workspace-specific HTTPS listeners, compares them with live Tailscale Serve routes, and returns exact apply and rollback argument arrays. By default the listener range is derived from the stable workspace ID so separate LocalLink workspaces do not intentionally share a machine-wide port. Set `LOCALLINK_PRIVATE_EDGE_PORT_START` to pin the first listener for a workspace; LocalLink blocks a generated route when that listener is already occupied instead of replacing it. Route commands are preview-only at this checkpoint.
 
 ### Run the MCP server directly
 
