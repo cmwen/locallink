@@ -7,6 +7,7 @@ import type {
 } from '../shared/contracts';
 import { isCommandMissingResult, parseJsonOutput, runCommand, type CommandRunner } from '../shared/utils';
 import { parseTailscaleServeRoutes } from '../runtime/network-edge';
+import { detectCaddyRuntime } from '../runtime/caddy-runtime';
 
 interface CapabilitySpec {
   id: string;
@@ -241,28 +242,52 @@ async function reverseProxyRecord(
   spec: CapabilitySpec,
   extension: WorkspaceExtension,
   commandRunner: CommandRunner,
+  workspaceRoot?: string,
 ): Promise<ExtensionLifecycleRecord> {
   const base = baseDeclaredRecord(spec, extension);
   if (!extension.enabled || extension.missingEnv.length > 0) return base;
 
-  const candidates = extension.command ? [extension.command] : ['caddy', 'traefik', 'nginx'];
+  const caddyRuntime = !extension.command || extension.command === 'caddy'
+    ? await detectCaddyRuntime(workspaceRoot, commandRunner, extension.command || 'caddy')
+    : undefined;
+  const candidates = extension.command ? (extension.command === 'caddy' ? [] : [extension.command]) : ['traefik', 'nginx'];
   const results = await Promise.all(candidates.map(async (command) => ({
     command,
     result: await commandRunner(command, command === 'nginx' ? ['-v'] : ['version'], { timeoutMs: 1_500 }),
   })));
   const detected = results.find(({ result }) => result.ok);
+  if (caddyRuntime?.available) {
+    return {
+      ...base,
+      state: 'installed',
+      summary: caddyRuntime.source === 'docker-compose'
+        ? `Caddy is installed through this workspace's Docker Compose configuration${caddyRuntime.running ? ' and its service is running' : ''}.`
+        : 'Caddy is installed as a host command. Route health still depends on the workspace proxy configuration.',
+      nextStep: caddyRuntime.source === 'docker-compose' && !caddyRuntime.running
+        ? `Start the ${caddyRuntime.serviceName} Docker Compose service, then verify its routes and upstream health.`
+        : 'Verify configured routes and upstream health before treating the proxy as ready.',
+      checks: [...base.checks, {
+        id: 'reverse-proxy-runtime',
+        label: 'Reverse proxy runtime',
+        status: caddyRuntime.running ? 'ok' : 'warning',
+        detail: caddyRuntime.detail,
+        owner: 'system',
+      }],
+    };
+  }
+
   if (!detected) {
     return {
       ...base,
       state: 'waiting-external',
       automation: 'manual',
-      summary: 'A reverse proxy is declared, but Caddy, Traefik, or Nginx was not detected.',
-      nextStep: 'Install the selected reverse proxy or set the declaration command to an available provider.',
+      summary: 'A reverse proxy is declared, but no workspace Docker service or supported host command was detected.',
+      nextStep: 'Declare the selected reverse proxy in this workspace Docker Compose file, or install its host command.',
       checks: [...base.checks, {
         id: 'reverse-proxy-command',
         label: 'Reverse proxy runtime',
         status: 'missing',
-        detail: 'No supported reverse proxy command responded successfully.',
+        detail: caddyRuntime?.detail || 'No supported reverse proxy command responded successfully.',
         owner: 'system',
       }],
     };
@@ -286,6 +311,7 @@ async function reverseProxyRecord(
 export async function buildExtensionLifecycles(
   extensions: WorkspaceExtension[],
   commandRunner: CommandRunner = runCommand,
+  workspaceRoot?: string,
 ): Promise<ExtensionLifecycleRecord[]> {
   const claimedDeclarations = new Set<string>();
   const records = await Promise.all(CAPABILITY_CATALOG.map(async (spec) => {
@@ -293,7 +319,7 @@ export async function buildExtensionLifecycles(
     if (!extension) return availableRecord(spec);
     claimedDeclarations.add(extension.id);
     if (spec.kind === 'network-edge') return privateEdgeRecord(spec, extension, commandRunner);
-    if (spec.kind === 'reverse-proxy') return reverseProxyRecord(spec, extension, commandRunner);
+    if (spec.kind === 'reverse-proxy') return reverseProxyRecord(spec, extension, commandRunner, workspaceRoot);
     return baseDeclaredRecord(spec, extension);
   }));
 

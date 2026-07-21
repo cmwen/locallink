@@ -1,5 +1,6 @@
 import type { Phase2Advisor, Phase2Option } from '../shared/contracts';
 import { isCommandMissingResult, parseJsonOutput, runCommand, type CommandRunner } from '../shared/utils';
+import { detectCaddyRuntime } from './caddy-runtime';
 
 interface TailscaleStatus {
   BackendState?: string;
@@ -53,6 +54,7 @@ async function detectCommand(
 export async function buildPhase2Advisor(
   env: Record<string, string>,
   commandRunner: CommandRunner = runCommand,
+  workspaceRoot?: string,
 ): Promise<Phase2Advisor> {
   if (!isEnabled(env.LOCALLINK_ENABLE_PHASE2_ADVISOR)) {
     return {
@@ -73,13 +75,13 @@ export async function buildPhase2Advisor(
   const pocketIdIssuer = normalizeHttpsUrl(env.POCKET_ID_APP_URL);
   const [tailscaleResult, caddyResult, traefikResult, nginxResult] = await Promise.all([
     commandRunner('tailscale', ['status', '--json'], { timeoutMs: 2_000 }),
-    detectCommand('caddy', ['version'], commandRunner),
+    detectCaddyRuntime(workspaceRoot, commandRunner),
     detectCommand('traefik', ['version'], commandRunner),
     detectCommand('nginx', ['-v'], commandRunner),
   ]);
 
   const reverseProxyDetections = [
-    caddyResult.available ? 'Caddy' : null,
+    caddyResult.available ? caddyResult.source === 'docker-compose' ? 'Caddy (Docker Compose)' : 'Caddy' : null,
     traefikResult.available ? 'Traefik' : null,
     nginxResult.available ? 'Nginx' : null,
   ].filter(Boolean) as string[];

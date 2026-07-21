@@ -19,6 +19,10 @@ import {
 async function runServe(context: AppContext): Promise<FastifyInstance> {
   const server = context.createServer();
   const binding = await context.getBinding();
+  let runtime: Awaited<ReturnType<AppContext['recordRuntimeBinding']>> | undefined;
+  server.addHook('onClose', async () => {
+    if (runtime) await context.clearRuntimeBinding(runtime.pid);
+  });
   try {
     await server.listen({
       host: binding.host,
@@ -33,8 +37,7 @@ async function runServe(context: AppContext): Promise<FastifyInstance> {
       500,
     );
   }
-  const runtime = await context.recordRuntimeBinding(binding);
-  server.addHook('onClose', async () => context.clearRuntimeBinding(runtime.pid));
+  runtime = await context.recordRuntimeBinding(binding);
   context.logs.append(`Dashboard server for ${runtime.id} listening on ${runtime.url}.`, 'Runtime');
   logInfo('LocalLink dashboard server started.', {
     workspaceId: runtime.id,

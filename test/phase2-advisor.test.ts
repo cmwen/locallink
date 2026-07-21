@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import { buildPhase2Advisor } from '../src/runtime/phase2';
@@ -69,4 +72,18 @@ test('buildPhase2Advisor keeps placeholder Pocket ID issuers in setup state', as
   });
   const advisor = await buildPhase2Advisor({ POCKET_ID_APP_URL: 'https://id.example.com' }, commandRunner);
   assert.equal(advisor.options.find((option) => option.id === 'pocket-id')?.status, 'optional');
+});
+
+test('buildPhase2Advisor detects Caddy from the current workspace Docker Compose project', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'locallink-caddy-advisor-'));
+  await fs.writeFile(path.join(root, 'docker-compose.yml'), 'services:\n  edge-proxy:\n    image: caddy:2-alpine\n', 'utf8');
+  const commandRunner: CommandRunner = async (command) => {
+    if (command === 'docker') return result({ stdout: JSON.stringify({ State: 'running' }) });
+    return result({ ok: false, code: null, stderr: `spawn ${command} ENOENT`, error: `spawn ${command} ENOENT` });
+  };
+
+  const advisor = await buildPhase2Advisor({}, commandRunner, root);
+  const reverseProxyOption = advisor.options.find((option) => option.id === 'reverse-proxy');
+  assert.equal(reverseProxyOption?.status, 'available');
+  assert.match(reverseProxyOption?.detectedValue || '', /Caddy \(Docker Compose\)/);
 });

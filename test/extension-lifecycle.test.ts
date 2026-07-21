@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import { buildExtensionLifecycles } from '../src/extensions/lifecycle';
@@ -14,6 +17,12 @@ function privateEdge(): WorkspaceExtension {
     id: 'tailscale', name: 'Tailscale Private Edge', kind: 'network-edge', enabled: true,
     detail: 'Private edge.', status: 'ready', command: 'tailscale', exposedPorts: [],
     requiredEnv: [], missingEnv: [], dependsOn: [],
+  };
+}
+
+function reverseProxy(): WorkspaceExtension {
+  return {
+    ...privateEdge(), id: 'proxy', name: 'Reverse Proxy', kind: 'reverse-proxy', command: undefined,
   };
 }
 
@@ -78,6 +87,35 @@ test('Private Edge distinguishes connected setup from healthy Serve routes', asy
   const unrelated = (await buildExtensionLifecycles([selectedEdge], healthyRunner))[0];
   assert.equal(unrelated.state, 'waiting-configuration');
   assert.match(unrelated.checks.find((check) => check.id === 'tailscale-routes')?.detail || '', /none target a service declared by this workspace/i);
+});
+
+test('Reverse Proxy detects a workspace-scoped Docker Compose Caddy service without a host CLI', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'locallink-caddy-lifecycle-'));
+  await fs.writeFile(path.join(root, 'docker-compose.yml'), `services:
+  pwa-edge-proxy:
+    image: caddy:2.10-alpine
+    profiles: [edge]
+    labels:
+      locallink.tags: docker,edge,reverse-proxy
+`, 'utf8');
+  const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
+  const commandRunner: CommandRunner = async (command, args, options) => {
+    calls.push({ command, args, cwd: options?.cwd });
+    if (command === 'docker') return result({ stdout: JSON.stringify({ State: 'running', Status: 'Up 2 days' }) });
+    return result({ ok: false, code: null, error: `spawn ${command} ENOENT`, stderr: `spawn ${command} ENOENT` });
+  };
+
+  const record = (await buildExtensionLifecycles([reverseProxy()], commandRunner, root))
+    .find((candidate) => candidate.kind === 'reverse-proxy');
+
+  assert.equal(record?.state, 'installed');
+  assert.match(record?.summary || '', /Docker Compose.*running/i);
+  assert.match(record?.checks.find((check) => check.id === 'reverse-proxy-runtime')?.detail || '', /pwa-edge-proxy.*caddy:2\.10-alpine/i);
+  assert.equal(calls.some((call) => call.command === 'caddy'), false);
+  assert.deepEqual(calls.find((call) => call.command === 'docker')?.args, [
+    'compose', '--profile', '*', 'ps', '--all', '--format', 'json', 'pwa-edge-proxy',
+  ]);
+  assert.equal(calls.find((call) => call.command === 'docker')?.cwd, root);
 });
 
 test('required identity configuration is separated from provider runtime health', async () => {

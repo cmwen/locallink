@@ -159,7 +159,7 @@ export class AppContext {
   async readExtensionLifecycle(): Promise<ExtensionLifecycleRecord[]> {
     await this.configRepository.hydrateProcessEnv();
     const model = await this.configRepository.loadProjectModel();
-    return buildExtensionLifecycles(model.extensions);
+    return buildExtensionLifecycles(model.extensions, undefined, this.paths.root);
   }
 
   async planExtension(capability: string, services?: string[]): Promise<ExtensionInstallPlan> {

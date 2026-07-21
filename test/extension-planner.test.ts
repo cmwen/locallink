@@ -180,6 +180,44 @@ test('Tailscale+Caddy adapter generates a loopback proxy topology but blocks app
   );
 });
 
+test('Tailscale+Caddy adapter accepts a Caddy service declared by this workspace Docker Compose project', async () => {
+  const root = await createWorkspace();
+  await fs.writeFile(
+    path.join(root, 'locallink.extensions.yml'),
+    'extensions:\n  - id: edge\n    name: Edge\n    kind: network-edge\n    enabled: true\n    command: tailscale\n    adapter: tailscale-caddy\n',
+    'utf8',
+  );
+  await fs.writeFile(path.join(root, 'docker-compose.yml'), `services:
+  api:
+    image: example/api
+    ports:
+      - "\${API_PORT}:5050"
+  pwa-edge-proxy:
+    image: caddy:2.10-alpine
+    profiles: [edge]
+    labels:
+      locallink.tags: docker,edge,reverse-proxy
+`, 'utf8');
+  const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
+  const commandRunner: CommandRunner = async (command, args, options) => {
+    calls.push({ command, args, cwd: options?.cwd });
+    if (command === 'docker') return result({ stdout: JSON.stringify({ State: 'running', Status: 'Up 2 days' }) });
+    if (args[0] === 'status') return result({ stdout: JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'minipc.tailnet.ts.net.' } }) });
+    return result({ stdout: '{}' });
+  };
+  const planner = new ExtensionPlanner(root, new ConfigRepository(root), commandRunner);
+
+  const plan = await planner.plan('private-edge', ['api']);
+
+  assert.equal(plan.routePlan.state, 'blocked-runtime');
+  assert.equal(plan.routePlan.prerequisites.find((item) => item.id === 'caddy')?.status, 'available');
+  assert.match(plan.routePlan.prerequisites.find((item) => item.id === 'caddy')?.detail || '', /pwa-edge-proxy.*running/i);
+  assert.equal(plan.routePlan.generatedFiles[0]?.validate.command, 'docker');
+  assert.ok(plan.routePlan.generatedFiles[0]?.validate.args.includes('pwa-edge-proxy'));
+  assert.equal(calls.some((call) => call.command === 'caddy'), false);
+  assert.equal(calls.find((call) => call.command === 'docker')?.cwd, root);
+});
+
 test('Private Edge route lifecycle requires fresh tokens and removes deselected owned listeners', async () => {
   const root = await createWorkspace();
   const liveRoutes = new Map<string, string>();

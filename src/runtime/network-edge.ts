@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type { PrivateEdgeRouteOwnership, ServiceDefinition, WorkspaceExtension } from '../shared/contracts';
 import { AppError } from '../shared/errors';
 import type { CommandRunner } from '../shared/utils';
+import { caddyValidationCommand, detectCaddyRuntime } from './caddy-runtime';
 
 interface TailscaleWebHandler {
   Proxy?: string;
@@ -396,6 +397,7 @@ export interface PrivateEdgeRouteAdapter {
     services: Array<{ id: string; name: string; port: string }>,
     commandRunner: CommandRunner,
     configuredPortStart?: string,
+    workspaceRoot?: string,
   ): Promise<PrivateEdgeRoutePlan>;
   planRemovals(
     workspaceId: string,
@@ -417,6 +419,7 @@ class TailscaleServeRouteAdapter implements PrivateEdgeRouteAdapter {
     services: Array<{ id: string; name: string; port: string }>,
     commandRunner: CommandRunner,
     configuredPortStart?: string,
+    _workspaceRoot?: string,
   ): Promise<PrivateEdgeRoutePlan> {
     return planPrivateEdgeRoutes(workspaceId, services, this.command, commandRunner, configuredPortStart);
   }
@@ -482,10 +485,11 @@ class TailscaleCaddyRouteAdapter implements PrivateEdgeRouteAdapter {
     services: Array<{ id: string; name: string; port: string }>,
     commandRunner: CommandRunner,
     configuredPortStart?: string,
+    workspaceRoot?: string,
   ): Promise<PrivateEdgeRoutePlan> {
     const generatedPath = '.locallink/generated/private-edge/Caddyfile';
     const { content, proxyPorts } = buildPrivateEdgeCaddyfile(workspaceId, services);
-    const caddyResult = await commandRunner(this.caddyCommand, ['version'], { timeoutMs: 2_000 });
+    const caddyRuntime = await detectCaddyRuntime(workspaceRoot, commandRunner, this.caddyCommand);
     const proxyServices = services.map((service) => ({ ...service, port: proxyPorts.get(service.id)! }));
     const tailscalePlan = await planPrivateEdgeRoutes(
       workspaceId,
@@ -498,7 +502,7 @@ class TailscaleCaddyRouteAdapter implements PrivateEdgeRouteAdapter {
       const service = services.find((candidate) => candidate.id === route.serviceId)!;
       return { ...route, targetPort: service.port, proxyPort: route.targetPort };
     });
-    const caddyAvailable = caddyResult.ok;
+    const caddyAvailable = caddyRuntime.available;
     const state = services.length === 0
       ? 'waiting-selection'
       : tailscalePlan.state === 'waiting-tailscale'
@@ -515,7 +519,7 @@ class TailscaleCaddyRouteAdapter implements PrivateEdgeRouteAdapter {
         : tailscalePlan.state === 'waiting-tailscale'
           ? tailscalePlan.summary
           : !caddyAvailable
-            ? 'The Tailscale+Caddy topology is generated, but Caddy is not installed on this machine.'
+            ? 'The Tailscale+Caddy topology is generated, but Caddy is not available through this workspace or the host.'
             : 'The Tailscale+Caddy topology is generated, but apply remains blocked until LocalLink can own and roll back the per-workspace Caddy runtime atomically.',
       applySupported: false,
       confirmationToken: undefined,
@@ -525,7 +529,7 @@ class TailscaleCaddyRouteAdapter implements PrivateEdgeRouteAdapter {
           id: 'caddy',
           label: 'Caddy',
           status: caddyAvailable ? 'available' : 'missing',
-          detail: caddyAvailable ? (caddyResult.stdout.trim() || 'Caddy is available.') : 'Install Caddy and ensure the caddy command is on PATH.',
+          detail: caddyRuntime.detail,
         },
         {
           id: 'caddy-runtime-ownership',
@@ -537,7 +541,7 @@ class TailscaleCaddyRouteAdapter implements PrivateEdgeRouteAdapter {
       generatedFiles: [{
         path: generatedPath,
         content,
-        validate: { command: this.caddyCommand, args: ['validate', '--config', generatedPath, '--adapter', 'caddyfile'] },
+        validate: caddyValidationCommand(caddyRuntime, generatedPath, this.caddyCommand),
       }],
       routes,
     };

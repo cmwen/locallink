@@ -205,6 +205,7 @@ export class ExtensionPlanner {
       selectedServices,
       this.commandRunner,
       model.env.LOCALLINK_PRIVATE_EDGE_PORT_START,
+      this.root,
     );
     await this.workspaceState.load();
     const reconciliation = await routeAdapter.planRemovals(
@@ -459,6 +460,7 @@ export class ExtensionPlanner {
           [{ id: route.serviceId, name: route.serviceName, port: route.targetPort }],
           this.commandRunner,
           route.httpsPort,
+          this.root,
         );
         if (rollbackPlan.state === 'ready') continue;
         if (rollbackPlan.state !== 'in-sync') {
@@ -569,6 +571,7 @@ export class ExtensionPlanner {
           [{ id: item.serviceId, name: item.serviceName, port: item.targetPort }],
           this.commandRunner,
           item.httpsPort,
+          this.root,
         );
         if (restorePlan.state === 'in-sync') continue;
         if (restorePlan.state !== 'ready') {

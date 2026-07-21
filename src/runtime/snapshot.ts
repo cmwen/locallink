@@ -357,10 +357,10 @@ export class RuntimeResolver {
       collectDockerStates(this.root, definitions, model.env, this.commandRunner),
       collectPm2States(this.root, definitions, model.env, this.commandRunner),
       collectWindowsStates(definitions, this.commandRunner),
-      buildPhase2Advisor(model.env, this.commandRunner),
+      buildPhase2Advisor(model.env, this.commandRunner, this.root),
       buildResourceDashboard(this.commandRunner, definitions, { root: this.root, env: model.env }),
       discoverServiceEdgeUrls(model.extensions, definitions, this.commandRunner, model.env),
-      buildExtensionLifecycles(model.extensions, this.commandRunner),
+      buildExtensionLifecycles(model.extensions, this.commandRunner, this.root),
     ]);
 
     const services = definitions.map<ServiceRecord>((definition) => {
