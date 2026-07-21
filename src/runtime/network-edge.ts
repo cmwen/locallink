@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import type { PrivateEdgeRouteOwnership, ServiceDefinition, WorkspaceExtension } from '../shared/contracts';
+import { AppError } from '../shared/errors';
 import type { CommandRunner } from '../shared/utils';
 
 interface TailscaleWebHandler {
@@ -46,6 +47,7 @@ export interface PrivateEdgePlannedRoute {
 }
 
 export interface PrivateEdgeRoutePlan {
+  adapter: string;
   state: 'waiting-tailscale' | 'waiting-selection' | 'ready' | 'in-sync' | 'conflict';
   summary: string;
   mutatesHost: false;
@@ -61,6 +63,7 @@ export interface PrivateEdgeRemovalPlanItem extends PrivateEdgeRouteOwnership {
 }
 
 export interface PrivateEdgeRemovalPlan {
+  adapter: string;
   state: 'clean' | 'ready' | 'waiting-tailscale';
   summary: string;
   requiresConfirmation: true;
@@ -198,6 +201,7 @@ export async function planPrivateEdgeRoutes(
 ): Promise<PrivateEdgeRoutePlan> {
   if (services.length === 0) {
     return {
+      adapter: 'tailscale-serve',
       state: 'waiting-selection',
       summary: 'Select at least one workspace service before generating Tailscale Serve routes.',
       mutatesHost: false,
@@ -211,6 +215,7 @@ export async function planPrivateEdgeRoutes(
   const connected = statusResult.ok && (!status?.BackendState || status.BackendState.toLowerCase() === 'running');
   if (!connected) {
     return {
+      adapter: 'tailscale-serve',
       state: 'waiting-tailscale',
       summary: 'Tailscale must be installed and connected before LocalLink can calculate live route conflicts.',
       mutatesHost: false,
@@ -266,9 +271,10 @@ export async function planPrivateEdgeRoutes(
   const conflicts = routes.filter((route) => route.status === 'conflict').length;
   const missing = routes.filter((route) => route.status === 'missing').length;
   const confirmationToken = conflicts === 0 && missing > 0
-    ? `private-edge:${createHash('sha256').update(JSON.stringify({ workspaceId, routes: routes.map((route) => route.apply) })).digest('hex')}`
+    ? `private-edge:${createHash('sha256').update(JSON.stringify({ adapter: 'tailscale-serve', workspaceId, routes: routes.map((route) => route.apply) })).digest('hex')}`
     : undefined;
   return {
+    adapter: 'tailscale-serve',
     state: conflicts > 0 ? 'conflict' : missing > 0 ? 'ready' : 'in-sync',
     summary: conflicts > 0
       ? `${conflicts} generated HTTPS listener${conflicts === 1 ? '' : 's'} conflict with existing Tailscale Serve configuration.`
@@ -289,7 +295,7 @@ export async function planPrivateEdgeRouteRemovals(
   command: string,
   commandRunner: CommandRunner,
 ): Promise<PrivateEdgeRemovalPlan> {
-  const staleOwnership = ownership.filter((owned) => {
+  const staleOwnership = ownership.filter((owned) => owned.adapter === 'tailscale-serve').filter((owned) => {
     const desired = desiredRoutes.find((candidate) => (
       candidate.serviceId === owned.serviceId
       && candidate.targetPort === owned.targetPort
@@ -299,6 +305,7 @@ export async function planPrivateEdgeRouteRemovals(
   });
   if (staleOwnership.length === 0) {
     return {
+      adapter: 'tailscale-serve',
       state: 'clean',
       summary: 'No LocalLink-owned Private Edge routes need reconciliation.',
       requiresConfirmation: true,
@@ -311,6 +318,7 @@ export async function planPrivateEdgeRouteRemovals(
   const connected = statusResult.ok && (!status?.BackendState || status.BackendState.toLowerCase() === 'running');
   if (!connected) {
     return {
+      adapter: 'tailscale-serve',
       state: 'waiting-tailscale',
       summary: 'Tailscale must be connected before LocalLink can safely reconcile owned routes.',
       requiresConfirmation: true,
@@ -336,6 +344,7 @@ export async function planPrivateEdgeRouteRemovals(
     };
   });
   const confirmationToken = `private-edge-removal:${createHash('sha256').update(JSON.stringify({
+    adapter: 'tailscale-serve',
     workspaceId,
     removals: removals.map(({ serviceId, targetPort, httpsPort, liveStatus, action, rollbackArgs }) => ({
       serviceId, targetPort, httpsPort, liveStatus, action, rollbackArgs,
@@ -344,6 +353,7 @@ export async function planPrivateEdgeRouteRemovals(
   const hostRemovals = removals.filter((item) => item.action === 'remove').length;
   const ownershipCleanup = removals.length - hostRemovals;
   return {
+    adapter: 'tailscale-serve',
     state: 'ready',
     summary: [
       hostRemovals > 0 ? `${hostRemovals} owned listener${hostRemovals === 1 ? '' : 's'} can be removed` : '',
@@ -353,6 +363,60 @@ export async function planPrivateEdgeRouteRemovals(
     confirmationToken,
     removals,
   };
+}
+
+export interface PrivateEdgeRouteAdapter {
+  id: string;
+  displayName: string;
+  command: string;
+  planRoutes(
+    workspaceId: string,
+    services: Array<{ id: string; name: string; port: string }>,
+    commandRunner: CommandRunner,
+    configuredPortStart?: string,
+  ): Promise<PrivateEdgeRoutePlan>;
+  planRemovals(
+    workspaceId: string,
+    ownership: PrivateEdgeRouteOwnership[],
+    desiredRoutes: PrivateEdgePlannedRoute[],
+    commandRunner: CommandRunner,
+  ): Promise<PrivateEdgeRemovalPlan>;
+}
+
+class TailscaleServeRouteAdapter implements PrivateEdgeRouteAdapter {
+  readonly id = 'tailscale-serve';
+
+  readonly displayName = 'Tailscale Serve';
+
+  constructor(readonly command: string) {}
+
+  async planRoutes(
+    workspaceId: string,
+    services: Array<{ id: string; name: string; port: string }>,
+    commandRunner: CommandRunner,
+    configuredPortStart?: string,
+  ): Promise<PrivateEdgeRoutePlan> {
+    return planPrivateEdgeRoutes(workspaceId, services, this.command, commandRunner, configuredPortStart);
+  }
+
+  async planRemovals(
+    workspaceId: string,
+    ownership: PrivateEdgeRouteOwnership[],
+    desiredRoutes: PrivateEdgePlannedRoute[],
+    commandRunner: CommandRunner,
+  ): Promise<PrivateEdgeRemovalPlan> {
+    return planPrivateEdgeRouteRemovals(workspaceId, ownership, desiredRoutes, this.command, commandRunner);
+  }
+}
+
+export function resolvePrivateEdgeRouteAdapter(adapterId: string | undefined, command = 'tailscale'): PrivateEdgeRouteAdapter {
+  const normalized = adapterId?.trim().toLowerCase() || 'tailscale-serve';
+  if (normalized === 'tailscale-serve') return new TailscaleServeRouteAdapter(command);
+  throw new AppError(
+    'UNSUPPORTED_PRIVATE_EDGE_ADAPTER',
+    `Private Edge route adapter "${adapterId}" is not supported. Available adapters: tailscale-serve.`,
+    400,
+  );
 }
 
 export async function discoverServiceEdgeUrls(

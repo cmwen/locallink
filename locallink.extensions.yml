@@ -19,6 +19,7 @@ extensions:
     kind: network-edge
     enabled: true
     command: tailscale
+    adapter: tailscale-serve
     docsUrl: https://tailscale.com/docs/features/tailscale-serve
 
   - id: pocket-id

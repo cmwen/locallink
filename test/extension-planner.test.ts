@@ -67,6 +67,7 @@ test('Private Edge apply updates only workspace-owned files and is idempotent', 
   assert.match(extensions, /# keep capability notes/);
   assert.match(extensions, /id: private-edge/);
   assert.match(extensions, /command: tailscale/);
+  assert.match(extensions, /adapter: tailscale-serve/);
   assert.match(env, /# keep workspace choices/);
   assert.match(env, /^LOCALLINK_PHASE2_PREFERRED_EDGE=tailscale$/m);
   assert.equal(applied.plan.canApply, false);
@@ -103,6 +104,8 @@ test('Private Edge selection validates and persists only explicitly selected wor
   const planner = new ExtensionPlanner(root, new ConfigRepository(root), missingTailscale);
 
   const plan = await planner.plan('private-edge', ['api']);
+  assert.equal(plan.routePlan.adapter, 'tailscale-serve');
+  assert.equal(plan.reconciliation.adapter, 'tailscale-serve');
   assert.equal(plan.selection.requested, true);
   assert.deepEqual(plan.selection.selected, [{ id: 'api', name: 'Api', port: '5050' }]);
   assert.equal(plan.steps.find((step) => step.id === 'persist-edge-selection')?.status, 'pending');
@@ -126,6 +129,20 @@ test('extension planner rejects capabilities without an installer contract', asy
   const root = await createWorkspace();
   const planner = new ExtensionPlanner(root);
   await assert.rejects(() => planner.plan('identity'), /currently supports "private-edge"/i);
+});
+
+test('Private Edge planner rejects undeclared route adapters before producing host commands', async () => {
+  const root = await createWorkspace();
+  await fs.writeFile(
+    path.join(root, 'locallink.extensions.yml'),
+    'extensions:\n  - id: edge\n    name: Edge\n    kind: network-edge\n    enabled: true\n    adapter: caddy\n',
+    'utf8',
+  );
+  const planner = new ExtensionPlanner(root);
+  await assert.rejects(
+    () => planner.plan('private-edge', ['api']),
+    (error: any) => error?.code === 'UNSUPPORTED_PRIVATE_EDGE_ADAPTER' && /tailscale-serve/.test(error.message),
+  );
 });
 
 test('Private Edge route lifecycle requires fresh tokens and removes deselected owned listeners', async () => {
@@ -203,6 +220,7 @@ test('Private Edge reconciliation forgets changed ownership without removing the
   const state = new WorkspaceStateRepository(path.join(root, '.locallink', 'workspace-state.json'));
   await state.load();
   await state.upsertPrivateEdgeRoutes([{
+    adapter: 'tailscale-serve',
     serviceId: 'old-api',
     serviceName: 'Old API',
     targetPort: '5050',
@@ -256,11 +274,13 @@ test('Private Edge reconciliation restores earlier removals when a later owned l
   await state.load();
   await state.upsertPrivateEdgeRoutes([
     {
+      adapter: 'tailscale-serve',
       serviceId: 'api', serviceName: 'API', targetPort: '5050', httpsPort: '7451', command: 'tailscale',
       applyArgs: ['serve', '--bg', '--yes', '--https=7451', 'http://127.0.0.1:5050'],
       rollbackArgs: ['serve', '--yes', '--https=7451', 'off'], appliedAt: '2026-07-21T00:00:00.000Z', status: 'active',
     },
     {
+      adapter: 'tailscale-serve',
       serviceId: 'worker', serviceName: 'Worker', targetPort: '6060', httpsPort: '7452', command: 'tailscale',
       applyArgs: ['serve', '--bg', '--yes', '--https=7452', 'http://127.0.0.1:6060'],
       rollbackArgs: ['serve', '--yes', '--https=7452', 'off'], appliedAt: '2026-07-21T00:00:00.000Z', status: 'active',

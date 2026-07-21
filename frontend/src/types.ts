@@ -120,6 +120,7 @@ export interface WorkspaceExtension {
   detail: string;
   status: 'ready' | 'setup' | 'disabled';
   command?: string;
+  adapter?: string;
   exposedPorts: string[];
   requiredEnv: string[];
   missingEnv: string[];
@@ -182,6 +183,7 @@ export interface ExtensionInstallPlan {
     available: Array<{ id: string; name: string; port: string }>;
   };
   routePlan: {
+    adapter: string;
     state: 'waiting-tailscale' | 'waiting-selection' | 'ready' | 'in-sync' | 'conflict';
     summary: string;
     mutatesHost: false;
@@ -200,11 +202,13 @@ export interface ExtensionInstallPlan {
     }>;
   };
   reconciliation: {
+    adapter: string;
     state: 'clean' | 'ready' | 'waiting-tailscale';
     summary: string;
     requiresConfirmation: true;
     confirmationToken?: string;
     removals: Array<{
+      adapter: string;
       serviceId: string;
       serviceName: string;
       targetPort: string;
@@ -412,6 +416,7 @@ export interface WorkspaceState {
   versionUpdates: VersionUpdateRecord[];
   portReservations: PortReservation[];
   privateEdgeRoutes: Array<{
+    adapter: string;
     serviceId: string;
     serviceName: string;
     targetPort: string;

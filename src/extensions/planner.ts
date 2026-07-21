@@ -2,8 +2,7 @@ import path from 'node:path';
 
 import { ConfigRepository } from '../config/files';
 import {
-  planPrivateEdgeRouteRemovals,
-  planPrivateEdgeRoutes,
+  resolvePrivateEdgeRouteAdapter,
   type PrivateEdgeRemovalPlan,
   type PrivateEdgeRoutePlan,
 } from '../runtime/network-edge';
@@ -86,6 +85,7 @@ function syntheticPrivateEdge(existing?: WorkspaceExtension): WorkspaceExtension
     detail: existing?.detail || 'Publishes selected workspace services privately through Tailscale Serve.',
     status: 'ready',
     command: existing?.command || 'tailscale',
+    adapter: existing?.adapter || 'tailscale-serve',
     exposedPorts: existing?.exposedPorts || [],
     requiredEnv: existing?.requiredEnv || [],
     missingEnv: existing?.missingEnv || [],
@@ -166,6 +166,7 @@ export class ExtensionPlanner {
     ]);
     const existing = model.extensions.find((extension) => extension.kind === 'network-edge');
     const privateEdge = syntheticPrivateEdge(existing);
+    const routeAdapter = resolvePrivateEdgeRouteAdapter(privateEdge.adapter, privateEdge.command || 'tailscale');
     const availableServices = model.definitions
       .filter((service) => Boolean(service.port && service.port !== '—'))
       .map((service) => ({ id: service.id, name: service.name, port: service.port! }));
@@ -199,19 +200,17 @@ export class ExtensionPlanner {
     if (!lifecycle) {
       throw new AppError('EXTENSION_PLAN_FAILED', 'Private Edge lifecycle could not be evaluated.', 500);
     }
-    const routePlan = await planPrivateEdgeRoutes(
+    const routePlan = await routeAdapter.planRoutes(
       workspace.id,
       selectedServices,
-      privateEdge.command || 'tailscale',
       this.commandRunner,
       model.env.LOCALLINK_PRIVATE_EDGE_PORT_START,
     );
     await this.workspaceState.load();
-    const reconciliation = await planPrivateEdgeRouteRemovals(
+    const reconciliation = await routeAdapter.planRemovals(
       workspace.id,
       this.workspaceState.read().privateEdgeRoutes,
       routePlan.routes,
-      privateEdge.command || 'tailscale',
       this.commandRunner,
     );
 
@@ -329,6 +328,7 @@ export class ExtensionPlanner {
             enabled: true,
             detail: existing?.detail || 'Publishes selected workspace services privately through Tailscale Serve.',
             command: existing?.command || 'tailscale',
+            adapter: existing?.adapter || 'tailscale-serve',
             docsUrl: existing?.docsUrl || 'https://tailscale.com/docs/features/tailscale-serve',
             ...(before.selection.requested ? { exposedPorts: before.selection.selected.map((service) => service.port) } : {}),
           },
@@ -422,6 +422,7 @@ export class ExtensionPlanner {
       const appliedAt = new Date().toISOString();
       await this.workspaceState.upsertPrivateEdgeRoutes(applied.map((route) => ({
         serviceId: route.serviceId,
+        adapter: before.routePlan.adapter,
         serviceName: route.serviceName,
         targetPort: route.targetPort,
         httpsPort: route.httpsPort,
@@ -445,10 +446,10 @@ export class ExtensionPlanner {
       for (const route of [...applied].reverse()) {
         // Re-check the listener before rollback so a concurrent replacement is never removed.
         // eslint-disable-next-line no-await-in-loop
-        const rollbackPlan = await planPrivateEdgeRoutes(
+        const rollbackAdapter = resolvePrivateEdgeRouteAdapter(before.routePlan.adapter, route.rollback.command);
+        const rollbackPlan = await rollbackAdapter.planRoutes(
           before.workspace.id,
           [{ id: route.serviceId, name: route.serviceName, port: route.targetPort }],
-          route.rollback.command,
           this.commandRunner,
           route.httpsPort,
         );
@@ -466,6 +467,7 @@ export class ExtensionPlanner {
         const appliedAt = new Date().toISOString();
         await this.workspaceState.upsertPrivateEdgeRoutes(rollbackFailures.map(({ route }) => ({
           serviceId: route.serviceId,
+          adapter: before.routePlan.adapter,
           serviceName: route.serviceName,
           targetPort: route.targetPort,
           httpsPort: route.httpsPort,
@@ -554,10 +556,10 @@ export class ExtensionPlanner {
       const restoreFailures: Array<{ serviceId: string; detail: string }> = [];
       for (const item of [...removed].reverse()) {
         // eslint-disable-next-line no-await-in-loop
-        const restorePlan = await planPrivateEdgeRoutes(
+        const restoreAdapter = resolvePrivateEdgeRouteAdapter(item.adapter, item.command);
+        const restorePlan = await restoreAdapter.planRoutes(
           before.workspace.id,
           [{ id: item.serviceId, name: item.serviceName, port: item.targetPort }],
-          item.command,
           this.commandRunner,
           item.httpsPort,
         );

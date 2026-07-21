@@ -176,6 +176,7 @@ export interface WorkspaceExtension {
   detail: string;
   status: ExtensionStatus;
   command?: string;
+  adapter?: string;
   exposedPorts: string[];
   requiredEnv: string[];
   missingEnv: string[];
@@ -355,6 +356,7 @@ export interface PortReservation {
 }
 
 export interface PrivateEdgeRouteOwnership {
+  adapter: string;
   serviceId: string;
   serviceName: string;
   targetPort: string;
@@ -436,6 +438,7 @@ export interface ExtensionPatch {
     enabled?: boolean;
     detail?: string;
     command?: string;
+    adapter?: string;
     exposedPorts?: string[];
     requiredEnv?: string[];
     dependsOn?: string[];

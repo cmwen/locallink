@@ -21,6 +21,7 @@ test('workspace state persists preferences, runtime plans, updates, and reservat
   await repository.addVersionUpdate({ id: 'update-1', from: '1.0.0', to: '1.1.0', status: 'queued', createdAt: new Date().toISOString() });
   await repository.addPortReservation({ id: 'port-1', service: 'Temp API', port: 6080, status: 'reserved', createdAt: new Date().toISOString() });
   await repository.upsertPrivateEdgeRoutes([{
+    adapter: 'tailscale-serve',
     serviceId: 'api',
     serviceName: 'API',
     targetPort: '6080',

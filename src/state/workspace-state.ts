@@ -31,7 +31,7 @@ function normalizeState(value: Partial<WorkspaceState> | undefined): WorkspaceSt
     temporaryRuntimes: value?.temporaryRuntimes || [],
     versionUpdates: value?.versionUpdates || [],
     portReservations: value?.portReservations || [],
-    privateEdgeRoutes: value?.privateEdgeRoutes || [],
+    privateEdgeRoutes: (value?.privateEdgeRoutes || []).map((route) => ({ ...route, adapter: route.adapter || 'tailscale-serve' })),
   };
 }
 

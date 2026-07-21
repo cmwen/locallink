@@ -312,6 +312,7 @@ function buildExtensionDefinitions(raw: string, env: Record<string, string>): Wo
         detail: typeof extension.detail === 'string' ? extension.detail : extensionDefaultDetail(kind),
         status: !enabled ? 'disabled' : missingEnv.length > 0 ? 'setup' : 'ready',
         command: typeof extension.command === 'string' ? extension.command : undefined,
+        adapter: typeof extension.adapter === 'string' ? extension.adapter : undefined,
         exposedPorts: normalizeMetadataList(extension.exposedPorts).map((value) => resolveEnvValue(value, env)),
         requiredEnv,
         missingEnv,

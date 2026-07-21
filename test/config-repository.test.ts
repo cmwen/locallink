@@ -118,6 +118,7 @@ test('ConfigRepository upserts extension declarations without dropping comments'
         kind: 'network-edge',
         enabled: true,
         command: 'tailscale',
+        adapter: 'tailscale-serve',
         docsUrl: 'https://tailscale.com/docs/features/tailscale-serve',
       },
     },
@@ -128,6 +129,7 @@ test('ConfigRepository upserts extension declarations without dropping comments'
   assert.match(nextContent, /id: dashboard/);
   assert.match(nextContent, /id: private-edge/);
   assert.match(nextContent, /kind: network-edge/);
+  assert.match(nextContent, /adapter: tailscale-serve/);
 
   await repository.writeInfraConfig({
     targetFile: 'locallink.extensions.yml',

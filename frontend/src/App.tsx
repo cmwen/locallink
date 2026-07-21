@@ -1092,6 +1092,7 @@ function ExtensionsWorkspace({
             <strong>Private Edge onboarding plan</strong>
             <p>{extensionPlan.summary}</p>
             <div className="config-lines">
+              <ConfigLine label="Route adapter" value={extensionPlan.routePlan.adapter} />
               {extensionPlan.steps.map((step) => (
                 <ConfigLine
                   key={step.id}

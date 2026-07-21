@@ -287,6 +287,7 @@ test('default generated listener stays stable when another service is selected l
 
 test('planPrivateEdgeRouteRemovals removes only matching owned listeners and forgets stale ownership safely', async () => {
   const owned = (serviceId: string, targetPort: string, httpsPort: string): PrivateEdgeRouteOwnership => ({
+    adapter: 'tailscale-serve',
     serviceId,
     serviceName: serviceId,
     targetPort,

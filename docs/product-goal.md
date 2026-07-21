@@ -54,6 +54,11 @@ container configuration, persistent state, routes, derived URLs, and health
 checks. The user still owns the external security decisions: joining a tailnet,
 enabling HTTPS, supplying a bootstrap credential, and approving access policy.
 
+Route backends use an explicit provider-neutral adapter identity. Plans,
+confirmation tokens, and ownership state must retain that identity so direct
+Tailscale Serve and Tailscale+Caddy implementations can share one safe lifecycle
+without guessing behavior from executable names.
+
 ### Identity
 
 The Identity layer adds application login through an OIDC provider such as
