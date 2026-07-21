@@ -184,15 +184,28 @@ export interface ExtensionInstallPlan {
   };
   routePlan: {
     adapter: string;
-    state: 'waiting-tailscale' | 'waiting-selection' | 'ready' | 'in-sync' | 'conflict';
+    state: 'waiting-tailscale' | 'waiting-adapter' | 'waiting-selection' | 'blocked-runtime' | 'ready' | 'in-sync' | 'conflict';
     summary: string;
     mutatesHost: false;
     requiresConfirmation: true;
+    applySupported: boolean;
     confirmationToken?: string;
+    prerequisites: Array<{
+      id: string;
+      label: string;
+      status: 'available' | 'missing' | 'blocked';
+      detail: string;
+    }>;
+    generatedFiles: Array<{
+      path: string;
+      content: string;
+      validate: { command: string; args: string[] };
+    }>;
     routes: Array<{
       serviceId: string;
       serviceName: string;
       targetPort: string;
+      proxyPort?: string;
       httpsPort: string;
       url?: string;
       status: 'active' | 'missing' | 'conflict';
@@ -203,7 +216,7 @@ export interface ExtensionInstallPlan {
   };
   reconciliation: {
     adapter: string;
-    state: 'clean' | 'ready' | 'waiting-tailscale';
+    state: 'clean' | 'ready' | 'waiting-tailscale' | 'blocked-runtime';
     summary: string;
     requiresConfirmation: true;
     confirmationToken?: string;

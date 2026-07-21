@@ -1093,6 +1093,20 @@ function ExtensionsWorkspace({
             <p>{extensionPlan.summary}</p>
             <div className="config-lines">
               <ConfigLine label="Route adapter" value={extensionPlan.routePlan.adapter} />
+              {extensionPlan.routePlan.prerequisites.map((prerequisite) => (
+                <ConfigLine
+                  key={`prerequisite-${prerequisite.id}`}
+                  label={`${prerequisite.label} · prerequisite`}
+                  value={`${prerequisite.status} / ${prerequisite.detail}`}
+                />
+              ))}
+              {extensionPlan.routePlan.generatedFiles.map((file) => (
+                <ConfigLine
+                  key={`generated-${file.path}`}
+                  label="Generated adapter config"
+                  value={`${file.path} / validate: ${file.validate.command} ${file.validate.args.join(' ')}`}
+                />
+              ))}
               {extensionPlan.steps.map((step) => (
                 <ConfigLine
                   key={step.id}
@@ -1107,7 +1121,7 @@ function ExtensionsWorkspace({
                   <ConfigLine
                     key={route.serviceId}
                     label={`${route.serviceName} · ${route.status}`}
-                    value={`${route.url || `HTTPS :${route.httpsPort}`} → 127.0.0.1:${route.targetPort}`}
+                    value={`${route.url || `HTTPS :${route.httpsPort}`} → ${route.proxyPort ? `Caddy :${route.proxyPort} → ` : ''}127.0.0.1:${route.targetPort}`}
                   />
                 ))}
               </div>

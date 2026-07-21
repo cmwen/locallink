@@ -38,6 +38,7 @@ export interface PrivateEdgePlannedRoute {
   serviceId: string;
   serviceName: string;
   targetPort: string;
+  proxyPort?: string;
   httpsPort: string;
   url?: string;
   status: 'active' | 'missing' | 'conflict';
@@ -48,11 +49,23 @@ export interface PrivateEdgePlannedRoute {
 
 export interface PrivateEdgeRoutePlan {
   adapter: string;
-  state: 'waiting-tailscale' | 'waiting-selection' | 'ready' | 'in-sync' | 'conflict';
+  state: 'waiting-tailscale' | 'waiting-adapter' | 'waiting-selection' | 'blocked-runtime' | 'ready' | 'in-sync' | 'conflict';
   summary: string;
   mutatesHost: false;
   requiresConfirmation: true;
+  applySupported: boolean;
   confirmationToken?: string;
+  prerequisites: Array<{
+    id: string;
+    label: string;
+    status: 'available' | 'missing' | 'blocked';
+    detail: string;
+  }>;
+  generatedFiles: Array<{
+    path: string;
+    content: string;
+    validate: PrivateEdgeRouteCommand;
+  }>;
   routes: PrivateEdgePlannedRoute[];
 }
 
@@ -64,7 +77,7 @@ export interface PrivateEdgeRemovalPlanItem extends PrivateEdgeRouteOwnership {
 
 export interface PrivateEdgeRemovalPlan {
   adapter: string;
-  state: 'clean' | 'ready' | 'waiting-tailscale';
+  state: 'clean' | 'ready' | 'waiting-tailscale' | 'blocked-runtime';
   summary: string;
   requiresConfirmation: true;
   confirmationToken?: string;
@@ -206,6 +219,9 @@ export async function planPrivateEdgeRoutes(
       summary: 'Select at least one workspace service before generating Tailscale Serve routes.',
       mutatesHost: false,
       requiresConfirmation: true,
+      applySupported: true,
+      prerequisites: [],
+      generatedFiles: [],
       routes: [],
     };
   }
@@ -220,6 +236,9 @@ export async function planPrivateEdgeRoutes(
       summary: 'Tailscale must be installed and connected before LocalLink can calculate live route conflicts.',
       mutatesHost: false,
       requiresConfirmation: true,
+      applySupported: true,
+      prerequisites: [{ id: 'tailscale', label: 'Tailscale', status: 'missing', detail: 'Tailscale is not connected.' }],
+      generatedFiles: [],
       routes: [],
     };
   }
@@ -283,6 +302,9 @@ export async function planPrivateEdgeRoutes(
         : 'Every generated workspace route is already active.',
     mutatesHost: false,
     requiresConfirmation: true,
+    applySupported: true,
+    prerequisites: [{ id: 'tailscale', label: 'Tailscale', status: 'available', detail: 'Tailscale is connected.' }],
+    generatedFiles: [],
     confirmationToken,
     routes,
   };
@@ -409,12 +431,150 @@ class TailscaleServeRouteAdapter implements PrivateEdgeRouteAdapter {
   }
 }
 
+function generatedCaddyPort(workspaceId: string, serviceId: string): number {
+  const hash = createHash('sha256').update(`${workspaceId}\0caddy-proxy\0${serviceId}`).digest().readUInt32BE(0);
+  return 20000 + (hash % 38000);
+}
+
+function generatedCaddyAdminPort(workspaceId: string): number {
+  const hash = createHash('sha256').update(`${workspaceId}\0caddy-admin`).digest().readUInt32BE(0);
+  return 61000 + (hash % 4000);
+}
+
+function buildPrivateEdgeCaddyfile(
+  workspaceId: string,
+  services: Array<{ id: string; name: string; port: string }>,
+): { content: string; proxyPorts: Map<string, string> } {
+  const used = new Set<number>();
+  const proxyPorts = new Map<string, string>();
+  const blocks = [...services].sort((left, right) => left.id.localeCompare(right.id)).map((service) => {
+    let port = generatedCaddyPort(workspaceId, service.id);
+    while (used.has(port)) port = port >= 59999 ? 20000 : port + 1;
+    used.add(port);
+    proxyPorts.set(service.id, String(port));
+    return [
+      `http://127.0.0.1:${port} {`,
+      '  bind 127.0.0.1',
+      `  reverse_proxy http://127.0.0.1:${service.port}`,
+      '}',
+    ].join('\n');
+  });
+  const content = [
+    '{',
+    `  admin 127.0.0.1:${generatedCaddyAdminPort(workspaceId)}`,
+    '  auto_https off',
+    '}',
+    '',
+    ...blocks.flatMap((block) => [block, '']),
+  ].join('\n');
+  return { content, proxyPorts };
+}
+
+class TailscaleCaddyRouteAdapter implements PrivateEdgeRouteAdapter {
+  readonly id = 'tailscale-caddy';
+
+  readonly displayName = 'Tailscale Serve + Caddy';
+
+  constructor(readonly command: string, private readonly caddyCommand = 'caddy') {}
+
+  async planRoutes(
+    workspaceId: string,
+    services: Array<{ id: string; name: string; port: string }>,
+    commandRunner: CommandRunner,
+    configuredPortStart?: string,
+  ): Promise<PrivateEdgeRoutePlan> {
+    const generatedPath = '.locallink/generated/private-edge/Caddyfile';
+    const { content, proxyPorts } = buildPrivateEdgeCaddyfile(workspaceId, services);
+    const caddyResult = await commandRunner(this.caddyCommand, ['version'], { timeoutMs: 2_000 });
+    const proxyServices = services.map((service) => ({ ...service, port: proxyPorts.get(service.id)! }));
+    const tailscalePlan = await planPrivateEdgeRoutes(
+      workspaceId,
+      proxyServices,
+      this.command,
+      commandRunner,
+      configuredPortStart,
+    );
+    const routes = tailscalePlan.routes.map((route) => {
+      const service = services.find((candidate) => candidate.id === route.serviceId)!;
+      return { ...route, targetPort: service.port, proxyPort: route.targetPort };
+    });
+    const caddyAvailable = caddyResult.ok;
+    const state = services.length === 0
+      ? 'waiting-selection'
+      : tailscalePlan.state === 'waiting-tailscale'
+        ? 'waiting-tailscale'
+        : !caddyAvailable
+          ? 'waiting-adapter'
+          : 'blocked-runtime';
+    return {
+      ...tailscalePlan,
+      adapter: this.id,
+      state,
+      summary: services.length === 0
+        ? 'Select at least one workspace service before generating the Tailscale+Caddy topology.'
+        : tailscalePlan.state === 'waiting-tailscale'
+          ? tailscalePlan.summary
+          : !caddyAvailable
+            ? 'The Tailscale+Caddy topology is generated, but Caddy is not installed on this machine.'
+            : 'The Tailscale+Caddy topology is generated, but apply remains blocked until LocalLink can own and roll back the per-workspace Caddy runtime atomically.',
+      applySupported: false,
+      confirmationToken: undefined,
+      prerequisites: [
+        ...tailscalePlan.prerequisites,
+        {
+          id: 'caddy',
+          label: 'Caddy',
+          status: caddyAvailable ? 'available' : 'missing',
+          detail: caddyAvailable ? (caddyResult.stdout.trim() || 'Caddy is available.') : 'Install Caddy and ensure the caddy command is on PATH.',
+        },
+        {
+          id: 'caddy-runtime-ownership',
+          label: 'Per-workspace Caddy runtime ownership',
+          status: 'blocked',
+          detail: 'LocalLink does not yet start, reload, or stop the generated Caddy runtime.',
+        },
+      ],
+      generatedFiles: [{
+        path: generatedPath,
+        content,
+        validate: { command: this.caddyCommand, args: ['validate', '--config', generatedPath, '--adapter', 'caddyfile'] },
+      }],
+      routes,
+    };
+  }
+
+  async planRemovals(
+    _workspaceId: string,
+    ownership: PrivateEdgeRouteOwnership[],
+    _desiredRoutes: PrivateEdgePlannedRoute[],
+    _commandRunner: CommandRunner,
+  ): Promise<PrivateEdgeRemovalPlan> {
+    const owned = ownership.filter((route) => route.adapter === this.id);
+    return owned.length === 0
+      ? {
+          adapter: this.id,
+          state: 'clean',
+          summary: 'No LocalLink-owned Tailscale+Caddy routes need reconciliation.',
+          requiresConfirmation: true,
+          removals: [],
+        }
+      : {
+          adapter: this.id,
+          state: 'blocked-runtime',
+          summary: 'Tailscale+Caddy reconciliation is blocked until LocalLink owns the generated Caddy runtime.',
+          requiresConfirmation: true,
+          removals: [],
+        };
+  }
+}
+
 export function resolvePrivateEdgeRouteAdapter(adapterId: string | undefined, command = 'tailscale'): PrivateEdgeRouteAdapter {
   const normalized = adapterId?.trim().toLowerCase() || 'tailscale-serve';
   if (normalized === 'tailscale-serve') return new TailscaleServeRouteAdapter(command);
+  if (normalized === 'tailscale-caddy') return new TailscaleCaddyRouteAdapter(command);
   throw new AppError(
     'UNSUPPORTED_PRIVATE_EDGE_ADAPTER',
-    `Private Edge route adapter "${adapterId}" is not supported. Available adapters: tailscale-serve.`,
+    `Private Edge route adapter "${adapterId}" is not supported. Available adapters: tailscale-serve, tailscale-caddy.`,
     400,
   );
 }

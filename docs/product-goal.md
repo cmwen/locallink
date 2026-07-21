@@ -59,6 +59,12 @@ confirmation tokens, and ownership state must retain that identity so direct
 Tailscale Serve and Tailscale+Caddy implementations can share one safe lifecycle
 without guessing behavior from executable names.
 
+The Tailscale+Caddy adapter first generates a loopback-only Caddyfile and a
+Tailscale-to-Caddy listener plan. It must remain planning-only until LocalLink
+can validate, start or reload, verify, restore, and stop a workspace-scoped Caddy
+runtime without sharing its admin endpoint or process ownership with another
+workspace.
+
 ### Identity
 
 The Identity layer adds application login through an OIDC provider such as

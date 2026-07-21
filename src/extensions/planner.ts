@@ -373,6 +373,13 @@ export class ExtensionPlanner {
         409,
       );
     }
+    if (!before.routePlan.applySupported) {
+      throw new AppError(
+        'PRIVATE_EDGE_ADAPTER_APPLY_BLOCKED',
+        `${before.routePlan.adapter} cannot be applied yet: ${before.routePlan.summary}`,
+        409,
+      );
+    }
     if (before.routePlan.state === 'in-sync') {
       return { capability: 'private-edge', applied: false, appliedRoutes: [], plan: before };
     }

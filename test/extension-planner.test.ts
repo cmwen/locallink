@@ -135,13 +135,48 @@ test('Private Edge planner rejects undeclared route adapters before producing ho
   const root = await createWorkspace();
   await fs.writeFile(
     path.join(root, 'locallink.extensions.yml'),
-    'extensions:\n  - id: edge\n    name: Edge\n    kind: network-edge\n    enabled: true\n    adapter: caddy\n',
+    'extensions:\n  - id: edge\n    name: Edge\n    kind: network-edge\n    enabled: true\n    adapter: unknown-edge\n',
     'utf8',
   );
   const planner = new ExtensionPlanner(root);
   await assert.rejects(
     () => planner.plan('private-edge', ['api']),
-    (error: any) => error?.code === 'UNSUPPORTED_PRIVATE_EDGE_ADAPTER' && /tailscale-serve/.test(error.message),
+    (error: any) => error?.code === 'UNSUPPORTED_PRIVATE_EDGE_ADAPTER' && /tailscale-caddy/.test(error.message),
+  );
+});
+
+test('Tailscale+Caddy adapter generates a loopback proxy topology but blocks apply without runtime ownership', async () => {
+  const root = await createWorkspace();
+  await fs.writeFile(
+    path.join(root, 'locallink.extensions.yml'),
+    'extensions:\n  - id: edge\n    name: Edge\n    kind: network-edge\n    enabled: true\n    command: tailscale\n    adapter: tailscale-caddy\n',
+    'utf8',
+  );
+  const commandRunner: CommandRunner = async (command, args) => {
+    if (command === 'caddy') return result({ ok: false, code: null, error: 'spawn caddy ENOENT', stderr: 'spawn caddy ENOENT' });
+    if (args[0] === 'status') return result({ stdout: JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'minipc.tailnet.ts.net.' } }) });
+    return result({ stdout: '{}' });
+  };
+  const planner = new ExtensionPlanner(root, new ConfigRepository(root), commandRunner);
+
+  const plan = await planner.plan('private-edge', ['api']);
+  assert.equal(plan.routePlan.adapter, 'tailscale-caddy');
+  assert.equal(plan.routePlan.state, 'waiting-adapter');
+  assert.equal(plan.routePlan.applySupported, false);
+  assert.equal(plan.routePlan.confirmationToken, undefined);
+  assert.equal(plan.routePlan.prerequisites.find((item) => item.id === 'caddy')?.status, 'missing');
+  assert.equal(plan.routePlan.generatedFiles[0]?.path, '.locallink/generated/private-edge/Caddyfile');
+  assert.match(plan.routePlan.generatedFiles[0]?.content || '', /admin 127\.0\.0\.1:\d+/);
+  assert.match(plan.routePlan.generatedFiles[0]?.content || '', /bind 127\.0\.0\.1/);
+  assert.match(plan.routePlan.generatedFiles[0]?.content || '', /reverse_proxy http:\/\/127\.0\.0\.1:5050/);
+  assert.notEqual(plan.routePlan.routes[0]?.proxyPort, plan.routePlan.routes[0]?.targetPort);
+  assert.equal(plan.routePlan.routes[0]?.targetPort, '5050');
+  assert.match(plan.routePlan.routes[0]?.apply.args.at(-1) || '', new RegExp(`:${plan.routePlan.routes[0]?.proxyPort}$`));
+
+  await planner.apply('private-edge', ['api']);
+  await assert.rejects(
+    () => planner.applyRoutes('private-edge', 'private-edge:not-issued'),
+    (error: any) => error?.code === 'PRIVATE_EDGE_ADAPTER_APPLY_BLOCKED',
   );
 });
 
