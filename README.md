@@ -45,6 +45,7 @@ See [the full product goal and capability boundaries](docs/product-goal.md).
   - `plan_extension_onboarding`
   - `apply_extension_workspace_plan`
   - `apply_private_edge_routes`
+  - `reconcile_private_edge_routes`
 - Infra source of truth in:
   - `.env`
   - `.env.example`
@@ -132,6 +133,7 @@ locallink extension plan private-edge
 locallink extension apply private-edge
 locallink extension plan private-edge "My API"
 locallink extension apply-routes private-edge "private-edge:<token-from-fresh-plan>"
+locallink extension reconcile-routes private-edge "private-edge-removal:<token-from-fresh-plan>"
 ```
 
 When you launch `locallink` from another folder, it reads environment, service, extension, and runtime declarations from that current working directory.
@@ -221,6 +223,7 @@ All dashboard APIs are local-only and served from the same process as the UI.
 | `POST` | `/api/extensions/plan` | Preview workspace-owned Private Edge changes, optional explicit service selections, and user-owned security checkpoints without writing files. |
 | `POST` | `/api/extensions/apply` | Idempotently apply only the declaration, selected service ports, and local environment portion of a Private Edge plan. |
 | `POST` | `/api/extensions/routes/apply` | Apply a freshly confirmed Tailscale Serve route plan, verify every selected route, record workspace ownership, and roll back newly created routes on failure. |
+| `POST` | `/api/extensions/routes/reconcile` | Remove only deselected listeners that still match LocalLink ownership, forget stale ownership safely, verify the result, and restore earlier removals if the attempt fails. |
 | `GET` | `/api/configs` | Returns the raw infra files plus the derived service list. |
 | `POST` | `/api/configs` | Writes one infra file using full `content` or a structured `patch`. |
 | `POST` | `/api/ports/next` | Returns the next free local port, optionally starting from a supplied number. |
@@ -243,6 +246,7 @@ HTTP request bodies use camelCase:
 - `/api/ports/next`: `{ "startFrom"?: 5000, "reserve"?: true, "service"?: "new service" }`
 - `/api/tasks`: `{ "runtime": "docker|pm2|taskfile", "serviceName": "...", "action": "start|stop|restart|up" }`
 - `/api/extensions/routes/apply`: `{ "capability": "private-edge", "confirmationToken": "private-edge:<token-from-fresh-plan>" }`
+- `/api/extensions/routes/reconcile`: `{ "capability": "private-edge", "confirmationToken": "private-edge-removal:<token-from-fresh-plan>" }`
 
 ## MCP tools
 
@@ -257,6 +261,7 @@ MCP inputs use snake_case:
 | `plan_extension_onboarding` | `capability` | Previews workspace changes and manual security checkpoints without writing files. |
 | `apply_extension_workspace_plan` | `capability` | Applies only the workspace-owned portion of a reviewed extension plan. |
 | `apply_private_edge_routes` | `capability`, `confirmation_token` | Applies the exact current route plan after explicit confirmation, verifies it, records ownership, and rolls back this attempt on failure. |
+| `reconcile_private_edge_routes` | `capability`, `confirmation_token` | Removes stale owned listeners after fresh confirmation, never deletes changed listeners, and restores earlier removals when a later step fails. |
 | `orchestrate_service` | `runtime`, `service_name`, `action` | Runs Docker, PM2, or Taskfile lifecycle commands for a declared service. |
 
 ## Configuration model and patch expectations

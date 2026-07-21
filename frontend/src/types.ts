@@ -173,7 +173,7 @@ export interface ExtensionPlanStep {
 
 export interface ExtensionInstallPlan {
   capability: 'private-edge';
-  state: 'ready-to-apply' | 'ready-to-route' | 'waiting-user' | 'complete';
+  state: 'ready-to-apply' | 'ready-to-route' | 'ready-to-reconcile' | 'waiting-user' | 'complete';
   summary: string;
   canApply: boolean;
   selection: {
@@ -197,6 +197,27 @@ export interface ExtensionInstallPlan {
       detail: string;
       apply: { command: string; args: string[] };
       rollback: { command: string; args: string[] };
+    }>;
+  };
+  reconciliation: {
+    state: 'clean' | 'ready' | 'waiting-tailscale';
+    summary: string;
+    requiresConfirmation: true;
+    confirmationToken?: string;
+    removals: Array<{
+      serviceId: string;
+      serviceName: string;
+      targetPort: string;
+      httpsPort: string;
+      url?: string;
+      command: string;
+      applyArgs: string[];
+      rollbackArgs: string[];
+      appliedAt: string;
+      status: 'active' | 'rollback-failed';
+      liveStatus: 'active' | 'absent' | 'changed';
+      action: 'remove' | 'forget';
+      detail: string;
     }>;
   };
   steps: ExtensionPlanStep[];

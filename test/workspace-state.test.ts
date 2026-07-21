@@ -44,7 +44,9 @@ test('workspace state persists preferences, runtime plans, updates, and reservat
 
   await restored.cancelVersionUpdate('update-1');
   await restored.releasePortReservation('port-1');
+  await restored.removePrivateEdgeRoutes(['api']);
   const afterCancel = restored.read();
   assert.equal(afterCancel.versionUpdates[0]?.status, 'cancelled');
   assert.equal(afterCancel.portReservations[0]?.status, 'released');
+  assert.deepEqual(afterCancel.privateEdgeRoutes, []);
 });

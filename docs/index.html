@@ -416,6 +416,10 @@ POCKET_ID_PORT=1411</code></pre>
                 <td>Apply the exact freshly confirmed Tailscale Serve plan, verify it, persist per-workspace ownership, and roll back routes created by a failed attempt.</td>
               </tr>
               <tr>
+                <td><code>locallink extension reconcile-routes private-edge TOKEN</code></td>
+                <td>Remove only stale listeners that still match LocalLink ownership, forget changed claims without host mutation, and restore earlier removals on failure.</td>
+              </tr>
+              <tr>
                 <td><code>locallink doctor</code></td>
                 <td>Print startup diagnostics and install guidance for runtime dependencies.</td>
               </tr>
@@ -441,6 +445,7 @@ POCKET_ID_PORT=1411</code></pre>
               <tr><td><code>POST</code></td><td><code>/api/extensions/plan</code></td><td>Read-only Private Edge onboarding plan.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/extensions/apply</code></td><td>Apply workspace declaration and environment changes without performing external security actions.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/extensions/routes/apply</code></td><td>Apply a fresh token-bound route plan with verification, ownership recording, and scoped rollback.</td></tr>
+              <tr><td><code>POST</code></td><td><code>/api/extensions/routes/reconcile</code></td><td>Reconcile deselected LocalLink-owned listeners with verification and safe restoration.</td></tr>
               <tr><td><code>GET</code></td><td><code>/api/configs</code></td><td>Raw workspace blueprint files plus derived services.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/configs</code></td><td>Update a supported blueprint file with raw content or a structured patch.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/ports/next</code></td><td>Allocate the next free local port.</td></tr>

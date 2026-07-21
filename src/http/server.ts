@@ -65,6 +65,10 @@ const extensionRouteApplySchema = z.object({
   capability: z.literal('private-edge'),
   confirmationToken: z.string().startsWith('private-edge:').min(77),
 });
+const extensionRouteReconcileSchema = z.object({
+  capability: z.literal('private-edge'),
+  confirmationToken: z.string().startsWith('private-edge-removal:').min(85),
+});
 
 function toErrorPayload(error: unknown) {
   if (isAppError(error)) {
@@ -164,6 +168,13 @@ export function createHttpServer(context: AppContext) {
     if (!parsed.success) throw new AppError('INVALID_BODY', parsed.error.issues[0]?.message || 'Invalid body.', 400);
     reply.header('Cache-Control', 'no-store');
     return context.applyExtensionRoutes(parsed.data.capability, parsed.data.confirmationToken);
+  });
+
+  app.post('/api/extensions/routes/reconcile', async (request, reply) => {
+    const parsed = extensionRouteReconcileSchema.safeParse(request.body);
+    if (!parsed.success) throw new AppError('INVALID_BODY', parsed.error.issues[0]?.message || 'Invalid body.', 400);
+    reply.header('Cache-Control', 'no-store');
+    return context.reconcileExtensionRoutes(parsed.data.capability, parsed.data.confirmationToken);
   });
 
   app.patch('/api/workspace/settings', async (request, reply) => {

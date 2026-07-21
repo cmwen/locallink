@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { discoverServiceEdgeUrls, parseTailscaleServeRoutes, planPrivateEdgeRoutes } from '../src/runtime/network-edge';
-import type { ServiceDefinition, WorkspaceExtension } from '../src/shared/contracts';
+import { discoverServiceEdgeUrls, parseTailscaleServeRoutes, planPrivateEdgeRouteRemovals, planPrivateEdgeRoutes } from '../src/runtime/network-edge';
+import type { PrivateEdgeRouteOwnership, ServiceDefinition, WorkspaceExtension } from '../src/shared/contracts';
 import type { CommandRunner } from '../src/shared/utils';
 
 const SERVE_STATUS = JSON.stringify({
@@ -283,4 +283,60 @@ test('default generated listener stays stable when another service is selected l
     first.routes.find((route) => route.serviceId === 'pocket-id')?.httpsPort,
     expanded.routes.find((route) => route.serviceId === 'pocket-id')?.httpsPort,
   );
+});
+
+test('planPrivateEdgeRouteRemovals removes only matching owned listeners and forgets stale ownership safely', async () => {
+  const owned = (serviceId: string, targetPort: string, httpsPort: string): PrivateEdgeRouteOwnership => ({
+    serviceId,
+    serviceName: serviceId,
+    targetPort,
+    httpsPort,
+    command: 'tailscale',
+    applyArgs: ['serve', '--bg', '--yes', `--https=${httpsPort}`, `http://127.0.0.1:${targetPort}`],
+    rollbackArgs: ['serve', '--yes', `--https=${httpsPort}`, 'off'],
+    appliedAt: '2026-07-21T00:00:00.000Z',
+    status: 'active',
+  });
+  const commandRunner: CommandRunner = async (_command, args) => ({
+    ok: true,
+    code: 0,
+    signal: null,
+    stdout: args[0] === 'status'
+      ? JSON.stringify({ BackendState: 'Running' })
+      : JSON.stringify({
+          TCP: { 7451: { HTTPS: true }, 7452: { HTTPS: true } },
+          Web: {
+            'minipc.tailnet.ts.net:7451': { Handlers: { '/': { Proxy: 'http://127.0.0.1:1411' } } },
+            'minipc.tailnet.ts.net:7452': { Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } } },
+          },
+        }),
+    stderr: '',
+    timedOut: false,
+  });
+
+  const plan = await planPrivateEdgeRouteRemovals(
+    'workspace-a',
+    [owned('pocket-id', '1411', '7451'), owned('dashboard', '4010', '7452'), owned('missing', '6060', '7453')],
+    [{
+      serviceId: 'dashboard',
+      serviceName: 'dashboard',
+      targetPort: '4010',
+      httpsPort: '7452',
+      url: 'https://minipc.tailnet.ts.net:7452',
+      status: 'conflict',
+      detail: 'Listener changed.',
+      apply: { command: 'tailscale', args: ['serve', '--bg', '--yes', '--https=7452', 'http://127.0.0.1:4010'] },
+      rollback: { command: 'tailscale', args: ['serve', '--yes', '--https=7452', 'off'] },
+    }],
+    'tailscale',
+    commandRunner,
+  );
+
+  assert.equal(plan.state, 'ready');
+  assert.match(plan.confirmationToken || '', /^private-edge-removal:[a-f0-9]{64}$/);
+  assert.deepEqual(plan.removals.map(({ serviceId, liveStatus, action }) => ({ serviceId, liveStatus, action })), [
+    { serviceId: 'pocket-id', liveStatus: 'active', action: 'remove' },
+    { serviceId: 'dashboard', liveStatus: 'changed', action: 'forget' },
+    { serviceId: 'missing', liveStatus: 'absent', action: 'forget' },
+  ]);
 });

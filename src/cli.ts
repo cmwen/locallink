@@ -83,6 +83,7 @@ function printHelp(): void {
       '  locallink [--log-level LEVEL] extension plan private-edge [SERVICE...]  Preview changes and select services',
       '  locallink [--log-level LEVEL] extension apply private-edge [SERVICE...] Apply workspace declarations and selection',
       '  locallink [--log-level LEVEL] extension apply-routes private-edge TOKEN Apply a freshly confirmed host route plan',
+      '  locallink [--log-level LEVEL] extension reconcile-routes private-edge TOKEN Remove stale owned routes safely',
       '  locallink [--log-level LEVEL] init      Scaffold a starter LocalLink workspace here',
       '  locallink [--log-level LEVEL] init NAME Scaffold a starter LocalLink workspace in ./NAME',
       '',
@@ -184,10 +185,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     const capability = options.positionals[2];
     const serviceArgs = options.positionals.slice(3);
     const services = serviceArgs.length > 0 ? serviceArgs : undefined;
-    if (!capability || (action !== 'plan' && action !== 'apply' && action !== 'apply-routes')) {
+    if (!capability || (action !== 'plan' && action !== 'apply' && action !== 'apply-routes' && action !== 'reconcile-routes')) {
       throw new AppError(
         'INVALID_EXTENSION_COMMAND',
-        'Use "locallink extension plan private-edge", "locallink extension apply private-edge", or "locallink extension apply-routes private-edge TOKEN".',
+        'Use "locallink extension plan private-edge", "locallink extension apply private-edge", "locallink extension apply-routes private-edge TOKEN", or "locallink extension reconcile-routes private-edge TOKEN".',
         400,
       );
     }
@@ -197,6 +198,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         throw new AppError('MISSING_ROUTE_CONFIRMATION', 'apply-routes requires the confirmation token from a fresh Private Edge plan.', 400);
       }
       const result = await context.applyExtensionRoutes(capability, confirmationToken);
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return;
+    }
+    if (action === 'reconcile-routes') {
+      const confirmationToken = options.positionals[3];
+      if (!confirmationToken) {
+        throw new AppError('MISSING_RECONCILIATION_CONFIRMATION', 'reconcile-routes requires the confirmation token from a fresh Private Edge plan.', 400);
+      }
+      const result = await context.reconcileExtensionRoutes(capability, confirmationToken);
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       return;
     }

@@ -2,7 +2,13 @@ import fs from 'node:fs/promises';
 
 import { ConfigRepository } from './config/files';
 import { buildExtensionLifecycles } from './extensions/lifecycle';
-import { ExtensionPlanner, type ExtensionApplyResult, type ExtensionInstallPlan, type ExtensionRouteApplyResult } from './extensions/planner';
+import {
+  ExtensionPlanner,
+  type ExtensionApplyResult,
+  type ExtensionInstallPlan,
+  type ExtensionRouteApplyResult,
+  type ExtensionRouteReconcileResult,
+} from './extensions/planner';
 import { createHttpServer } from './http/server';
 import { LogBroker } from './logs/broker';
 import { PortAllocator } from './ports/allocator';
@@ -177,6 +183,17 @@ export class AppContext {
       result.applied
         ? `${result.appliedRoutes.length} ${capability} host route${result.appliedRoutes.length === 1 ? '' : 's'} applied and verified.`
         : `${capability} host routes already matched the generated plan.`,
+      'Lifecycle',
+    );
+    return result;
+  }
+
+  async reconcileExtensionRoutes(capability: string, confirmationToken: string): Promise<ExtensionRouteReconcileResult> {
+    const result = await this.extensionPlanner.reconcileRoutes(capability, confirmationToken);
+    this.logs.append(
+      result.reconciled
+        ? `${result.removedRoutes.length} owned host route${result.removedRoutes.length === 1 ? '' : 's'} removed; ${result.forgottenRoutes.length} stale ownership record${result.forgottenRoutes.length === 1 ? '' : 's'} forgotten.`
+        : `${capability} owned routes already match the workspace selection.`,
       'Lifecycle',
     );
     return result;

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { ServiceDefinition, WorkspaceExtension } from '../shared/contracts';
+import type { PrivateEdgeRouteOwnership, ServiceDefinition, WorkspaceExtension } from '../shared/contracts';
 import type { CommandRunner } from '../shared/utils';
 
 interface TailscaleWebHandler {
@@ -52,6 +52,20 @@ export interface PrivateEdgeRoutePlan {
   requiresConfirmation: true;
   confirmationToken?: string;
   routes: PrivateEdgePlannedRoute[];
+}
+
+export interface PrivateEdgeRemovalPlanItem extends PrivateEdgeRouteOwnership {
+  liveStatus: 'active' | 'absent' | 'changed';
+  action: 'remove' | 'forget';
+  detail: string;
+}
+
+export interface PrivateEdgeRemovalPlan {
+  state: 'clean' | 'ready' | 'waiting-tailscale';
+  summary: string;
+  requiresConfirmation: true;
+  confirmationToken?: string;
+  removals: PrivateEdgeRemovalPlanItem[];
 }
 
 interface TailscaleStatus {
@@ -265,6 +279,79 @@ export async function planPrivateEdgeRoutes(
     requiresConfirmation: true,
     confirmationToken,
     routes,
+  };
+}
+
+export async function planPrivateEdgeRouteRemovals(
+  workspaceId: string,
+  ownership: PrivateEdgeRouteOwnership[],
+  desiredRoutes: PrivateEdgePlannedRoute[],
+  command: string,
+  commandRunner: CommandRunner,
+): Promise<PrivateEdgeRemovalPlan> {
+  const staleOwnership = ownership.filter((owned) => {
+    const desired = desiredRoutes.find((candidate) => (
+      candidate.serviceId === owned.serviceId
+      && candidate.targetPort === owned.targetPort
+      && candidate.httpsPort === owned.httpsPort
+    ));
+    return !desired || desired.status === 'conflict';
+  });
+  if (staleOwnership.length === 0) {
+    return {
+      state: 'clean',
+      summary: 'No LocalLink-owned Private Edge routes need reconciliation.',
+      requiresConfirmation: true,
+      removals: [],
+    };
+  }
+
+  const statusResult = await commandRunner(command, ['status', '--json'], { timeoutMs: 2_000 });
+  const status = statusResult.ok ? parseTailscaleStatus(statusResult.stdout) : undefined;
+  const connected = statusResult.ok && (!status?.BackendState || status.BackendState.toLowerCase() === 'running');
+  if (!connected) {
+    return {
+      state: 'waiting-tailscale',
+      summary: 'Tailscale must be connected before LocalLink can safely reconcile owned routes.',
+      requiresConfirmation: true,
+      removals: [],
+    };
+  }
+
+  const serveResult = await commandRunner(command, ['serve', 'status', '--json'], { timeoutMs: 2_000 });
+  const currentRoutes = serveResult.ok ? parseTailscaleNodeServeRoutes(serveResult.stdout) : [];
+  const removals = staleOwnership.map((owned): PrivateEdgeRemovalPlanItem => {
+    const listeners = currentRoutes.filter((route) => listenerPort(route) === owned.httpsPort);
+    const active = listeners.some((route) => route.targetPort === owned.targetPort);
+    const changed = !active && listeners.length > 0;
+    return {
+      ...owned,
+      liveStatus: active ? 'active' : changed ? 'changed' : 'absent',
+      action: active ? 'remove' : 'forget',
+      detail: active
+        ? 'The listener still matches this workspace ownership record and can be removed.'
+        : changed
+          ? 'The listener now targets something else; LocalLink will forget its stale ownership record without changing Tailscale.'
+          : 'The listener is already absent; LocalLink will remove only its stale ownership record.',
+    };
+  });
+  const confirmationToken = `private-edge-removal:${createHash('sha256').update(JSON.stringify({
+    workspaceId,
+    removals: removals.map(({ serviceId, targetPort, httpsPort, liveStatus, action, rollbackArgs }) => ({
+      serviceId, targetPort, httpsPort, liveStatus, action, rollbackArgs,
+    })),
+  })).digest('hex')}`;
+  const hostRemovals = removals.filter((item) => item.action === 'remove').length;
+  const ownershipCleanup = removals.length - hostRemovals;
+  return {
+    state: 'ready',
+    summary: [
+      hostRemovals > 0 ? `${hostRemovals} owned listener${hostRemovals === 1 ? '' : 's'} can be removed` : '',
+      ownershipCleanup > 0 ? `${ownershipCleanup} stale ownership record${ownershipCleanup === 1 ? '' : 's'} can be forgotten without host mutation` : '',
+    ].filter(Boolean).join('; ') + '.',
+    requiresConfirmation: true,
+    confirmationToken,
+    removals,
   };
 }
 

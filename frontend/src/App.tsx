@@ -4,6 +4,7 @@ import {
   executeServiceAction,
   applyPrivateEdge,
   applyPrivateEdgeRoutes,
+  reconcilePrivateEdgeRoutes,
   cancelVersionUpdate,
   inspectProcess,
   normalizeLog,
@@ -459,7 +460,7 @@ export function App() {
     }
   }
 
-  async function managePrivateEdge(action: 'plan' | 'apply' | 'routes') {
+  async function managePrivateEdge(action: 'plan' | 'apply' | 'routes' | 'reconcile') {
     if (source !== 'api') {
       setStatus('Private Edge planning needs the live LocalLink API.');
       return;
@@ -480,7 +481,7 @@ export function App() {
           ? `Private Edge workspace setup updated ${result.changedFiles.join(', ')}.`
           : 'Private Edge workspace files already match the plan.');
         await refreshState();
-      } else {
+      } else if (action === 'routes') {
         const token = extensionPlan?.routePlan.confirmationToken;
         if (!token) throw new Error('Preview a fresh conflict-free route plan before applying host routes.');
         const routeSummary = extensionPlan.routePlan.routes
@@ -493,6 +494,19 @@ export function App() {
         setStatus(result.applied
           ? `${result.appliedRoutes.length} Private Edge route${result.appliedRoutes.length === 1 ? '' : 's'} applied and verified.`
           : 'Private Edge routes already match the generated plan.');
+        await refreshState();
+      } else {
+        const token = extensionPlan?.reconciliation.confirmationToken;
+        if (!token) throw new Error('Preview a fresh owned-route reconciliation plan before removing routes.');
+        const summary = extensionPlan.reconciliation.removals
+          .map((item) => `${item.action === 'remove' ? 'Remove' : 'Forget'} ${item.serviceName} · HTTPS :${item.httpsPort} · ${item.liveStatus}`)
+          .join('\n');
+        if (!window.confirm(`Reconcile these LocalLink-owned Private Edge routes?\n\n${summary}\n\nChanged listeners will never be removed. LocalLink will restore routes removed by this attempt if later verification fails.`)) return;
+        const result = await reconcilePrivateEdgeRoutes(token);
+        setExtensionPlan(result.plan);
+        setStatus(result.reconciled
+          ? `${result.removedRoutes.length} owned route${result.removedRoutes.length === 1 ? '' : 's'} removed; ${result.forgottenRoutes.length} stale record${result.forgottenRoutes.length === 1 ? '' : 's'} forgotten.`
+          : 'Private Edge owned routes already match the workspace selection.');
         await refreshState();
       }
     } catch (error) {
@@ -974,7 +988,7 @@ function ExtensionsWorkspace({
   extensionApplying: boolean;
   edgeServiceSelection: string[];
   query: string;
-  managePrivateEdge: (action: 'plan' | 'apply' | 'routes') => Promise<void>;
+  managePrivateEdge: (action: 'plan' | 'apply' | 'routes' | 'reconcile') => Promise<void>;
   setEdgeServiceSelection: React.Dispatch<React.SetStateAction<string[]>>;
   setEdgeSelectionTouched: React.Dispatch<React.SetStateAction<boolean>>;
   queueUpdate: () => Promise<void>;
@@ -1042,8 +1056,11 @@ function ExtensionsWorkspace({
               {extensionPlan?.canApply ? (
                 <button className="btn" type="button" disabled={extensionApplying} onClick={() => void managePrivateEdge('apply')}>Apply workspace setup</button>
               ) : null}
-              {!extensionPlan?.canApply && extensionPlan?.routePlan.state === 'ready' && extensionPlan.routePlan.confirmationToken ? (
+              {!extensionPlan?.canApply && extensionPlan?.reconciliation.state === 'clean' && extensionPlan?.routePlan.state === 'ready' && extensionPlan.routePlan.confirmationToken ? (
                 <button className="btn" type="button" disabled={extensionApplying} onClick={() => void managePrivateEdge('routes')}>Apply private routes</button>
+              ) : null}
+              {!extensionPlan?.canApply && extensionPlan?.reconciliation.state === 'ready' && extensionPlan.reconciliation.confirmationToken ? (
+                <button className="btn" type="button" disabled={extensionApplying} onClick={() => void managePrivateEdge('reconcile')}>Reconcile owned routes</button>
               ) : null}
               <a className="btn" href="./docs/pocket-id-tailscale.html" target="_blank" rel="noreferrer">Private SSO setup</a>
               <a className="btn ghost" href="./docs/extensions.html" target="_blank" rel="noreferrer">Extension guide</a>
@@ -1090,6 +1107,17 @@ function ExtensionsWorkspace({
                     key={route.serviceId}
                     label={`${route.serviceName} · ${route.status}`}
                     value={`${route.url || `HTTPS :${route.httpsPort}`} → 127.0.0.1:${route.targetPort}`}
+                  />
+                ))}
+              </div>
+            ) : null}
+            {extensionPlan.reconciliation.removals.length > 0 ? (
+              <div className="config-lines" aria-label="Private Edge owned route reconciliation plan">
+                {extensionPlan.reconciliation.removals.map((item) => (
+                  <ConfigLine
+                    key={`remove-${item.serviceId}`}
+                    label={`${item.serviceName} · ${item.action}`}
+                    value={`HTTPS :${item.httpsPort} · ${item.liveStatus}`}
                   />
                 ))}
               </div>

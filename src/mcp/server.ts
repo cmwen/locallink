@@ -176,6 +176,22 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
     )),
   );
 
+  server.registerTool(
+    'reconcile_private_edge_routes',
+    {
+      description: 'Remove only stale routes still matching LocalLink ownership, forget already absent or externally changed ownership records, verify the result, and restore removals if the attempt fails.',
+      inputSchema: z.object({
+        capability: z.literal('private-edge'),
+        confirmation_token: z.string().startsWith('private-edge-removal:').min(85),
+      }),
+    },
+    async ({ capability, confirmation_token }) => textResponse(JSON.stringify(
+      await context.reconcileExtensionRoutes(capability, confirmation_token),
+      null,
+      2,
+    )),
+  );
+
   const orchestrateService = async ({
     runtime,
     service_name,

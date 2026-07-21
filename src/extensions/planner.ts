@@ -1,7 +1,12 @@
 import path from 'node:path';
 
 import { ConfigRepository } from '../config/files';
-import { planPrivateEdgeRoutes, type PrivateEdgeRoutePlan } from '../runtime/network-edge';
+import {
+  planPrivateEdgeRouteRemovals,
+  planPrivateEdgeRoutes,
+  type PrivateEdgeRemovalPlan,
+  type PrivateEdgeRoutePlan,
+} from '../runtime/network-edge';
 import type { ExtensionLifecycleRecord, WorkspaceExtension } from '../shared/contracts';
 import { AppError } from '../shared/errors';
 import type { CommandRunner } from '../shared/utils';
@@ -26,7 +31,7 @@ export interface ExtensionPlanStep {
 export interface ExtensionInstallPlan {
   workspace: ReturnType<typeof deriveWorkspaceIdentity>;
   capability: InstallableCapabilityId;
-  state: 'ready-to-apply' | 'ready-to-route' | 'waiting-user' | 'complete';
+  state: 'ready-to-apply' | 'ready-to-route' | 'ready-to-reconcile' | 'waiting-user' | 'complete';
   summary: string;
   canApply: boolean;
   selection: {
@@ -35,6 +40,7 @@ export interface ExtensionInstallPlan {
     available: Array<{ id: string; name: string; port: string }>;
   };
   routePlan: PrivateEdgeRoutePlan;
+  reconciliation: PrivateEdgeRemovalPlan;
   steps: ExtensionPlanStep[];
 }
 
@@ -55,6 +61,14 @@ export interface ExtensionRouteApplyResult {
     httpsPort: string;
     url?: string;
   }>;
+  plan: ExtensionInstallPlan;
+}
+
+export interface ExtensionRouteReconcileResult {
+  capability: InstallableCapabilityId;
+  reconciled: boolean;
+  removedRoutes: string[];
+  forgottenRoutes: string[];
   plan: ExtensionInstallPlan;
 }
 
@@ -192,6 +206,14 @@ export class ExtensionPlanner {
       this.commandRunner,
       model.env.LOCALLINK_PRIVATE_EDGE_PORT_START,
     );
+    await this.workspaceState.load();
+    const reconciliation = await planPrivateEdgeRouteRemovals(
+      workspace.id,
+      this.workspaceState.read().privateEdgeRoutes,
+      routePlan.routes,
+      privateEdge.command || 'tailscale',
+      this.commandRunner,
+    );
 
     const envContent = infra.files.find((file) => file.targetFile === '.env')?.content || '';
     const declarationReady = Boolean(existing?.enabled);
@@ -243,19 +265,35 @@ export class ExtensionPlanner {
           : `Record selected ports ${selectedPorts.join(', ')} in the network-edge declaration.`,
       },
     ];
-    const steps = [...workspaceSteps, ...runtimeSteps(lifecycle, routePlan)];
+    const reconciliationStep: ExtensionPlanStep = {
+      id: 'reconcile-private-edge-routes',
+      label: 'Reconcile LocalLink-owned Private Edge routes',
+      owner: 'locallink',
+      status: reconciliation.state === 'clean' ? 'complete' : reconciliation.state === 'ready' ? 'pending' : 'blocked',
+      automatic: true,
+      detail: reconciliation.summary,
+    };
+    const steps = [...workspaceSteps, ...runtimeSteps(lifecycle, routePlan), reconciliationStep];
     const canApply = workspaceSteps.some((step) => step.owner === 'locallink' && step.status === 'pending');
     const complete = steps.every((step) => step.status === 'complete');
 
     return {
       workspace,
       capability: 'private-edge',
-      state: complete ? 'complete' : canApply ? 'ready-to-apply' : routePlan.state === 'ready' ? 'ready-to-route' : 'waiting-user',
+      state: complete
+        ? 'complete'
+        : canApply
+          ? 'ready-to-apply'
+          : reconciliation.state === 'ready'
+            ? 'ready-to-reconcile'
+            : routePlan.state === 'ready'
+              ? 'ready-to-route'
+              : 'waiting-user',
       summary: complete
         ? 'Private Edge is declared and healthy for this workspace.'
         : canApply
           ? 'LocalLink can apply the workspace-owned declaration changes. External security decisions remain explicit steps.'
-          : routePlan.summary,
+          : reconciliation.state === 'ready' ? reconciliation.summary : routePlan.summary,
       canApply,
       selection: {
         requested: requestedSelection,
@@ -263,6 +301,7 @@ export class ExtensionPlanner {
         available: availableServices,
       },
       routePlan,
+      reconciliation,
       steps,
     };
   }
@@ -324,6 +363,13 @@ export class ExtensionPlanner {
       throw new AppError(
         'PRIVATE_EDGE_WORKSPACE_PLAN_PENDING',
         'Apply the workspace-owned Private Edge declaration plan before applying host routes.',
+        409,
+      );
+    }
+    if (before.reconciliation.state === 'ready') {
+      throw new AppError(
+        'PRIVATE_EDGE_RECONCILIATION_PENDING',
+        'Reconcile stale LocalLink-owned routes before applying new Private Edge routes.',
         409,
       );
     }
@@ -441,6 +487,99 @@ export class ExtensionPlanner {
           cause: error instanceof Error ? error.message : String(error),
           appliedBeforeFailure: applied.map((route) => route.serviceId),
           rollbackFailures: rollbackFailures.map(({ route, detail }) => ({ serviceId: route.serviceId, detail })),
+        },
+      );
+    }
+  }
+
+  async reconcileRoutes(capability: string, confirmationToken: string): Promise<ExtensionRouteReconcileResult> {
+    const before = await this.plan(capability);
+    if (before.canApply) {
+      throw new AppError(
+        'PRIVATE_EDGE_WORKSPACE_PLAN_PENDING',
+        'Apply the workspace-owned Private Edge declaration plan before reconciling host routes.',
+        409,
+      );
+    }
+    if (before.reconciliation.state === 'clean') {
+      return { capability: 'private-edge', reconciled: false, removedRoutes: [], forgottenRoutes: [], plan: before };
+    }
+    if (before.reconciliation.state !== 'ready' || !before.reconciliation.confirmationToken) {
+      throw new AppError('PRIVATE_EDGE_RECONCILIATION_NOT_READY', before.reconciliation.summary, 409);
+    }
+    if (confirmationToken !== before.reconciliation.confirmationToken) {
+      throw new AppError(
+        'STALE_PRIVATE_EDGE_RECONCILIATION',
+        'The confirmation token does not match the current owned-route reconciliation plan. Preview the plan again.',
+        409,
+      );
+    }
+
+    const hostRemovals = before.reconciliation.removals.filter((item) => item.action === 'remove');
+    const removed: typeof hostRemovals = [];
+    try {
+      for (const item of hostRemovals) {
+        // eslint-disable-next-line no-await-in-loop
+        const result = await this.commandRunner(item.command, item.rollbackArgs, { timeoutMs: 10_000 });
+        if (!result.ok) {
+          throw new AppError(
+            'PRIVATE_EDGE_ROUTE_REMOVE_FAILED',
+            `Tailscale could not remove ${item.serviceName}: ${result.stderr || result.error || `exit ${result.code}`}.`,
+            502,
+          );
+        }
+        removed.push(item);
+      }
+
+      const verified = await this.plan(capability);
+      const stillActive = verified.reconciliation.removals.filter((item) => item.liveStatus === 'active');
+      if (stillActive.length > 0) {
+        throw new AppError(
+          'PRIVATE_EDGE_ROUTE_REMOVE_VERIFICATION_FAILED',
+          `Tailscale accepted the removal commands, but ${stillActive.length} owned listener${stillActive.length === 1 ? ' is' : 's are'} still active.`,
+          502,
+        );
+      }
+
+      const all = before.reconciliation.removals;
+      await this.workspaceState.removePrivateEdgeRoutes(all.map((item) => item.serviceId));
+      return {
+        capability: 'private-edge',
+        reconciled: all.length > 0,
+        removedRoutes: removed.map((item) => item.serviceId),
+        forgottenRoutes: all.filter((item) => item.action === 'forget').map((item) => item.serviceId),
+        plan: await this.plan(capability),
+      };
+    } catch (error) {
+      const restoreFailures: Array<{ serviceId: string; detail: string }> = [];
+      for (const item of [...removed].reverse()) {
+        // eslint-disable-next-line no-await-in-loop
+        const restorePlan = await planPrivateEdgeRoutes(
+          before.workspace.id,
+          [{ id: item.serviceId, name: item.serviceName, port: item.targetPort }],
+          item.command,
+          this.commandRunner,
+          item.httpsPort,
+        );
+        if (restorePlan.state === 'in-sync') continue;
+        if (restorePlan.state !== 'ready') {
+          restoreFailures.push({ serviceId: item.serviceId, detail: `Listener changed before restore: ${restorePlan.summary}` });
+          continue;
+        }
+        // eslint-disable-next-line no-await-in-loop
+        const result = await this.commandRunner(item.command, item.applyArgs, { timeoutMs: 10_000 });
+        if (!result.ok) restoreFailures.push({ serviceId: item.serviceId, detail: result.stderr || result.error || `exit ${result.code}` });
+      }
+      throw new AppError(
+        'PRIVATE_EDGE_RECONCILIATION_FAILED',
+        restoreFailures.length > 0
+          ? 'Private Edge reconciliation failed, and one or more removed routes could not be restored.'
+          : 'Private Edge reconciliation failed; every route removed by this attempt was restored.',
+        502,
+        {
+          cause: error instanceof Error ? error.message : String(error),
+          removedBeforeFailure: removed.map((item) => item.serviceId),
+          restoreFailures,
         },
       );
     }

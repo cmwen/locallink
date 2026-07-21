@@ -303,6 +303,20 @@ export async function applyPrivateEdgeRoutes(confirmationToken: string): Promise
   });
 }
 
+export async function reconcilePrivateEdgeRoutes(confirmationToken: string): Promise<{
+  capability: 'private-edge';
+  reconciled: boolean;
+  removedRoutes: string[];
+  forgottenRoutes: string[];
+  plan: ExtensionInstallPlan;
+}> {
+  return fetchJson('./api/extensions/routes/reconcile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ capability: 'private-edge', confirmationToken }),
+  });
+}
+
 export async function persistTemporaryRuntime(input: { name: string; type: string; port: number; command: string }): Promise<WorkspaceState> {
   return fetchJson<WorkspaceState>('./api/workspace/runtimes', {
     method: 'POST',

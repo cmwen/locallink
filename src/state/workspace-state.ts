@@ -105,4 +105,9 @@ export class WorkspaceStateRepository {
       ],
     });
   }
+
+  async removePrivateEdgeRoutes(serviceIds: string[]): Promise<WorkspaceState> {
+    const ids = new Set(serviceIds);
+    return this.update({ privateEdgeRoutes: this.state.privateEdgeRoutes.filter((route) => !ids.has(route.serviceId)) });
+  }
 }
