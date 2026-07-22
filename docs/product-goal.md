@@ -59,11 +59,12 @@ confirmation tokens, and ownership state must retain that identity so direct
 Tailscale Serve and Tailscale+Caddy implementations can share one safe lifecycle
 without guessing behavior from executable names.
 
-The Tailscale+Caddy adapter first generates a loopback-only Caddyfile and a
-Tailscale-to-Caddy listener plan. It must remain planning-only until LocalLink
-can validate, start or reload, verify, restore, and stop a workspace-scoped Caddy
-runtime without sharing its admin endpoint or process ownership with another
-workspace.
+The Tailscale+Caddy adapter generates a loopback-only Caddyfile and a
+Tailscale-to-Caddy listener plan. For a Docker Caddy service with a workspace-local
+Caddyfile mount, LocalLink validates the generated configuration, reloads the
+service, verifies the routes, and restores the previous Caddyfile on failure.
+Route reconciliation, stop/restore across independent runs, and host-CLI runtime
+ownership still require explicit workspace-scoped safety contracts.
 
 ### Identity
 

@@ -218,6 +218,66 @@ test('Tailscale+Caddy adapter accepts a Caddy service declared by this workspace
   assert.equal(calls.find((call) => call.command === 'docker')?.cwd, root);
 });
 
+test('Tailscale+Caddy applies a validated managed block and reloads the workspace Caddy service', async () => {
+  const root = await createWorkspace();
+  await fs.writeFile(
+    path.join(root, 'locallink.extensions.yml'),
+    'extensions:\n  - id: edge\n    name: Edge\n    kind: network-edge\n    enabled: true\n    command: tailscale\n    adapter: tailscale-caddy\n',
+    'utf8',
+  );
+  await fs.mkdir(path.join(root, 'edge'), { recursive: true });
+  await fs.writeFile(path.join(root, 'edge', 'Caddyfile'), ':8080 {\n  file_server\n}\n', 'utf8');
+  await fs.writeFile(path.join(root, 'docker-compose.yml'), `services:
+  api:
+    image: example/api
+    ports:
+      - "\${API_PORT}:5050"
+  pwa-edge-proxy:
+    image: caddy:2.10-alpine
+    profiles: [edge]
+    volumes:
+      - ./edge/Caddyfile:/etc/caddy/Caddyfile:ro
+`, 'utf8');
+  const liveRoutes = new Map<string, string>();
+  const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
+  const commandRunner: CommandRunner = async (command, args, options) => {
+    calls.push({ command, args, cwd: options?.cwd });
+    if (command === 'docker') {
+      if (args.includes('ps')) return result({ stdout: JSON.stringify({ State: 'running', Status: 'Up 2 days' }) });
+      return result();
+    }
+    if (args[0] === 'status') return result({ stdout: JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'minipc.tailnet.ts.net.' } }) });
+    if (args[0] === 'serve' && args[1] === 'status') {
+      const tcp: Record<string, { HTTPS: boolean }> = {};
+      const web: Record<string, { Handlers: { '/': { Proxy: string } } }> = {};
+      for (const [httpsPort, targetPort] of liveRoutes) {
+        tcp[httpsPort] = { HTTPS: true };
+        web[`minipc.tailnet.ts.net:${httpsPort}`] = { Handlers: { '/': { Proxy: `http://127.0.0.1:${targetPort}` } } };
+      }
+      return result({ stdout: JSON.stringify({ TCP: tcp, Web: web }) });
+    }
+    const httpsPort = args.find((arg) => arg.startsWith('--https='))?.split('=')[1];
+    const targetPort = args.at(-1)?.match(/:(\d+)$/)?.[1];
+    if (httpsPort && targetPort) liveRoutes.set(httpsPort, targetPort);
+    return result();
+  };
+  const planner = new ExtensionPlanner(root, new ConfigRepository(root), commandRunner);
+
+  await planner.apply('private-edge', ['api']);
+  const plan = await planner.plan('private-edge');
+  assert.equal(plan.routePlan.state, 'ready');
+  assert.equal(plan.routePlan.applySupported, true);
+  assert.match(plan.routePlan.generatedFiles[0]?.content || '', /host\.docker\.internal:5050/);
+
+  const applied = await planner.applyRoutes('private-edge', plan.routePlan.confirmationToken!);
+  assert.equal(applied.applied, true);
+  assert.equal(applied.plan.routePlan.state, 'in-sync');
+  assert.ok(calls.some((call) => call.args.includes('validate')));
+  assert.ok(calls.some((call) => call.args.includes('reload')));
+  assert.match(await fs.readFile(path.join(root, 'edge', 'Caddyfile'), 'utf8'), /file_server/);
+  assert.match(await fs.readFile(path.join(root, 'edge', 'Caddyfile'), 'utf8'), /BEGIN LOCALLINK MANAGED PRIVATE EDGE ROUTES/);
+});
+
 test('Private Edge route lifecycle requires fresh tokens and removes deselected owned listeners', async () => {
   const root = await createWorkspace();
   const liveRoutes = new Map<string, string>();

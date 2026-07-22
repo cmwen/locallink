@@ -6,6 +6,12 @@ import {
   type PrivateEdgeRemovalPlan,
   type PrivateEdgeRoutePlan,
 } from '../runtime/network-edge';
+import {
+  caddyReloadCommand,
+  mergeManagedCaddyfile,
+  readWorkspaceFile,
+  writeWorkspaceCaddyfile,
+} from '../runtime/caddy-runtime';
 import type { ExtensionLifecycleRecord, WorkspaceExtension } from '../shared/contracts';
 import { AppError } from '../shared/errors';
 import type { CommandRunner } from '../shared/utils';
@@ -402,7 +408,55 @@ export class ExtensionPlanner {
 
     const routes = before.routePlan.routes.filter((route) => route.status === 'missing');
     const applied: typeof routes = [];
+    let caddyConfigPath: string | undefined;
+    let caddyPreviousContent: string | undefined;
+    let caddyConfigChanged = false;
     try {
+      if (before.routePlan.adapter === 'tailscale-caddy') {
+        const runtime = before.routePlan.runtime;
+        const generatedFile = before.routePlan.generatedFiles[0];
+        if (!runtime?.manageable || !runtime.configPath || !runtime.configTarget || !generatedFile) {
+          throw new AppError(
+            'PRIVATE_EDGE_CADDY_RUNTIME_NOT_MANAGEABLE',
+            'LocalLink cannot safely manage this Caddy service. It must be running and mount its Caddyfile from inside the active workspace.',
+            409,
+          );
+        }
+
+        await writeWorkspaceCaddyfile(this.root, generatedFile.path, generatedFile.content);
+        const validation = await this.commandRunner(
+          generatedFile.validate.command,
+          generatedFile.validate.args,
+          { cwd: this.root, timeoutMs: 15_000 },
+        );
+        if (!validation.ok) {
+          throw new AppError(
+            'PRIVATE_EDGE_CADDY_CONFIG_INVALID',
+            `Caddy rejected the generated workspace configuration: ${validation.stderr || validation.error || `exit ${validation.code}`}.`,
+            502,
+          );
+        }
+
+        caddyConfigPath = runtime.configPath;
+        caddyPreviousContent = await readWorkspaceFile(caddyConfigPath);
+        const relativeConfigPath = path.relative(this.root, caddyConfigPath);
+        const existing = caddyPreviousContent ?? '';
+        await writeWorkspaceCaddyfile(this.root, relativeConfigPath, mergeManagedCaddyfile(existing, generatedFile.content));
+        caddyConfigChanged = true;
+        const reload = caddyReloadCommand(runtime);
+        if (!reload) {
+          throw new AppError('PRIVATE_EDGE_CADDY_RELOAD_UNSUPPORTED', 'LocalLink could not derive a safe Docker Compose Caddy reload command.', 409);
+        }
+        const reloaded = await this.commandRunner(reload.command, reload.args, { cwd: this.root, timeoutMs: 15_000 });
+        if (!reloaded.ok) {
+          throw new AppError(
+            'PRIVATE_EDGE_CADDY_RELOAD_FAILED',
+            `Caddy configuration was written but reload failed: ${reloaded.stderr || reloaded.error || `exit ${reloaded.code}`}.`,
+            502,
+          );
+        }
+      }
+
       for (const route of routes) {
         // Route commands are generated as argument arrays so no shell parsing is involved.
         // eslint-disable-next-line no-await-in-loop
@@ -471,6 +525,19 @@ export class ExtensionPlanner {
         const result = await this.commandRunner(route.rollback.command, route.rollback.args, { timeoutMs: 10_000 });
         if (!result.ok) rollbackFailures.push({ route, detail: result.stderr || result.error || `exit ${result.code}` });
       }
+      let caddyRollbackFailure: string | undefined;
+      if (caddyConfigChanged && caddyConfigPath) {
+        try {
+          const relativeConfigPath = path.relative(this.root, caddyConfigPath);
+          await writeWorkspaceCaddyfile(this.root, relativeConfigPath, caddyPreviousContent ?? '');
+          const reload = caddyReloadCommand(before.routePlan.runtime!);
+          if (!reload) throw new Error('No safe Caddy reload command is available.');
+          const restored = await this.commandRunner(reload.command, reload.args, { cwd: this.root, timeoutMs: 15_000 });
+          if (!restored.ok) throw new Error(restored.stderr || restored.error || `exit ${restored.code}`);
+        } catch (restoreError) {
+          caddyRollbackFailure = restoreError instanceof Error ? restoreError.message : String(restoreError);
+        }
+      }
       if (rollbackFailures.length > 0) {
         await this.workspaceState.load();
         const appliedAt = new Date().toISOString();
@@ -498,6 +565,7 @@ export class ExtensionPlanner {
           cause: error instanceof Error ? error.message : String(error),
           appliedBeforeFailure: applied.map((route) => route.serviceId),
           rollbackFailures: rollbackFailures.map(({ route, detail }) => ({ serviceId: route.serviceId, detail })),
+          ...(caddyRollbackFailure ? { caddyRollbackFailure } : {}),
         },
       );
     }

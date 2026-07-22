@@ -8,6 +8,7 @@ import { isCommandMissingResult, parseJsonOutput, type CommandRunner } from '../
 type ComposeService = {
   image?: unknown;
   labels?: unknown;
+  volumes?: unknown;
 };
 
 type ComposeDocument = {
@@ -22,10 +23,13 @@ type ComposePsRecord = {
 export interface CaddyRuntimeDetection {
   available: boolean;
   running: boolean;
+  manageable: boolean;
   source: 'docker-compose' | 'host-cli' | 'missing';
   detail: string;
   serviceName?: string;
   image?: string;
+  configPath?: string;
+  configTarget?: string;
 }
 
 const COMPOSE_FILES = ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'];
@@ -53,6 +57,32 @@ function isCaddyComposeService(service: ComposeService): boolean {
   return isCaddyImage(service.image)
     || labels['locallink.provider']?.toLowerCase() === 'caddy'
     || tags.includes('caddy');
+}
+
+function isInsideWorkspace(workspaceRoot: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(workspaceRoot), path.resolve(candidate));
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function caddyConfigMount(workspaceRoot: string, service: ComposeService): { path: string; target: string } | undefined {
+  if (!Array.isArray(service.volumes)) return undefined;
+  for (const volume of service.volumes) {
+    let source: string | undefined;
+    let target: string | undefined;
+    if (typeof volume === 'string') {
+      const parts = volume.split(':');
+      if (parts.length >= 2) [source, target] = parts;
+    } else if (volume && typeof volume === 'object') {
+      const value = volume as { source?: unknown; target?: unknown };
+      source = typeof value.source === 'string' ? value.source : undefined;
+      target = typeof value.target === 'string' ? value.target : undefined;
+    }
+    if (!source || target !== '/etc/caddy/Caddyfile') continue;
+    if (!source.startsWith('.') && !path.isAbsolute(source)) return undefined;
+    const configPath = path.resolve(workspaceRoot, source);
+    return isInsideWorkspace(workspaceRoot, configPath) ? { path: configPath, target } : undefined;
+  }
+  return undefined;
 }
 
 async function readComposeDocument(workspaceRoot: string): Promise<ComposeDocument | undefined> {
@@ -89,6 +119,7 @@ export async function detectCaddyRuntime(
     if (declared) {
       const [serviceName, service] = declared;
       const image = typeof service.image === 'string' ? service.image : undefined;
+      const configMount = caddyConfigMount(workspaceRoot, service);
       const psResult = await commandRunner(
         'docker',
         ['compose', '--profile', '*', 'ps', '--all', '--format', 'json', serviceName],
@@ -98,9 +129,12 @@ export async function detectCaddyRuntime(
       return {
         available: true,
         running,
+        manageable: running && Boolean(configMount),
         source: 'docker-compose',
         serviceName,
         image,
+        configPath: configMount?.path,
+        configTarget: configMount?.target,
         detail: running
           ? `Docker Compose service "${serviceName}" is running${image ? ` with image ${image}` : ''}.`
           : psResult.ok
@@ -115,6 +149,7 @@ export async function detectCaddyRuntime(
     return {
       available: true,
       running: true,
+      manageable: false,
       source: 'host-cli',
       detail: `${caddyCommand} is available on the host${hostResult.stdout.trim() ? ` (${hostResult.stdout.trim()})` : ''}.`,
     };
@@ -123,10 +158,62 @@ export async function detectCaddyRuntime(
   return {
     available: false,
     running: false,
+    manageable: false,
     source: 'missing',
     detail: isCommandMissingResult(hostResult)
       ? 'No Caddy Docker Compose service is declared in this workspace, and the caddy command is not available on PATH.'
       : 'No Caddy Docker Compose service is declared in this workspace, and the host caddy command did not respond successfully.',
+  };
+}
+
+export async function writeWorkspaceCaddyfile(workspaceRoot: string, relativePath: string, content: string): Promise<string> {
+  const filePath = path.resolve(workspaceRoot, relativePath);
+  if (!isInsideWorkspace(workspaceRoot, filePath)) throw new Error('Generated Caddyfile must remain inside the active workspace.');
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const temporaryPath = `${filePath}.${process.pid}.tmp`;
+  await fs.writeFile(temporaryPath, content, 'utf8');
+  await fs.rename(temporaryPath, filePath);
+  return filePath;
+}
+
+export async function readWorkspaceFile(filePath: string): Promise<string | undefined> {
+  try {
+    return await fs.readFile(filePath, 'utf8');
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+    if (code === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+const MANAGED_START = '# BEGIN LOCALLINK MANAGED PRIVATE EDGE ROUTES';
+const MANAGED_END = '# END LOCALLINK MANAGED PRIVATE EDGE ROUTES';
+
+export function mergeManagedCaddyfile(existing: string | undefined, generated: string): string {
+  const generatedStart = generated.indexOf(MANAGED_START);
+  const generatedEnd = generated.indexOf(MANAGED_END);
+  if (generatedStart < 0 || generatedEnd < generatedStart) return generated;
+  const managedBlock = generated.slice(generatedStart, generatedEnd + MANAGED_END.length).trim();
+  if (!existing?.trim()) return generated;
+
+  const existingStart = existing.indexOf(MANAGED_START);
+  const existingEnd = existing.indexOf(MANAGED_END);
+  if (existingStart >= 0 && existingEnd >= existingStart) {
+    return `${existing.slice(0, existingStart)}${managedBlock}${existing.slice(existingEnd + MANAGED_END.length)}`.replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+  }
+  return `${existing.trimEnd()}\n\n${managedBlock}\n`;
+}
+
+export function caddyReloadCommand(
+  runtime: Pick<CaddyRuntimeDetection, 'source' | 'serviceName' | 'configTarget'>,
+): { command: string; args: string[] } | undefined {
+  if (runtime.source !== 'docker-compose' || !runtime.serviceName || !runtime.configTarget) return undefined;
+  return {
+    command: 'docker',
+    args: [
+      'compose', '--profile', '*', 'exec', '-T', runtime.serviceName,
+      'caddy', 'reload', '--config', runtime.configTarget, '--adapter', 'caddyfile',
+    ],
   };
 }
 
