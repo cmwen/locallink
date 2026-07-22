@@ -63,11 +63,11 @@ const extensionCapabilitySchema = z.object({
 });
 const extensionRouteApplySchema = z.object({
   capability: z.literal('private-edge'),
-  confirmationToken: z.string().startsWith('private-edge:').min(77),
+  confirmationToken: z.string().regex(/^private-edge(?:-caddy)?:[a-f0-9]{64}$/),
 });
 const extensionRouteReconcileSchema = z.object({
   capability: z.literal('private-edge'),
-  confirmationToken: z.string().startsWith('private-edge-removal:').min(85),
+  confirmationToken: z.string().regex(/^private-edge-removal:[a-f0-9]{64}$/),
 });
 
 function toErrorPayload(error: unknown) {

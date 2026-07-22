@@ -4,6 +4,7 @@ import path from 'node:path';
 import type {
   PortReservation,
   PrivateEdgeRouteOwnership,
+  PrivateEdgeRuntimeOwnership,
   TemporaryRuntimeRecord,
   VersionUpdateRecord,
   WorkspacePreferences,
@@ -32,6 +33,7 @@ function normalizeState(value: Partial<WorkspaceState> | undefined): WorkspaceSt
     versionUpdates: value?.versionUpdates || [],
     portReservations: value?.portReservations || [],
     privateEdgeRoutes: (value?.privateEdgeRoutes || []).map((route) => ({ ...route, adapter: route.adapter || 'tailscale-serve' })),
+    privateEdgeRuntime: value?.privateEdgeRuntime,
   };
 }
 
@@ -109,5 +111,19 @@ export class WorkspaceStateRepository {
   async removePrivateEdgeRoutes(serviceIds: string[]): Promise<WorkspaceState> {
     const ids = new Set(serviceIds);
     return this.update({ privateEdgeRoutes: this.state.privateEdgeRoutes.filter((route) => !ids.has(route.serviceId)) });
+  }
+
+  async setPrivateEdgeRuntime(runtime: PrivateEdgeRuntimeOwnership): Promise<WorkspaceState> {
+    return this.update({ privateEdgeRuntime: runtime });
+  }
+
+  async clearPrivateEdgeRuntime(): Promise<WorkspaceState> {
+    const { privateEdgeRuntime: _runtime, ...next } = this.state;
+    this.state = normalizeState(next);
+    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+    const temporaryPath = `${this.filePath}.${process.pid}.tmp`;
+    await fs.writeFile(temporaryPath, `${JSON.stringify(this.state, null, 2)}\n`, 'utf8');
+    await fs.rename(temporaryPath, this.filePath);
+    return this.state;
   }
 }

@@ -129,7 +129,7 @@ export async function detectCaddyRuntime(
       return {
         available: true,
         running,
-        manageable: running && Boolean(configMount),
+        manageable: Boolean(configMount),
         source: 'docker-compose',
         serviceName,
         image,
@@ -186,6 +186,17 @@ export async function readWorkspaceFile(filePath: string): Promise<string | unde
   }
 }
 
+export async function removeWorkspaceFile(workspaceRoot: string, relativePath: string): Promise<void> {
+  const filePath = path.resolve(workspaceRoot, relativePath);
+  if (!isInsideWorkspace(workspaceRoot, filePath)) throw new Error('Caddy runtime files must remain inside the active workspace.');
+  try {
+    await fs.unlink(filePath);
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+    if (code !== 'ENOENT') throw error;
+  }
+}
+
 const MANAGED_START = '# BEGIN LOCALLINK MANAGED PRIVATE EDGE ROUTES';
 const MANAGED_END = '# END LOCALLINK MANAGED PRIVATE EDGE ROUTES';
 
@@ -214,6 +225,26 @@ export function caddyReloadCommand(
       'compose', '--profile', '*', 'exec', '-T', runtime.serviceName,
       'caddy', 'reload', '--config', runtime.configTarget, '--adapter', 'caddyfile',
     ],
+  };
+}
+
+export function caddyStartCommand(
+  runtime: Pick<CaddyRuntimeDetection, 'source' | 'serviceName'>,
+): { command: string; args: string[] } | undefined {
+  if (runtime.source !== 'docker-compose' || !runtime.serviceName) return undefined;
+  return {
+    command: 'docker',
+    args: ['compose', '--profile', '*', 'up', '-d', runtime.serviceName],
+  };
+}
+
+export function caddyStopCommand(
+  runtime: Pick<CaddyRuntimeDetection, 'source' | 'serviceName'>,
+): { command: string; args: string[] } | undefined {
+  if (runtime.source !== 'docker-compose' || !runtime.serviceName) return undefined;
+  return {
+    command: 'docker',
+    args: ['compose', '--profile', '*', 'stop', runtime.serviceName],
   };
 }
 

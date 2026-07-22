@@ -33,6 +33,17 @@ test('workspace state persists preferences, runtime plans, updates, and reservat
     appliedAt: new Date().toISOString(),
     status: 'active',
   }]);
+  await repository.setPrivateEdgeRuntime({
+    adapter: 'tailscale-caddy',
+    serviceName: 'edge-proxy',
+    configPath: 'edge/Caddyfile',
+    configTarget: '/etc/caddy/Caddyfile',
+    backupPath: '.locallink/backups/private-edge/Caddyfile.original',
+    configExisted: true,
+    startedByLocalLink: true,
+    status: 'active',
+    updatedAt: new Date().toISOString(),
+  });
 
   const restored = new WorkspaceStateRepository(file);
   const state = await restored.load();
@@ -42,12 +53,15 @@ test('workspace state persists preferences, runtime plans, updates, and reservat
   assert.equal(state.versionUpdates[0]?.status, 'queued');
   assert.equal(state.portReservations[0]?.port, 6080);
   assert.equal(state.privateEdgeRoutes[0]?.serviceId, 'api');
+  assert.equal(state.privateEdgeRuntime?.serviceName, 'edge-proxy');
 
   await restored.cancelVersionUpdate('update-1');
   await restored.releasePortReservation('port-1');
   await restored.removePrivateEdgeRoutes(['api']);
+  await restored.clearPrivateEdgeRuntime();
   const afterCancel = restored.read();
   assert.equal(afterCancel.versionUpdates[0]?.status, 'cancelled');
   assert.equal(afterCancel.portReservations[0]?.status, 'released');
   assert.deepEqual(afterCancel.privateEdgeRoutes, []);
+  assert.equal(afterCancel.privateEdgeRuntime, undefined);
 });

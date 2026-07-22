@@ -61,10 +61,11 @@ without guessing behavior from executable names.
 
 The Tailscale+Caddy adapter generates a loopback-only Caddyfile and a
 Tailscale-to-Caddy listener plan. For a Docker Caddy service with a workspace-local
-Caddyfile mount, LocalLink validates the generated configuration, reloads the
-service, verifies the routes, and restores the previous Caddyfile on failure.
-Route reconciliation, stop/restore across independent runs, and host-CLI runtime
-ownership still require explicit workspace-scoped safety contracts.
+Caddyfile mount, LocalLink validates the generated configuration, persists the
+original file and runtime ownership, starts or reloads the service, verifies and
+reconciles routes, restores the prior file and running state on failure, and
+stops the service only when LocalLink started it. Host-CLI Caddy runtimes are
+outside the supported automation contract.
 
 ### Identity
 

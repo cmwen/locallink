@@ -360,6 +360,7 @@ export interface PrivateEdgeRouteOwnership {
   serviceId: string;
   serviceName: string;
   targetPort: string;
+  proxyPort?: string;
   httpsPort: string;
   url?: string;
   command: string;
@@ -367,6 +368,18 @@ export interface PrivateEdgeRouteOwnership {
   rollbackArgs: string[];
   appliedAt: string;
   status: 'active' | 'rollback-failed';
+}
+
+export interface PrivateEdgeRuntimeOwnership {
+  adapter: 'tailscale-caddy';
+  serviceName: string;
+  configPath: string;
+  configTarget: string;
+  backupPath: string;
+  configExisted: boolean;
+  startedByLocalLink: boolean;
+  status: 'applying' | 'active' | 'rollback-failed';
+  updatedAt: string;
 }
 
 export interface WorkspacePreferences {
@@ -382,6 +395,7 @@ export interface WorkspaceState {
   versionUpdates: VersionUpdateRecord[];
   portReservations: PortReservation[];
   privateEdgeRoutes: PrivateEdgeRouteOwnership[];
+  privateEdgeRuntime?: PrivateEdgeRuntimeOwnership;
 }
 
 export interface InfraConfigFileView {

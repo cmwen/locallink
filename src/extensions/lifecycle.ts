@@ -264,7 +264,7 @@ async function reverseProxyRecord(
         ? `Caddy is installed through this workspace's Docker Compose configuration${caddyRuntime.running ? ' and its service is running' : ''}.`
         : 'Caddy is installed as a host command. Route health still depends on the workspace proxy configuration.',
       nextStep: caddyRuntime.source === 'docker-compose' && !caddyRuntime.running
-        ? `Start the ${caddyRuntime.serviceName} Docker Compose service, then verify its routes and upstream health.`
+        ? `Review a confirmed Private Edge plan; LocalLink can start ${caddyRuntime.serviceName} when applying managed Caddy routes.`
         : 'Verify configured routes and upstream health before treating the proxy as ready.',
       checks: [...base.checks, {
         id: 'reverse-proxy-runtime',

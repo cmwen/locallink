@@ -106,6 +106,26 @@ test('HTTP server plans before applying workspace-owned Private Edge changes', a
   await server.close();
 });
 
+test('HTTP server accepts Docker Caddy route confirmation tokens', async () => {
+  const root = await createTempProject();
+  const context = new AppContext(root);
+  await context.initialize();
+  const server = context.createServer();
+
+  const response = await server.inject({
+    method: 'POST',
+    url: '/api/extensions/routes/apply',
+    payload: {
+      capability: 'private-edge',
+      confirmationToken: `private-edge-caddy:${'a'.repeat(64)}`,
+    },
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.json().code, 'PRIVATE_EDGE_WORKSPACE_PLAN_PENDING');
+  await server.close();
+});
+
 test('HTTP health identifies the current workspace', async () => {
   const root = await createTempProject();
   const context = new AppContext(root);

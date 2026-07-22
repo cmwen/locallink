@@ -325,8 +325,9 @@ export async function planPrivateEdgeRouteRemovals(
   desiredRoutes: PrivateEdgePlannedRoute[],
   command: string,
   commandRunner: CommandRunner,
+  adapter = 'tailscale-serve',
 ): Promise<PrivateEdgeRemovalPlan> {
-  const staleOwnership = ownership.filter((owned) => owned.adapter === 'tailscale-serve').filter((owned) => {
+  const staleOwnership = ownership.filter((owned) => owned.adapter === adapter).filter((owned) => {
     const desired = desiredRoutes.find((candidate) => (
       candidate.serviceId === owned.serviceId
       && candidate.targetPort === owned.targetPort
@@ -336,7 +337,7 @@ export async function planPrivateEdgeRouteRemovals(
   });
   if (staleOwnership.length === 0) {
     return {
-      adapter: 'tailscale-serve',
+      adapter,
       state: 'clean',
       summary: 'No LocalLink-owned Private Edge routes need reconciliation.',
       requiresConfirmation: true,
@@ -349,7 +350,7 @@ export async function planPrivateEdgeRouteRemovals(
   const connected = statusResult.ok && (!status?.BackendState || status.BackendState.toLowerCase() === 'running');
   if (!connected) {
     return {
-      adapter: 'tailscale-serve',
+      adapter,
       state: 'waiting-tailscale',
       summary: 'Tailscale must be connected before LocalLink can safely reconcile owned routes.',
       requiresConfirmation: true,
@@ -361,7 +362,7 @@ export async function planPrivateEdgeRouteRemovals(
   const currentRoutes = serveResult.ok ? parseTailscaleNodeServeRoutes(serveResult.stdout) : [];
   const removals = staleOwnership.map((owned): PrivateEdgeRemovalPlanItem => {
     const listeners = currentRoutes.filter((route) => listenerPort(route) === owned.httpsPort);
-    const active = listeners.some((route) => route.targetPort === owned.targetPort);
+    const active = listeners.some((route) => route.targetPort === (owned.proxyPort || owned.targetPort));
     const changed = !active && listeners.length > 0;
     return {
       ...owned,
@@ -375,16 +376,16 @@ export async function planPrivateEdgeRouteRemovals(
     };
   });
   const confirmationToken = `private-edge-removal:${createHash('sha256').update(JSON.stringify({
-    adapter: 'tailscale-serve',
+    adapter,
     workspaceId,
-    removals: removals.map(({ serviceId, targetPort, httpsPort, liveStatus, action, rollbackArgs }) => ({
-      serviceId, targetPort, httpsPort, liveStatus, action, rollbackArgs,
+    removals: removals.map(({ serviceId, targetPort, proxyPort, httpsPort, liveStatus, action, rollbackArgs }) => ({
+      serviceId, targetPort, proxyPort, httpsPort, liveStatus, action, rollbackArgs,
     })),
   })).digest('hex')}`;
   const hostRemovals = removals.filter((item) => item.action === 'remove').length;
   const ownershipCleanup = removals.length - hostRemovals;
   return {
-    adapter: 'tailscale-serve',
+    adapter,
     state: 'ready',
     summary: [
       hostRemovals > 0 ? `${hostRemovals} owned listener${hostRemovals === 1 ? '' : 's'} can be removed` : '',
@@ -412,6 +413,7 @@ export interface PrivateEdgeRouteAdapter {
     ownership: PrivateEdgeRouteOwnership[],
     desiredRoutes: PrivateEdgePlannedRoute[],
     commandRunner: CommandRunner,
+    workspaceRoot?: string,
   ): Promise<PrivateEdgeRemovalPlan>;
 }
 
@@ -437,6 +439,7 @@ class TailscaleServeRouteAdapter implements PrivateEdgeRouteAdapter {
     ownership: PrivateEdgeRouteOwnership[],
     desiredRoutes: PrivateEdgePlannedRoute[],
     commandRunner: CommandRunner,
+    _workspaceRoot?: string,
   ): Promise<PrivateEdgeRemovalPlan> {
     return planPrivateEdgeRouteRemovals(workspaceId, ownership, desiredRoutes, this.command, commandRunner);
   }
@@ -568,8 +571,8 @@ class TailscaleCaddyRouteAdapter implements PrivateEdgeRouteAdapter {
           label: 'Per-workspace Caddy runtime ownership',
           status: caddyManageable ? 'available' : 'blocked',
           detail: caddyManageable
-            ? `LocalLink can validate and reload ${caddyRuntime.serviceName} using ${caddyRuntime.configPath}.`
-            : 'The Caddy service must be running and mount its Caddyfile from inside this workspace before LocalLink can manage it.',
+            ? `LocalLink can validate, start, reload, and restore ${caddyRuntime.serviceName} using ${caddyRuntime.configPath}.`
+            : 'The Docker Caddy service must mount its Caddyfile from inside this workspace before LocalLink can manage it.',
         },
       ],
       generatedFiles: [{
@@ -590,27 +593,40 @@ class TailscaleCaddyRouteAdapter implements PrivateEdgeRouteAdapter {
   }
 
   async planRemovals(
-    _workspaceId: string,
+    workspaceId: string,
     ownership: PrivateEdgeRouteOwnership[],
-    _desiredRoutes: PrivateEdgePlannedRoute[],
-    _commandRunner: CommandRunner,
+    desiredRoutes: PrivateEdgePlannedRoute[],
+    commandRunner: CommandRunner,
+    workspaceRoot?: string,
   ): Promise<PrivateEdgeRemovalPlan> {
     const owned = ownership.filter((route) => route.adapter === this.id);
-    return owned.length === 0
-      ? {
-          adapter: this.id,
-          state: 'clean',
-          summary: 'No LocalLink-owned Tailscale+Caddy routes need reconciliation.',
-          requiresConfirmation: true,
-          removals: [],
-        }
-      : {
-          adapter: this.id,
-          state: 'blocked-runtime',
-          summary: 'Tailscale+Caddy reconciliation is blocked until LocalLink owns the generated Caddy runtime.',
-          requiresConfirmation: true,
-          removals: [],
-        };
+    if (owned.length === 0) {
+      return {
+        adapter: this.id,
+        state: 'clean',
+        summary: 'No LocalLink-owned Tailscale+Caddy routes need reconciliation.',
+        requiresConfirmation: true,
+        removals: [],
+      };
+    }
+    const runtime = await detectCaddyRuntime(workspaceRoot, commandRunner, this.caddyCommand);
+    if (!runtime.manageable) {
+      return {
+        adapter: this.id,
+        state: 'blocked-runtime',
+        summary: 'Tailscale+Caddy reconciliation requires a workspace-local Docker Caddyfile mount.',
+        requiresConfirmation: true,
+        removals: [],
+      };
+    }
+    return planPrivateEdgeRouteRemovals(
+      workspaceId,
+      ownership,
+      desiredRoutes,
+      this.command,
+      commandRunner,
+      this.id,
+    );
   }
 }
 

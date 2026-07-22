@@ -8,11 +8,14 @@ import {
 } from '../runtime/network-edge';
 import {
   caddyReloadCommand,
+  caddyStartCommand,
+  caddyStopCommand,
   mergeManagedCaddyfile,
+  removeWorkspaceFile,
   readWorkspaceFile,
   writeWorkspaceCaddyfile,
 } from '../runtime/caddy-runtime';
-import type { ExtensionLifecycleRecord, WorkspaceExtension } from '../shared/contracts';
+import type { ExtensionLifecycleRecord, PrivateEdgeRuntimeOwnership, WorkspaceExtension } from '../shared/contracts';
 import { AppError } from '../shared/errors';
 import type { CommandRunner } from '../shared/utils';
 import { runCommand } from '../shared/utils';
@@ -81,6 +84,8 @@ function envValue(content: string, key: string): string | undefined {
   const match = content.match(new RegExp(`^\\s*${key}\\s*=\\s*(.*?)\\s*$`, 'm'));
   return match?.[1]?.replace(/^['"]|['"]$/g, '');
 }
+
+const CADDY_BACKUP_PATH = '.locallink/backups/private-edge/Caddyfile.original';
 
 function syntheticPrivateEdge(existing?: WorkspaceExtension): WorkspaceExtension {
   return {
@@ -219,6 +224,7 @@ export class ExtensionPlanner {
       this.workspaceState.read().privateEdgeRoutes,
       routePlan.routes,
       this.commandRunner,
+      this.root,
     );
 
     const envContent = infra.files.find((file) => file.targetFile === '.env')?.content || '';
@@ -388,6 +394,31 @@ export class ExtensionPlanner {
       );
     }
     if (before.routePlan.state === 'in-sync') {
+      const pendingRuntime = before.routePlan.adapter === 'tailscale-caddy'
+        ? this.workspaceState.read().privateEdgeRuntime
+        : undefined;
+      if (pendingRuntime && pendingRuntime.status !== 'active') {
+        const appliedAt = new Date().toISOString();
+        await this.workspaceState.upsertPrivateEdgeRoutes(before.routePlan.routes.map((route) => ({
+          serviceId: route.serviceId,
+          adapter: before.routePlan.adapter,
+          serviceName: route.serviceName,
+          targetPort: route.targetPort,
+          proxyPort: route.proxyPort,
+          httpsPort: route.httpsPort,
+          url: route.url,
+          command: route.apply.command,
+          applyArgs: route.apply.args,
+          rollbackArgs: route.rollback.args,
+          appliedAt,
+          status: 'active',
+        })));
+        await this.workspaceState.setPrivateEdgeRuntime({
+          ...pendingRuntime,
+          status: 'active',
+          updatedAt: appliedAt,
+        });
+      }
       return { capability: 'private-edge', applied: false, appliedRoutes: [], plan: before };
     }
     if (before.routePlan.state !== 'ready' || !before.routePlan.confirmationToken) {
@@ -410,7 +441,13 @@ export class ExtensionPlanner {
     const applied: typeof routes = [];
     let caddyConfigPath: string | undefined;
     let caddyPreviousContent: string | undefined;
+    let caddyPreviousExisted = false;
     let caddyConfigChanged = false;
+    let caddyWasRunning = false;
+    let caddyStartAttempted = false;
+    let caddyStartedThisAttempt = false;
+    let previousRuntimeOwnership: PrivateEdgeRuntimeOwnership | undefined;
+    let pendingRuntimeOwnership: PrivateEdgeRuntimeOwnership | undefined;
     try {
       if (before.routePlan.adapter === 'tailscale-caddy') {
         const runtime = before.routePlan.runtime;
@@ -437,12 +474,57 @@ export class ExtensionPlanner {
           );
         }
 
+        await this.workspaceState.load();
+        previousRuntimeOwnership = this.workspaceState.read().privateEdgeRuntime;
+        const relativeConfigPath = path.relative(this.root, runtime.configPath);
+        if (previousRuntimeOwnership && (
+          previousRuntimeOwnership.adapter !== 'tailscale-caddy'
+          || previousRuntimeOwnership.serviceName !== runtime.serviceName
+          || previousRuntimeOwnership.configPath !== relativeConfigPath
+        )) {
+          throw new AppError(
+            'PRIVATE_EDGE_CADDY_OWNERSHIP_CONFLICT',
+            'The saved Caddy runtime ownership does not match the active workspace Compose service. Reconcile or repair the saved runtime before applying routes.',
+            409,
+          );
+        }
+
         caddyConfigPath = runtime.configPath;
         caddyPreviousContent = await readWorkspaceFile(caddyConfigPath);
-        const relativeConfigPath = path.relative(this.root, caddyConfigPath);
+        caddyPreviousExisted = caddyPreviousContent !== undefined;
+        if (!previousRuntimeOwnership) {
+          await writeWorkspaceCaddyfile(this.root, CADDY_BACKUP_PATH, caddyPreviousContent ?? '');
+        }
+        pendingRuntimeOwnership = {
+          adapter: 'tailscale-caddy',
+          serviceName: runtime.serviceName!,
+          configPath: relativeConfigPath,
+          configTarget: runtime.configTarget,
+          backupPath: previousRuntimeOwnership?.backupPath || CADDY_BACKUP_PATH,
+          configExisted: previousRuntimeOwnership?.configExisted ?? caddyPreviousExisted,
+          startedByLocalLink: previousRuntimeOwnership?.startedByLocalLink || !runtime.running,
+          status: 'applying',
+          updatedAt: new Date().toISOString(),
+        };
+        await this.workspaceState.setPrivateEdgeRuntime(pendingRuntimeOwnership);
+        caddyWasRunning = runtime.running;
         const existing = caddyPreviousContent ?? '';
         await writeWorkspaceCaddyfile(this.root, relativeConfigPath, mergeManagedCaddyfile(existing, generatedFile.content));
         caddyConfigChanged = true;
+        if (!runtime.running) {
+          caddyStartAttempted = true;
+          const start = caddyStartCommand(runtime);
+          if (!start) throw new AppError('PRIVATE_EDGE_CADDY_START_UNSUPPORTED', 'LocalLink could not derive a safe Docker Compose Caddy start command.', 409);
+          const started = await this.commandRunner(start.command, start.args, { cwd: this.root, timeoutMs: 30_000 });
+          if (!started.ok) {
+            throw new AppError(
+              'PRIVATE_EDGE_CADDY_START_FAILED',
+              `Caddy configuration was written but the Compose service did not start: ${started.stderr || started.error || `exit ${started.code}`}.`,
+              502,
+            );
+          }
+          caddyStartedThisAttempt = true;
+        }
         const reload = caddyReloadCommand(runtime);
         if (!reload) {
           throw new AppError('PRIVATE_EDGE_CADDY_RELOAD_UNSUPPORTED', 'LocalLink could not derive a safe Docker Compose Caddy reload command.', 409);
@@ -487,6 +569,7 @@ export class ExtensionPlanner {
         adapter: before.routePlan.adapter,
         serviceName: route.serviceName,
         targetPort: route.targetPort,
+        proxyPort: route.proxyPort,
         httpsPort: route.httpsPort,
         url: route.url,
         command: route.apply.command,
@@ -495,6 +578,13 @@ export class ExtensionPlanner {
         appliedAt,
         status: 'active',
       })));
+      if (pendingRuntimeOwnership) {
+        await this.workspaceState.setPrivateEdgeRuntime({
+          ...pendingRuntimeOwnership,
+          status: 'active',
+          updatedAt: new Date().toISOString(),
+        });
+      }
       return {
         capability: 'private-edge',
         applied: applied.length > 0,
@@ -530,12 +620,34 @@ export class ExtensionPlanner {
         try {
           const relativeConfigPath = path.relative(this.root, caddyConfigPath);
           await writeWorkspaceCaddyfile(this.root, relativeConfigPath, caddyPreviousContent ?? '');
-          const reload = caddyReloadCommand(before.routePlan.runtime!);
-          if (!reload) throw new Error('No safe Caddy reload command is available.');
-          const restored = await this.commandRunner(reload.command, reload.args, { cwd: this.root, timeoutMs: 15_000 });
-          if (!restored.ok) throw new Error(restored.stderr || restored.error || `exit ${restored.code}`);
+          if (caddyWasRunning) {
+            const reload = caddyReloadCommand(before.routePlan.runtime!);
+            if (!reload) throw new Error('No safe Caddy reload command is available.');
+            const restored = await this.commandRunner(reload.command, reload.args, { cwd: this.root, timeoutMs: 15_000 });
+            if (!restored.ok) throw new Error(restored.stderr || restored.error || `exit ${restored.code}`);
+          }
+          if (!caddyWasRunning && (caddyStartAttempted || caddyStartedThisAttempt)) {
+            const stop = caddyStopCommand(before.routePlan.runtime!);
+            if (!stop) throw new Error('No safe Caddy stop command is available.');
+            const stopped = await this.commandRunner(stop.command, stop.args, { cwd: this.root, timeoutMs: 30_000 });
+            if (!stopped.ok) throw new Error(stopped.stderr || stopped.error || `exit ${stopped.code}`);
+          }
+          if (!caddyPreviousExisted) await removeWorkspaceFile(this.root, relativeConfigPath);
         } catch (restoreError) {
           caddyRollbackFailure = restoreError instanceof Error ? restoreError.message : String(restoreError);
+        }
+      }
+      if (pendingRuntimeOwnership) {
+        if (caddyRollbackFailure) {
+          await this.workspaceState.setPrivateEdgeRuntime({
+            ...pendingRuntimeOwnership,
+            status: 'rollback-failed',
+            updatedAt: new Date().toISOString(),
+          });
+        } else if (previousRuntimeOwnership) {
+          await this.workspaceState.setPrivateEdgeRuntime(previousRuntimeOwnership);
+        } else {
+          await this.workspaceState.clearPrivateEdgeRuntime();
         }
       }
       if (rollbackFailures.length > 0) {
@@ -596,6 +708,14 @@ export class ExtensionPlanner {
 
     const hostRemovals = before.reconciliation.removals.filter((item) => item.action === 'remove');
     const removed: typeof hostRemovals = [];
+    const caddyRuntimeOwnership = before.reconciliation.adapter === 'tailscale-caddy'
+      ? this.workspaceState.read().privateEdgeRuntime
+      : undefined;
+    let caddyReconcilePreviousContent: string | undefined;
+    let caddyReconcileConfigChanged = false;
+    let caddyReconcileWasRunning = false;
+    let caddyReconcileStarted = false;
+    let caddyReconcileStopped = false;
     try {
       for (const item of hostRemovals) {
         // eslint-disable-next-line no-await-in-loop
@@ -620,7 +740,101 @@ export class ExtensionPlanner {
         );
       }
 
+      if (before.reconciliation.adapter === 'tailscale-caddy') {
+        const runtime = before.routePlan.runtime;
+        const generatedFile = before.routePlan.generatedFiles[0];
+        if (!runtime?.manageable || !runtime.configPath || !runtime.configTarget || !runtime.serviceName || !generatedFile) {
+          throw new AppError(
+            'PRIVATE_EDGE_CADDY_RUNTIME_NOT_MANAGEABLE',
+            'Caddy reconciliation requires a workspace-local Docker Caddyfile mount.',
+            409,
+          );
+        }
+        const relativeConfigPath = path.relative(this.root, runtime.configPath);
+        if (!caddyRuntimeOwnership
+          || caddyRuntimeOwnership.serviceName !== runtime.serviceName
+          || caddyRuntimeOwnership.configPath !== relativeConfigPath) {
+          throw new AppError(
+            'PRIVATE_EDGE_CADDY_OWNERSHIP_MISSING',
+            'The saved Caddy runtime ownership does not match the active workspace service.',
+            409,
+          );
+        }
+
+        const finalRemoval = before.routePlan.routes.length === 0;
+        const backupContent = finalRemoval
+          ? await readWorkspaceFile(path.resolve(this.root, caddyRuntimeOwnership.backupPath))
+          : undefined;
+        if (finalRemoval && backupContent === undefined) {
+          throw new AppError('PRIVATE_EDGE_CADDY_BACKUP_MISSING', 'The original workspace Caddyfile backup is missing; LocalLink will not remove managed routes without it.', 409);
+        }
+        const nextContent = finalRemoval ? backupContent! : generatedFile.content;
+        await writeWorkspaceCaddyfile(this.root, generatedFile.path, nextContent);
+        const validation = await this.commandRunner(
+          generatedFile.validate.command,
+          generatedFile.validate.args,
+          { cwd: this.root, timeoutMs: 15_000 },
+        );
+        if (!validation.ok) {
+          throw new AppError(
+            'PRIVATE_EDGE_CADDY_CONFIG_INVALID',
+            `Caddy rejected the reconciled workspace configuration: ${validation.stderr || validation.error || `exit ${validation.code}`}.`,
+            502,
+          );
+        }
+
+        caddyReconcilePreviousContent = await readWorkspaceFile(runtime.configPath);
+        caddyReconcileWasRunning = runtime.running;
+        await this.workspaceState.setPrivateEdgeRuntime({
+          ...caddyRuntimeOwnership,
+          status: 'applying',
+          updatedAt: new Date().toISOString(),
+        });
+        const merged = finalRemoval
+          ? nextContent
+          : mergeManagedCaddyfile(caddyReconcilePreviousContent, nextContent);
+        await writeWorkspaceCaddyfile(this.root, relativeConfigPath, merged);
+        caddyReconcileConfigChanged = true;
+
+        if (!runtime.running && !finalRemoval) {
+          const start = caddyStartCommand(runtime);
+          if (!start) throw new Error('No safe Caddy start command is available.');
+          const started = await this.commandRunner(start.command, start.args, { cwd: this.root, timeoutMs: 30_000 });
+          if (!started.ok) throw new Error(started.stderr || started.error || `exit ${started.code}`);
+          caddyReconcileStarted = true;
+        }
+        if (runtime.running || caddyReconcileStarted) {
+          const reload = caddyReloadCommand(runtime);
+          if (!reload) throw new Error('No safe Caddy reload command is available.');
+          const reloaded = await this.commandRunner(reload.command, reload.args, { cwd: this.root, timeoutMs: 15_000 });
+          if (!reloaded.ok) throw new Error(reloaded.stderr || reloaded.error || `exit ${reloaded.code}`);
+        }
+        if (finalRemoval && caddyRuntimeOwnership.startedByLocalLink && runtime.running) {
+          const stop = caddyStopCommand(runtime);
+          if (!stop) throw new Error('No safe Caddy stop command is available.');
+          const stopped = await this.commandRunner(stop.command, stop.args, { cwd: this.root, timeoutMs: 30_000 });
+          if (!stopped.ok) throw new Error(stopped.stderr || stopped.error || `exit ${stopped.code}`);
+          caddyReconcileStopped = true;
+        }
+      }
+
       const all = before.reconciliation.removals;
+      if (caddyRuntimeOwnership) {
+        if (before.routePlan.routes.length === 0) {
+          if (!caddyRuntimeOwnership.configExisted && (caddyReconcileStopped || !before.routePlan.runtime?.running)) {
+            await removeWorkspaceFile(this.root, caddyRuntimeOwnership.configPath);
+          }
+          await this.workspaceState.clearPrivateEdgeRuntime();
+          await removeWorkspaceFile(this.root, caddyRuntimeOwnership.backupPath);
+        } else {
+          await this.workspaceState.setPrivateEdgeRuntime({
+            ...caddyRuntimeOwnership,
+            startedByLocalLink: caddyRuntimeOwnership.startedByLocalLink || caddyReconcileStarted,
+            status: 'active',
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }
       await this.workspaceState.removePrivateEdgeRoutes(all.map((item) => item.serviceId));
       return {
         capability: 'private-edge',
@@ -630,6 +844,41 @@ export class ExtensionPlanner {
         plan: await this.plan(capability),
       };
     } catch (error) {
+      let caddyRestoreFailure: string | undefined;
+      if (caddyReconcileConfigChanged && caddyRuntimeOwnership) {
+        try {
+          await writeWorkspaceCaddyfile(this.root, caddyRuntimeOwnership.configPath, caddyReconcilePreviousContent ?? '');
+          const runtime = before.routePlan.runtime!;
+          if (caddyReconcileStopped && caddyReconcileWasRunning) {
+            const start = caddyStartCommand(runtime);
+            if (!start) throw new Error('No safe Caddy start command is available.');
+            const started = await this.commandRunner(start.command, start.args, { cwd: this.root, timeoutMs: 30_000 });
+            if (!started.ok) throw new Error(started.stderr || started.error || `exit ${started.code}`);
+          }
+          if (caddyReconcileWasRunning || caddyReconcileStarted || caddyReconcileStopped) {
+            const reload = caddyReloadCommand(runtime);
+            if (!reload) throw new Error('No safe Caddy reload command is available.');
+            const reloaded = await this.commandRunner(reload.command, reload.args, { cwd: this.root, timeoutMs: 15_000 });
+            if (!reloaded.ok) throw new Error(reloaded.stderr || reloaded.error || `exit ${reloaded.code}`);
+          }
+          if (!caddyReconcileWasRunning && caddyReconcileStarted) {
+            const stop = caddyStopCommand(runtime);
+            if (!stop) throw new Error('No safe Caddy stop command is available.');
+            const stopped = await this.commandRunner(stop.command, stop.args, { cwd: this.root, timeoutMs: 30_000 });
+            if (!stopped.ok) throw new Error(stopped.stderr || stopped.error || `exit ${stopped.code}`);
+          }
+          await this.workspaceState.setPrivateEdgeRuntime(caddyRuntimeOwnership);
+        } catch (restoreError) {
+          caddyRestoreFailure = restoreError instanceof Error ? restoreError.message : String(restoreError);
+          await this.workspaceState.setPrivateEdgeRuntime({
+            ...caddyRuntimeOwnership,
+            status: 'rollback-failed',
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      } else if (caddyRuntimeOwnership) {
+        await this.workspaceState.setPrivateEdgeRuntime(caddyRuntimeOwnership);
+      }
       const restoreFailures: Array<{ serviceId: string; detail: string }> = [];
       for (const item of [...removed].reverse()) {
         // eslint-disable-next-line no-await-in-loop
@@ -660,6 +909,7 @@ export class ExtensionPlanner {
           cause: error instanceof Error ? error.message : String(error),
           removedBeforeFailure: removed.map((item) => item.serviceId),
           restoreFailures,
+          ...(caddyRestoreFailure ? { caddyRestoreFailure } : {}),
         },
       );
     }

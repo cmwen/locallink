@@ -218,6 +218,26 @@ test('Tailscale+Caddy adapter accepts a Caddy service declared by this workspace
   assert.equal(calls.find((call) => call.command === 'docker')?.cwd, root);
 });
 
+test('Tailscale+Caddy never treats a host-installed Caddy command as an automated runtime', async () => {
+  const root = await createWorkspace();
+  await fs.writeFile(
+    path.join(root, 'locallink.extensions.yml'),
+    'extensions:\n  - id: edge\n    name: Edge\n    kind: network-edge\n    enabled: true\n    command: tailscale\n    adapter: tailscale-caddy\n',
+    'utf8',
+  );
+  const commandRunner: CommandRunner = async (command, args) => {
+    if (command === 'caddy') return result({ stdout: 'v2.10.0' });
+    if (args[0] === 'status') return result({ stdout: JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'minipc.tailnet.ts.net.' } }) });
+    return result({ stdout: '{}' });
+  };
+  const planner = new ExtensionPlanner(root, new ConfigRepository(root), commandRunner);
+
+  const plan = await planner.plan('private-edge', ['api']);
+  assert.equal(plan.routePlan.runtime?.source, 'host-cli');
+  assert.equal(plan.routePlan.applySupported, false);
+  assert.equal(plan.routePlan.state, 'blocked-runtime');
+});
+
 test('Tailscale+Caddy applies a validated managed block and reloads the workspace Caddy service', async () => {
   const root = await createWorkspace();
   await fs.writeFile(
@@ -257,6 +277,10 @@ test('Tailscale+Caddy applies a validated managed block and reloads the workspac
       return result({ stdout: JSON.stringify({ TCP: tcp, Web: web }) });
     }
     const httpsPort = args.find((arg) => arg.startsWith('--https='))?.split('=')[1];
+    if (args.at(-1) === 'off') {
+      if (httpsPort) liveRoutes.delete(httpsPort);
+      return result();
+    }
     const targetPort = args.at(-1)?.match(/:(\d+)$/)?.[1];
     if (httpsPort && targetPort) liveRoutes.set(httpsPort, targetPort);
     return result();
@@ -276,6 +300,137 @@ test('Tailscale+Caddy applies a validated managed block and reloads the workspac
   assert.ok(calls.some((call) => call.args.includes('reload')));
   assert.match(await fs.readFile(path.join(root, 'edge', 'Caddyfile'), 'utf8'), /file_server/);
   assert.match(await fs.readFile(path.join(root, 'edge', 'Caddyfile'), 'utf8'), /BEGIN LOCALLINK MANAGED PRIVATE EDGE ROUTES/);
+  const activeState = JSON.parse(await fs.readFile(path.join(root, '.locallink', 'workspace-state.json'), 'utf8'));
+  assert.equal(activeState.privateEdgeRoutes[0]?.proxyPort, plan.routePlan.routes[0]?.proxyPort);
+  assert.equal(activeState.privateEdgeRuntime?.status, 'active');
+  assert.equal(activeState.privateEdgeRuntime?.startedByLocalLink, false);
+
+  await planner.apply('private-edge', []);
+  const removalPlan = await planner.plan('private-edge');
+  assert.equal(removalPlan.reconciliation.state, 'ready');
+  await planner.reconcileRoutes('private-edge', removalPlan.reconciliation.confirmationToken!);
+  assert.equal(liveRoutes.size, 0);
+  assert.equal(await fs.readFile(path.join(root, 'edge', 'Caddyfile'), 'utf8'), ':8080 {\n  file_server\n}\n');
+  const clearedState = JSON.parse(await fs.readFile(path.join(root, '.locallink', 'workspace-state.json'), 'utf8'));
+  assert.deepEqual(clearedState.privateEdgeRoutes, []);
+  assert.equal(clearedState.privateEdgeRuntime, undefined);
+});
+
+test('Tailscale+Caddy starts and later stops a workspace service owned by LocalLink', async () => {
+  const root = await createWorkspace();
+  await fs.writeFile(
+    path.join(root, 'locallink.extensions.yml'),
+    'extensions:\n  - id: edge\n    name: Edge\n    kind: network-edge\n    enabled: true\n    command: tailscale\n    adapter: tailscale-caddy\n',
+    'utf8',
+  );
+  await fs.mkdir(path.join(root, 'edge'), { recursive: true });
+  await fs.writeFile(path.join(root, 'edge', 'Caddyfile'), ':8080 { respond "before" }\n', 'utf8');
+  await fs.writeFile(path.join(root, 'docker-compose.yml'), `services:
+  api:
+    image: example/api
+    ports: ["\${API_PORT}:5050"]
+  edge-proxy:
+    image: caddy:2.10-alpine
+    profiles: [edge]
+    volumes: ["./edge/Caddyfile:/etc/caddy/Caddyfile:ro"]
+`, 'utf8');
+  let dockerRunning = false;
+  const liveRoutes = new Map<string, string>();
+  const dockerActions: string[] = [];
+  const commandRunner: CommandRunner = async (command, args) => {
+    if (command === 'docker') {
+      if (args.includes('ps')) return result({ stdout: dockerRunning ? JSON.stringify({ State: 'running' }) : '' });
+      if (args.includes('up')) {
+        dockerRunning = true;
+        dockerActions.push('up');
+      } else if (args.includes('stop')) {
+        dockerRunning = false;
+        dockerActions.push('stop');
+      }
+      return result();
+    }
+    if (args[0] === 'status') return result({ stdout: JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'minipc.tailnet.ts.net.' } }) });
+    if (args[0] === 'serve' && args[1] === 'status') {
+      const tcp: Record<string, { HTTPS: boolean }> = {};
+      const web: Record<string, { Handlers: { '/': { Proxy: string } } }> = {};
+      for (const [httpsPort, targetPort] of liveRoutes) {
+        tcp[httpsPort] = { HTTPS: true };
+        web[`minipc.tailnet.ts.net:${httpsPort}`] = { Handlers: { '/': { Proxy: `http://127.0.0.1:${targetPort}` } } };
+      }
+      return result({ stdout: JSON.stringify({ TCP: tcp, Web: web }) });
+    }
+    const httpsPort = args.find((arg) => arg.startsWith('--https='))?.split('=')[1];
+    if (args.at(-1) === 'off') {
+      if (httpsPort) liveRoutes.delete(httpsPort);
+      return result();
+    }
+    const targetPort = args.at(-1)?.match(/:(\d+)$/)?.[1];
+    if (httpsPort && targetPort) liveRoutes.set(httpsPort, targetPort);
+    return result();
+  };
+  const planner = new ExtensionPlanner(root, new ConfigRepository(root), commandRunner);
+
+  await planner.apply('private-edge', ['api']);
+  const plan = await planner.plan('private-edge');
+  assert.equal(plan.routePlan.applySupported, true);
+  await planner.applyRoutes('private-edge', plan.routePlan.confirmationToken!);
+  assert.equal(dockerRunning, true);
+  assert.deepEqual(dockerActions, ['up']);
+  const activeState = JSON.parse(await fs.readFile(path.join(root, '.locallink', 'workspace-state.json'), 'utf8'));
+  assert.equal(activeState.privateEdgeRuntime?.startedByLocalLink, true);
+
+  const resumedPlanner = new ExtensionPlanner(root, new ConfigRepository(root), commandRunner);
+  await resumedPlanner.apply('private-edge', []);
+  const removalPlan = await resumedPlanner.plan('private-edge');
+  await resumedPlanner.reconcileRoutes('private-edge', removalPlan.reconciliation.confirmationToken!);
+  assert.equal(dockerRunning, false);
+  assert.deepEqual(dockerActions, ['up', 'stop']);
+  assert.equal(await fs.readFile(path.join(root, 'edge', 'Caddyfile'), 'utf8'), ':8080 { respond "before" }\n');
+});
+
+test('Tailscale+Caddy restores config and clears pending ownership when Compose startup fails', async () => {
+  const root = await createWorkspace();
+  await fs.writeFile(
+    path.join(root, 'locallink.extensions.yml'),
+    'extensions:\n  - id: edge\n    name: Edge\n    kind: network-edge\n    enabled: true\n    command: tailscale\n    adapter: tailscale-caddy\n',
+    'utf8',
+  );
+  await fs.mkdir(path.join(root, 'edge'), { recursive: true });
+  const original = ':8080 { respond "original" }\n';
+  await fs.writeFile(path.join(root, 'edge', 'Caddyfile'), original, 'utf8');
+  await fs.writeFile(path.join(root, 'docker-compose.yml'), `services:
+  api:
+    image: example/api
+    ports: ["\${API_PORT}:5050"]
+  edge-proxy:
+    image: caddy:2.10-alpine
+    volumes: ["./edge/Caddyfile:/etc/caddy/Caddyfile:ro"]
+`, 'utf8');
+  let stopCalls = 0;
+  const commandRunner: CommandRunner = async (command, args) => {
+    if (command === 'docker') {
+      if (args.includes('ps')) return result({ stdout: '' });
+      if (args.includes('up')) return result({ ok: false, code: 1, stderr: 'simulated startup failure' });
+      if (args.includes('stop')) stopCalls += 1;
+      return result();
+    }
+    if (args[0] === 'status') return result({ stdout: JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'minipc.tailnet.ts.net.' } }) });
+    if (args[0] === 'serve' && args[1] === 'status') return result({ stdout: '{}' });
+    return result();
+  };
+  const planner = new ExtensionPlanner(root, new ConfigRepository(root), commandRunner);
+
+  await planner.apply('private-edge', ['api']);
+  const plan = await planner.plan('private-edge');
+  await assert.rejects(
+    () => planner.applyRoutes('private-edge', plan.routePlan.confirmationToken!),
+    (error: any) => error?.code === 'PRIVATE_EDGE_ROUTE_APPLY_FAILED' && /rolled back/i.test(error.message),
+  );
+  assert.equal(await fs.readFile(path.join(root, 'edge', 'Caddyfile'), 'utf8'), original);
+  assert.equal(stopCalls, 1);
+  const state = JSON.parse(await fs.readFile(path.join(root, '.locallink', 'workspace-state.json'), 'utf8'));
+  assert.equal(state.privateEdgeRuntime, undefined);
+  assert.deepEqual(state.privateEdgeRoutes, []);
 });
 
 test('Private Edge route lifecycle requires fresh tokens and removes deselected owned listeners', async () => {
