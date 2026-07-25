@@ -41,6 +41,14 @@ test('workspace state persists preferences, runtime plans, updates, and reservat
     backupPath: '.locallink/backups/private-edge/Caddyfile.original',
     configExisted: true,
     startedByLocalLink: true,
+    tailscale: {
+      serviceName: 'tailscale-edge',
+      configPath: 'edge/serve.json',
+      configTarget: '/config/serve.json',
+      backupPath: '.locallink/backups/private-edge/tailscale-serve.original.json',
+      configExisted: true,
+      startedByLocalLink: true,
+    },
     status: 'active',
     updatedAt: new Date().toISOString(),
   });
@@ -54,6 +62,7 @@ test('workspace state persists preferences, runtime plans, updates, and reservat
   assert.equal(state.portReservations[0]?.port, 6080);
   assert.equal(state.privateEdgeRoutes[0]?.serviceId, 'api');
   assert.equal(state.privateEdgeRuntime?.serviceName, 'edge-proxy');
+  assert.equal(state.privateEdgeRuntime?.tailscale?.serviceName, 'tailscale-edge');
 
   await restored.cancelVersionUpdate('update-1');
   await restored.releasePortReservation('port-1');

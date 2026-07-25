@@ -9,6 +9,7 @@ type ComposeService = {
   image?: unknown;
   labels?: unknown;
   volumes?: unknown;
+  network_mode?: unknown;
 };
 
 type ComposeDocument = {
@@ -30,6 +31,7 @@ export interface CaddyRuntimeDetection {
   image?: string;
   configPath?: string;
   configTarget?: string;
+  networkMode?: string;
 }
 
 const COMPOSE_FILES = ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'];
@@ -119,6 +121,7 @@ export async function detectCaddyRuntime(
     if (declared) {
       const [serviceName, service] = declared;
       const image = typeof service.image === 'string' ? service.image : undefined;
+      const networkMode = typeof service.network_mode === 'string' ? service.network_mode.trim() : undefined;
       const configMount = caddyConfigMount(workspaceRoot, service);
       const psResult = await commandRunner(
         'docker',
@@ -133,6 +136,7 @@ export async function detectCaddyRuntime(
         source: 'docker-compose',
         serviceName,
         image,
+        networkMode,
         configPath: configMount?.path,
         configTarget: configMount?.target,
         detail: running

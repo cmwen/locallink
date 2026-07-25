@@ -359,7 +359,7 @@ export class RuntimeResolver {
       collectWindowsStates(definitions, this.commandRunner),
       buildPhase2Advisor(model.env, this.commandRunner, this.root),
       buildResourceDashboard(this.commandRunner, definitions, { root: this.root, env: model.env }),
-      discoverServiceEdgeUrls(model.extensions, definitions, this.commandRunner, model.env),
+      discoverServiceEdgeUrls(model.extensions, definitions, this.commandRunner, model.env, this.root),
       buildExtensionLifecycles(model.extensions, this.commandRunner, this.root),
     ]);
 

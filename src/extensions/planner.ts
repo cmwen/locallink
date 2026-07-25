@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import { ConfigRepository } from '../config/files';
 import {
+  buildManagedTailscaleServeConfig,
   resolvePrivateEdgeRouteAdapter,
   type PrivateEdgeRemovalPlan,
   type PrivateEdgeRoutePlan,
@@ -10,11 +11,17 @@ import {
   caddyReloadCommand,
   caddyStartCommand,
   caddyStopCommand,
+  detectCaddyRuntime,
   mergeManagedCaddyfile,
   removeWorkspaceFile,
   readWorkspaceFile,
   writeWorkspaceCaddyfile,
 } from '../runtime/caddy-runtime';
+import {
+  detectTailscaleRuntime,
+  tailscaleStartCommand,
+  tailscaleStopCommand,
+} from '../runtime/tailscale-runtime';
 import type { ExtensionLifecycleRecord, PrivateEdgeRuntimeOwnership, WorkspaceExtension } from '../shared/contracts';
 import { AppError } from '../shared/errors';
 import type { CommandRunner } from '../shared/utils';
@@ -86,8 +93,9 @@ function envValue(content: string, key: string): string | undefined {
 }
 
 const CADDY_BACKUP_PATH = '.locallink/backups/private-edge/Caddyfile.original';
+const TAILSCALE_SERVE_BACKUP_PATH = '.locallink/backups/private-edge/tailscale-serve.original.json';
 
-function syntheticPrivateEdge(existing?: WorkspaceExtension): WorkspaceExtension {
+function syntheticPrivateEdge(existing?: WorkspaceExtension, inferredAdapter = 'tailscale-serve'): WorkspaceExtension {
   return {
     id: existing?.id || 'private-edge',
     name: existing?.name || 'Private Edge',
@@ -96,7 +104,7 @@ function syntheticPrivateEdge(existing?: WorkspaceExtension): WorkspaceExtension
     detail: existing?.detail || 'Publishes selected workspace services privately through Tailscale Serve.',
     status: 'ready',
     command: existing?.command || 'tailscale',
-    adapter: existing?.adapter || 'tailscale-serve',
+    adapter: existing?.adapter || inferredAdapter,
     exposedPorts: existing?.exposedPorts || [],
     requiredEnv: existing?.requiredEnv || [],
     missingEnv: existing?.missingEnv || [],
@@ -176,7 +184,19 @@ export class ExtensionPlanner {
       this.configRepository.readInfraConfig(),
     ]);
     const existing = model.extensions.find((extension) => extension.kind === 'network-edge');
-    const privateEdge = syntheticPrivateEdge(existing);
+    let inferredAdapter = existing?.adapter;
+    if (!inferredAdapter) {
+      const [caddyRuntime, tailscaleRuntime] = await Promise.all([
+        detectCaddyRuntime(this.root, this.commandRunner),
+        detectTailscaleRuntime(this.root, this.commandRunner, existing?.command || 'tailscale'),
+      ]);
+      inferredAdapter = caddyRuntime.source === 'docker-compose'
+        && tailscaleRuntime.source === 'docker-compose'
+        && caddyRuntime.networkMode === `service:${tailscaleRuntime.serviceName}`
+        ? 'tailscale-caddy'
+        : 'tailscale-serve';
+    }
+    const privateEdge = syntheticPrivateEdge(existing, inferredAdapter);
     const routeAdapter = resolvePrivateEdgeRouteAdapter(privateEdge.adapter, privateEdge.command || 'tailscale');
     const availableServices = model.definitions
       .filter((service) => Boolean(service.port && service.port !== '—'))
@@ -207,6 +227,7 @@ export class ExtensionPlanner {
     const lifecycle = (await buildExtensionLifecycles(
       lifecycleExtensions,
       this.commandRunner,
+      this.root,
     )).find((record) => record.id === 'private-edge');
     if (!lifecycle) {
       throw new AppError('EXTENSION_PLAN_FAILED', 'Private Edge lifecycle could not be evaluated.', 500);
@@ -341,7 +362,7 @@ export class ExtensionPlanner {
             enabled: true,
             detail: existing?.detail || 'Publishes selected workspace services privately through Tailscale Serve.',
             command: existing?.command || 'tailscale',
-            adapter: existing?.adapter || 'tailscale-serve',
+            adapter: before.routePlan.adapter,
             docsUrl: existing?.docsUrl || 'https://tailscale.com/docs/features/tailscale-serve',
             ...(before.selection.requested ? { exposedPorts: before.selection.selected.map((service) => service.port) } : {}),
           },
@@ -446,16 +467,38 @@ export class ExtensionPlanner {
     let caddyWasRunning = false;
     let caddyStartAttempted = false;
     let caddyStartedThisAttempt = false;
+    let tailscaleConfigPath: string | undefined;
+    let tailscalePreviousContent: string | undefined;
+    let tailscalePreviousExisted = false;
+    let tailscaleConfigChanged = false;
+    let tailscaleWasRunning = false;
+    let tailscaleStartAttempted = false;
+    let tailscaleStartedThisAttempt = false;
     let previousRuntimeOwnership: PrivateEdgeRuntimeOwnership | undefined;
     let pendingRuntimeOwnership: PrivateEdgeRuntimeOwnership | undefined;
     try {
       if (before.routePlan.adapter === 'tailscale-caddy') {
         const runtime = before.routePlan.runtime;
-        const generatedFile = before.routePlan.generatedFiles[0];
-        if (!runtime?.manageable || !runtime.configPath || !runtime.configTarget || !generatedFile) {
+        const generatedFile = before.routePlan.generatedFiles.find((file) => file.kind === 'caddyfile');
+        const generatedTailscaleFile = before.routePlan.generatedFiles.find((file) => file.kind === 'tailscale-serve-config');
+        const tailscaleRuntime = runtime?.tailscale;
+        if (!runtime?.manageable || !runtime.configPath || !runtime.configTarget || !generatedFile?.validate) {
           throw new AppError(
             'PRIVATE_EDGE_CADDY_RUNTIME_NOT_MANAGEABLE',
-            'LocalLink cannot safely manage this Caddy service. It must be running and mount its Caddyfile from inside the active workspace.',
+            'LocalLink cannot safely manage this Caddy service. It must mount its Caddyfile from inside the active workspace.',
+            409,
+          );
+        }
+        if (tailscaleRuntime?.source === 'docker-compose' && (
+          !tailscaleRuntime.manageable
+          || !tailscaleRuntime.serviceName
+          || !tailscaleRuntime.configPath
+          || !tailscaleRuntime.configTarget
+          || !generatedTailscaleFile
+        )) {
+          throw new AppError(
+            'PRIVATE_EDGE_TAILSCALE_RUNTIME_NOT_MANAGEABLE',
+            'LocalLink cannot safely manage this Tailscale sidecar. It must set TS_SERVE_CONFIG and mount it from inside the active workspace.',
             409,
           );
         }
@@ -477,10 +520,17 @@ export class ExtensionPlanner {
         await this.workspaceState.load();
         previousRuntimeOwnership = this.workspaceState.read().privateEdgeRuntime;
         const relativeConfigPath = path.relative(this.root, runtime.configPath);
+        const relativeTailscaleConfigPath = tailscaleRuntime?.configPath
+          ? path.relative(this.root, tailscaleRuntime.configPath)
+          : undefined;
         if (previousRuntimeOwnership && (
           previousRuntimeOwnership.adapter !== 'tailscale-caddy'
           || previousRuntimeOwnership.serviceName !== runtime.serviceName
           || previousRuntimeOwnership.configPath !== relativeConfigPath
+          || (relativeTailscaleConfigPath && (
+            previousRuntimeOwnership.tailscale?.serviceName !== tailscaleRuntime?.serviceName
+            || previousRuntimeOwnership.tailscale?.configPath !== relativeTailscaleConfigPath
+          ))
         )) {
           throw new AppError(
             'PRIVATE_EDGE_CADDY_OWNERSHIP_CONFLICT',
@@ -495,6 +545,23 @@ export class ExtensionPlanner {
         if (!previousRuntimeOwnership) {
           await writeWorkspaceCaddyfile(this.root, CADDY_BACKUP_PATH, caddyPreviousContent ?? '');
         }
+        let tailscaleOwnership = previousRuntimeOwnership?.tailscale;
+        if (tailscaleRuntime?.source === 'docker-compose' && tailscaleRuntime.configPath && relativeTailscaleConfigPath) {
+          tailscaleConfigPath = tailscaleRuntime.configPath;
+          tailscalePreviousContent = await readWorkspaceFile(tailscaleRuntime.configPath);
+          tailscalePreviousExisted = tailscalePreviousContent !== undefined;
+          if (!tailscaleOwnership) {
+            await writeWorkspaceCaddyfile(this.root, TAILSCALE_SERVE_BACKUP_PATH, tailscalePreviousContent ?? '');
+          }
+          tailscaleOwnership = {
+            serviceName: tailscaleRuntime.serviceName!,
+            configPath: relativeTailscaleConfigPath,
+            configTarget: tailscaleRuntime.configTarget!,
+            backupPath: tailscaleOwnership?.backupPath || TAILSCALE_SERVE_BACKUP_PATH,
+            configExisted: tailscaleOwnership?.configExisted ?? tailscalePreviousExisted,
+            startedByLocalLink: tailscaleOwnership?.startedByLocalLink || !tailscaleRuntime.running,
+          };
+        }
         pendingRuntimeOwnership = {
           adapter: 'tailscale-caddy',
           serviceName: runtime.serviceName!,
@@ -503,14 +570,34 @@ export class ExtensionPlanner {
           backupPath: previousRuntimeOwnership?.backupPath || CADDY_BACKUP_PATH,
           configExisted: previousRuntimeOwnership?.configExisted ?? caddyPreviousExisted,
           startedByLocalLink: previousRuntimeOwnership?.startedByLocalLink || !runtime.running,
+          ...(tailscaleOwnership ? { tailscale: tailscaleOwnership } : {}),
           status: 'applying',
           updatedAt: new Date().toISOString(),
         };
         await this.workspaceState.setPrivateEdgeRuntime(pendingRuntimeOwnership);
         caddyWasRunning = runtime.running;
+        tailscaleWasRunning = tailscaleRuntime?.running ?? true;
         const existing = caddyPreviousContent ?? '';
         await writeWorkspaceCaddyfile(this.root, relativeConfigPath, mergeManagedCaddyfile(existing, generatedFile.content));
         caddyConfigChanged = true;
+        if (tailscaleConfigPath && generatedTailscaleFile) {
+          await writeWorkspaceCaddyfile(this.root, path.relative(this.root, tailscaleConfigPath), generatedTailscaleFile.content);
+          tailscaleConfigChanged = true;
+        }
+        if (tailscaleRuntime?.source === 'docker-compose' && !tailscaleRuntime.running) {
+          tailscaleStartAttempted = true;
+          const start = tailscaleStartCommand(tailscaleRuntime);
+          if (!start) throw new AppError('PRIVATE_EDGE_TAILSCALE_START_UNSUPPORTED', 'LocalLink could not derive a safe Docker Compose Tailscale start command.', 409);
+          const started = await this.commandRunner(start.command, start.args, { cwd: this.root, timeoutMs: 30_000 });
+          if (!started.ok) {
+            throw new AppError(
+              'PRIVATE_EDGE_TAILSCALE_START_FAILED',
+              `The Tailscale configuration was written but the Compose service did not start: ${started.stderr || started.error || `exit ${started.code}`}.`,
+              502,
+            );
+          }
+          tailscaleStartedThisAttempt = true;
+        }
         if (!runtime.running) {
           caddyStartAttempted = true;
           const start = caddyStartCommand(runtime);
@@ -542,7 +629,7 @@ export class ExtensionPlanner {
       for (const route of routes) {
         // Route commands are generated as argument arrays so no shell parsing is involved.
         // eslint-disable-next-line no-await-in-loop
-        const result = await this.commandRunner(route.apply.command, route.apply.args, { timeoutMs: 10_000 });
+        const result = await this.commandRunner(route.apply.command, route.apply.args, { cwd: this.root, timeoutMs: 10_000 });
         if (!result.ok) {
           throw new AppError(
             'PRIVATE_EDGE_ROUTE_COMMAND_FAILED',
@@ -595,7 +682,8 @@ export class ExtensionPlanner {
       };
     } catch (error) {
       const rollbackFailures: Array<{ route: (typeof routes)[number]; detail: string }> = [];
-      for (const route of [...applied].reverse()) {
+      const rollbackCandidates = tailscaleConfigChanged ? routes : applied;
+      for (const route of [...rollbackCandidates].reverse()) {
         // Re-check the listener before rollback so a concurrent replacement is never removed.
         // eslint-disable-next-line no-await-in-loop
         const rollbackAdapter = resolvePrivateEdgeRouteAdapter(before.routePlan.adapter, route.rollback.command);
@@ -612,7 +700,7 @@ export class ExtensionPlanner {
           continue;
         }
         // eslint-disable-next-line no-await-in-loop
-        const result = await this.commandRunner(route.rollback.command, route.rollback.args, { timeoutMs: 10_000 });
+        const result = await this.commandRunner(route.rollback.command, route.rollback.args, { cwd: this.root, timeoutMs: 10_000 });
         if (!result.ok) rollbackFailures.push({ route, detail: result.stderr || result.error || `exit ${result.code}` });
       }
       let caddyRollbackFailure: string | undefined;
@@ -637,8 +725,24 @@ export class ExtensionPlanner {
           caddyRollbackFailure = restoreError instanceof Error ? restoreError.message : String(restoreError);
         }
       }
+      let tailscaleRollbackFailure: string | undefined;
+      if (tailscaleConfigChanged && tailscaleConfigPath) {
+        try {
+          const relativeConfigPath = path.relative(this.root, tailscaleConfigPath);
+          await writeWorkspaceCaddyfile(this.root, relativeConfigPath, tailscalePreviousContent ?? '');
+          if (!tailscalePreviousExisted) await removeWorkspaceFile(this.root, relativeConfigPath);
+          if (!tailscaleWasRunning && (tailscaleStartAttempted || tailscaleStartedThisAttempt)) {
+            const stop = tailscaleStopCommand(before.routePlan.runtime!.tailscale!);
+            if (!stop) throw new Error('No safe Tailscale stop command is available.');
+            const stopped = await this.commandRunner(stop.command, stop.args, { cwd: this.root, timeoutMs: 30_000 });
+            if (!stopped.ok) throw new Error(stopped.stderr || stopped.error || `exit ${stopped.code}`);
+          }
+        } catch (restoreError) {
+          tailscaleRollbackFailure = restoreError instanceof Error ? restoreError.message : String(restoreError);
+        }
+      }
       if (pendingRuntimeOwnership) {
-        if (caddyRollbackFailure) {
+        if (caddyRollbackFailure || tailscaleRollbackFailure) {
           await this.workspaceState.setPrivateEdgeRuntime({
             ...pendingRuntimeOwnership,
             status: 'rollback-failed',
@@ -658,6 +762,7 @@ export class ExtensionPlanner {
           adapter: before.routePlan.adapter,
           serviceName: route.serviceName,
           targetPort: route.targetPort,
+          proxyPort: route.proxyPort,
           httpsPort: route.httpsPort,
           url: route.url,
           command: route.apply.command,
@@ -678,6 +783,7 @@ export class ExtensionPlanner {
           appliedBeforeFailure: applied.map((route) => route.serviceId),
           rollbackFailures: rollbackFailures.map(({ route, detail }) => ({ serviceId: route.serviceId, detail })),
           ...(caddyRollbackFailure ? { caddyRollbackFailure } : {}),
+          ...(tailscaleRollbackFailure ? { tailscaleRollbackFailure } : {}),
         },
       );
     }
@@ -716,10 +822,38 @@ export class ExtensionPlanner {
     let caddyReconcileWasRunning = false;
     let caddyReconcileStarted = false;
     let caddyReconcileStopped = false;
+    let tailscaleReconcilePreviousContent: string | undefined;
+    let tailscaleReconcileConfigChanged = false;
+    let tailscaleReconcileWasRunning = false;
+    let tailscaleReconcileStarted = false;
+    let tailscaleReconcileStopped = false;
     try {
+      const plannedTailscaleRuntime = before.routePlan.runtime?.tailscale;
+      if (
+        hostRemovals.length > 0
+        && plannedTailscaleRuntime?.source === 'docker-compose'
+        && !plannedTailscaleRuntime.running
+      ) {
+        if (
+          !caddyRuntimeOwnership?.tailscale
+          || caddyRuntimeOwnership.tailscale.serviceName !== plannedTailscaleRuntime.serviceName
+        ) {
+          throw new AppError(
+            'PRIVATE_EDGE_TAILSCALE_OWNERSHIP_MISSING',
+            'The stopped Tailscale sidecar cannot be started because its saved workspace ownership is missing.',
+            409,
+          );
+        }
+        tailscaleReconcileWasRunning = false;
+        const start = tailscaleStartCommand(plannedTailscaleRuntime);
+        if (!start) throw new Error('No safe Tailscale start command is available.');
+        const started = await this.commandRunner(start.command, start.args, { cwd: this.root, timeoutMs: 30_000 });
+        if (!started.ok) throw new Error(started.stderr || started.error || `exit ${started.code}`);
+        tailscaleReconcileStarted = true;
+      }
       for (const item of hostRemovals) {
         // eslint-disable-next-line no-await-in-loop
-        const result = await this.commandRunner(item.command, item.rollbackArgs, { timeoutMs: 10_000 });
+        const result = await this.commandRunner(item.command, item.rollbackArgs, { cwd: this.root, timeoutMs: 10_000 });
         if (!result.ok) {
           throw new AppError(
             'PRIVATE_EDGE_ROUTE_REMOVE_FAILED',
@@ -742,8 +876,8 @@ export class ExtensionPlanner {
 
       if (before.reconciliation.adapter === 'tailscale-caddy') {
         const runtime = before.routePlan.runtime;
-        const generatedFile = before.routePlan.generatedFiles[0];
-        if (!runtime?.manageable || !runtime.configPath || !runtime.configTarget || !runtime.serviceName || !generatedFile) {
+        const generatedFile = before.routePlan.generatedFiles.find((file) => file.kind === 'caddyfile');
+        if (!runtime?.manageable || !runtime.configPath || !runtime.configTarget || !runtime.serviceName || !generatedFile?.validate) {
           throw new AppError(
             'PRIVATE_EDGE_CADDY_RUNTIME_NOT_MANAGEABLE',
             'Caddy reconciliation requires a workspace-local Docker Caddyfile mount.',
@@ -757,6 +891,22 @@ export class ExtensionPlanner {
           throw new AppError(
             'PRIVATE_EDGE_CADDY_OWNERSHIP_MISSING',
             'The saved Caddy runtime ownership does not match the active workspace service.',
+            409,
+          );
+        }
+        const tailscaleRuntime = runtime.tailscale;
+        const tailscaleOwnership = caddyRuntimeOwnership.tailscale;
+        if (tailscaleRuntime?.source === 'docker-compose' && (
+          !tailscaleRuntime.manageable
+          || !tailscaleRuntime.serviceName
+          || !tailscaleRuntime.configPath
+          || !tailscaleOwnership
+          || tailscaleOwnership.serviceName !== tailscaleRuntime.serviceName
+          || tailscaleOwnership.configPath !== path.relative(this.root, tailscaleRuntime.configPath)
+        )) {
+          throw new AppError(
+            'PRIVATE_EDGE_TAILSCALE_OWNERSHIP_MISSING',
+            'The saved Tailscale sidecar ownership does not match the active workspace service.',
             409,
           );
         }
@@ -796,6 +946,39 @@ export class ExtensionPlanner {
         await writeWorkspaceCaddyfile(this.root, relativeConfigPath, merged);
         caddyReconcileConfigChanged = true;
 
+        if (tailscaleRuntime?.source === 'docker-compose' && tailscaleOwnership && tailscaleRuntime.configPath) {
+          const tailscaleBackupContent = await readWorkspaceFile(path.resolve(this.root, tailscaleOwnership.backupPath));
+          if (tailscaleBackupContent === undefined) {
+            throw new AppError(
+              'PRIVATE_EDGE_TAILSCALE_BACKUP_MISSING',
+              'The original workspace Tailscale Serve configuration backup is missing; LocalLink will not reconcile managed routes without it.',
+              409,
+            );
+          }
+          const removalIds = new Set(before.reconciliation.removals.map((item) => item.serviceId));
+          const nextTailscaleContent = finalRemoval
+            ? tailscaleBackupContent
+            : buildManagedTailscaleServeConfig(
+                tailscaleBackupContent,
+                before.routePlan.routes.filter((route) => !removalIds.has(route.serviceId)),
+              );
+          tailscaleReconcilePreviousContent = await readWorkspaceFile(tailscaleRuntime.configPath);
+          tailscaleReconcileWasRunning = tailscaleRuntime.running;
+          await writeWorkspaceCaddyfile(
+            this.root,
+            path.relative(this.root, tailscaleRuntime.configPath),
+            nextTailscaleContent,
+          );
+          tailscaleReconcileConfigChanged = true;
+          if (!tailscaleRuntime.running && !tailscaleReconcileStarted && !finalRemoval) {
+            const start = tailscaleStartCommand(tailscaleRuntime);
+            if (!start) throw new Error('No safe Tailscale start command is available.');
+            const started = await this.commandRunner(start.command, start.args, { cwd: this.root, timeoutMs: 30_000 });
+            if (!started.ok) throw new Error(started.stderr || started.error || `exit ${started.code}`);
+            tailscaleReconcileStarted = true;
+          }
+        }
+
         if (!runtime.running && !finalRemoval) {
           const start = caddyStartCommand(runtime);
           if (!start) throw new Error('No safe Caddy start command is available.');
@@ -816,6 +999,18 @@ export class ExtensionPlanner {
           if (!stopped.ok) throw new Error(stopped.stderr || stopped.error || `exit ${stopped.code}`);
           caddyReconcileStopped = true;
         }
+        if (
+          finalRemoval
+          && tailscaleRuntime?.source === 'docker-compose'
+          && tailscaleOwnership?.startedByLocalLink
+          && (tailscaleRuntime.running || tailscaleReconcileStarted)
+        ) {
+          const stop = tailscaleStopCommand(tailscaleRuntime);
+          if (!stop) throw new Error('No safe Tailscale stop command is available.');
+          const stopped = await this.commandRunner(stop.command, stop.args, { cwd: this.root, timeoutMs: 30_000 });
+          if (!stopped.ok) throw new Error(stopped.stderr || stopped.error || `exit ${stopped.code}`);
+          tailscaleReconcileStopped = true;
+        }
       }
 
       const all = before.reconciliation.removals;
@@ -826,10 +1021,22 @@ export class ExtensionPlanner {
           }
           await this.workspaceState.clearPrivateEdgeRuntime();
           await removeWorkspaceFile(this.root, caddyRuntimeOwnership.backupPath);
+          if (caddyRuntimeOwnership.tailscale) {
+            if (!caddyRuntimeOwnership.tailscale.configExisted && (tailscaleReconcileStopped || !before.routePlan.runtime?.tailscale?.running)) {
+              await removeWorkspaceFile(this.root, caddyRuntimeOwnership.tailscale.configPath);
+            }
+            await removeWorkspaceFile(this.root, caddyRuntimeOwnership.tailscale.backupPath);
+          }
         } else {
           await this.workspaceState.setPrivateEdgeRuntime({
             ...caddyRuntimeOwnership,
             startedByLocalLink: caddyRuntimeOwnership.startedByLocalLink || caddyReconcileStarted,
+            ...(caddyRuntimeOwnership.tailscale ? {
+              tailscale: {
+                ...caddyRuntimeOwnership.tailscale,
+                startedByLocalLink: caddyRuntimeOwnership.tailscale.startedByLocalLink || tailscaleReconcileStarted,
+              },
+            } : {}),
             status: 'active',
             updatedAt: new Date().toISOString(),
           });
@@ -879,6 +1086,39 @@ export class ExtensionPlanner {
       } else if (caddyRuntimeOwnership) {
         await this.workspaceState.setPrivateEdgeRuntime(caddyRuntimeOwnership);
       }
+      let tailscaleRestoreFailure: string | undefined;
+      if ((tailscaleReconcileConfigChanged || tailscaleReconcileStarted) && caddyRuntimeOwnership?.tailscale) {
+        try {
+          if (tailscaleReconcileConfigChanged) {
+            await writeWorkspaceCaddyfile(
+              this.root,
+              caddyRuntimeOwnership.tailscale.configPath,
+              tailscaleReconcilePreviousContent ?? '',
+            );
+          }
+          const runtime = before.routePlan.runtime!.tailscale!;
+          if (tailscaleReconcileStopped && tailscaleReconcileWasRunning) {
+            const start = tailscaleStartCommand(runtime);
+            if (!start) throw new Error('No safe Tailscale start command is available.');
+            const started = await this.commandRunner(start.command, start.args, { cwd: this.root, timeoutMs: 30_000 });
+            if (!started.ok) throw new Error(started.stderr || started.error || `exit ${started.code}`);
+          }
+          if (!tailscaleReconcileWasRunning && tailscaleReconcileStarted) {
+            const stop = tailscaleStopCommand(runtime);
+            if (!stop) throw new Error('No safe Tailscale stop command is available.');
+            const stopped = await this.commandRunner(stop.command, stop.args, { cwd: this.root, timeoutMs: 30_000 });
+            if (!stopped.ok) throw new Error(stopped.stderr || stopped.error || `exit ${stopped.code}`);
+          }
+          await this.workspaceState.setPrivateEdgeRuntime(caddyRuntimeOwnership);
+        } catch (restoreError) {
+          tailscaleRestoreFailure = restoreError instanceof Error ? restoreError.message : String(restoreError);
+          await this.workspaceState.setPrivateEdgeRuntime({
+            ...caddyRuntimeOwnership,
+            status: 'rollback-failed',
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }
       const restoreFailures: Array<{ serviceId: string; detail: string }> = [];
       for (const item of [...removed].reverse()) {
         // eslint-disable-next-line no-await-in-loop
@@ -896,7 +1136,7 @@ export class ExtensionPlanner {
           continue;
         }
         // eslint-disable-next-line no-await-in-loop
-        const result = await this.commandRunner(item.command, item.applyArgs, { timeoutMs: 10_000 });
+        const result = await this.commandRunner(item.command, item.applyArgs, { cwd: this.root, timeoutMs: 10_000 });
         if (!result.ok) restoreFailures.push({ serviceId: item.serviceId, detail: result.stderr || result.error || `exit ${result.code}` });
       }
       throw new AppError(
@@ -910,6 +1150,7 @@ export class ExtensionPlanner {
           removedBeforeFailure: removed.map((item) => item.serviceId),
           restoreFailures,
           ...(caddyRestoreFailure ? { caddyRestoreFailure } : {}),
+          ...(tailscaleRestoreFailure ? { tailscaleRestoreFailure } : {}),
         },
       );
     }

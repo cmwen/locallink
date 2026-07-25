@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
-import { discoverServiceEdgeUrls, parseTailscaleServeRoutes, planPrivateEdgeRouteRemovals, planPrivateEdgeRoutes } from '../src/runtime/network-edge';
+import {
+  buildManagedTailscaleServeConfig,
+  discoverServiceEdgeUrls,
+  parseTailscaleServeRoutes,
+  planPrivateEdgeRouteRemovals,
+  planPrivateEdgeRoutes,
+} from '../src/runtime/network-edge';
 import type { PrivateEdgeRouteOwnership, ServiceDefinition, WorkspaceExtension } from '../src/shared/contracts';
 import type { CommandRunner } from '../src/shared/utils';
 
@@ -148,6 +157,66 @@ test('discoverServiceEdgeUrls includes the configured Pocket ID issuer owned by 
   assert.deepEqual(routes.get('pocket-id'), ['https://pocket-id.example.ts.net:7452']);
 });
 
+test('discoverServiceEdgeUrls resolves Docker sidecar routes through saved Caddy ownership', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'locallink-edge-urls-'));
+  await fs.mkdir(path.join(root, 'edge'), { recursive: true });
+  await fs.writeFile(path.join(root, 'edge', 'serve.json'), '{}\n', 'utf8');
+  await fs.writeFile(path.join(root, 'docker-compose.yml'), `services:
+  tailscale-edge:
+    image: tailscale/tailscale:latest
+    environment:
+      TS_SERVE_CONFIG: /config/serve.json
+    volumes: ["./edge:/config:ro"]
+`, 'utf8');
+  await fs.mkdir(path.join(root, '.locallink'), { recursive: true });
+  await fs.writeFile(path.join(root, '.locallink', 'workspace-state.json'), `${JSON.stringify({
+    privateEdgeRoutes: [{
+      adapter: 'tailscale-caddy',
+      serviceId: 'api',
+      serviceName: 'API',
+      targetPort: '5050',
+      proxyPort: '22001',
+      httpsPort: '7443',
+      url: 'https://edge.tailnet.ts.net:7443',
+      command: 'docker',
+      applyArgs: [],
+      rollbackArgs: [],
+      appliedAt: '2026-07-25T00:00:00.000Z',
+      status: 'active',
+    }],
+  }, null, 2)}\n`, 'utf8');
+  const commandRunner: CommandRunner = async (_command, args) => {
+    if (args.includes('ps')) {
+      return { ok: true, code: 0, signal: null, stdout: JSON.stringify({ State: 'running' }), stderr: '', timedOut: false };
+    }
+    if (args.includes('status') && !args.includes('serve')) {
+      return { ok: true, code: 0, signal: null, stdout: JSON.stringify({ BackendState: 'Running' }), stderr: '', timedOut: false };
+    }
+    return {
+      ok: true,
+      code: 0,
+      signal: null,
+      stdout: JSON.stringify({
+        TCP: { 7443: { HTTPS: true } },
+        Web: {
+          'edge.tailnet.ts.net:7443': {
+            Handlers: { '/': { Proxy: 'http://127.0.0.1:22001' } },
+          },
+        },
+      }),
+      stderr: '',
+      timedOut: false,
+    };
+  };
+  const edge = extension();
+  edge.adapter = 'tailscale-caddy';
+  edge.exposedPorts = ['5050'];
+
+  const routes = await discoverServiceEdgeUrls([edge], [service('api', '5050')], commandRunner, {}, root);
+
+  assert.deepEqual(routes.get('api'), ['https://edge.tailnet.ts.net:7443/']);
+});
+
 test('discoverServiceEdgeUrls ignores placeholder Pocket ID issuers', async () => {
   const commandRunner: CommandRunner = async () => ({ ok: false, code: 1, signal: null, stdout: '', stderr: '', timedOut: false });
   const pocketIdExtension: WorkspaceExtension = { ...extension(), id: 'pocket-id', kind: 'identity-provider' };
@@ -166,6 +235,37 @@ test('discoverServiceEdgeUrls ignores placeholder Pocket ID issuers', async () =
 test('parseTailscaleServeRoutes tolerates unavailable or malformed status output', () => {
   assert.deepEqual(parseTailscaleServeRoutes(''), []);
   assert.deepEqual(parseTailscaleServeRoutes('{not json'), []);
+});
+
+test('buildManagedTailscaleServeConfig preserves unmanaged listeners and rejects malformed source JSON', () => {
+  const content = buildManagedTailscaleServeConfig(
+    JSON.stringify({
+      TCP: { 443: { HTTPS: true } },
+      Web: {
+        '${TS_CERT_DOMAIN}:443': {
+          Handlers: { '/': { Proxy: 'http://127.0.0.1:8080' } },
+        },
+      },
+    }),
+    [{
+      serviceId: 'api',
+      serviceName: 'API',
+      targetPort: '5050',
+      proxyPort: '22001',
+      httpsPort: '7443',
+      status: 'missing',
+      detail: 'test',
+      apply: { command: 'docker', args: [] },
+      rollback: { command: 'docker', args: [] },
+    }],
+  );
+  const parsed = JSON.parse(content);
+  assert.equal(parsed.Web['${TS_CERT_DOMAIN}:443'].Handlers['/'].Proxy, 'http://127.0.0.1:8080');
+  assert.equal(parsed.Web['${TS_CERT_DOMAIN}:7443'].Handlers['/'].Proxy, 'http://127.0.0.1:22001');
+  assert.throws(
+    () => buildManagedTailscaleServeConfig('{broken', []),
+    (error: any) => error?.code === 'PRIVATE_EDGE_TAILSCALE_CONFIG_INVALID',
+  );
 });
 
 test('planPrivateEdgeRoutes generates exact reversible commands without mutating Tailscale', async () => {
@@ -226,6 +326,39 @@ test('planPrivateEdgeRoutes detects active listeners and conflicts instead of re
   assert.equal(conflict.state, 'conflict');
   assert.equal(conflict.routes[0]?.status, 'conflict');
   assert.match(conflict.routes[0]?.detail || '', /already owned/i);
+});
+
+test('planPrivateEdgeRoutes treats a stopped sidecar config as restartable rather than live', async () => {
+  const commandRunner: CommandRunner = async () => ({
+    ok: false,
+    code: 1,
+    signal: null,
+    stdout: '',
+    stderr: 'container is stopped',
+    timedOut: false,
+  });
+  const offline = JSON.stringify({
+    TCP: { 7443: { HTTPS: true } },
+    Web: {
+      '${TS_CERT_DOMAIN}:7443': {
+        Handlers: { '/': { Proxy: 'http://127.0.0.1:22001' } },
+      },
+    },
+  });
+
+  const plan = await planPrivateEdgeRoutes(
+    'workspace-a',
+    [{ id: 'api', name: 'API', port: '22001' }],
+    'docker',
+    commandRunner,
+    '7443',
+    ['compose', 'exec', '-T', 'tailscale-edge', 'tailscale'],
+    offline,
+  );
+
+  assert.equal(plan.state, 'ready');
+  assert.equal(plan.routes[0]?.status, 'missing');
+  assert.match(plan.prerequisites[0]?.detail || '', /stopped/i);
 });
 
 test('planPrivateEdgeRoutes does not treat a Tailscale Service virtual IP listener as a node listener conflict', async () => {

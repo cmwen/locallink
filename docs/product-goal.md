@@ -67,6 +67,16 @@ reconciles routes, restores the prior file and running state on failure, and
 stops the service only when LocalLink started it. Host-CLI Caddy runtimes are
 outside the supported automation contract.
 
+When Caddy shares the network namespace of a Tailscale service in the same
+Compose project, LocalLink discovers its workspace-mounted `TS_SERVE_CONFIG`,
+executes the Tailscale CLI inside that container, and owns the Serve JSON,
+Caddyfile, backups, live verification, and service running states as one
+transaction. The adapter can infer this topology when no explicit adapter is
+saved and blocks layouts where Tailscale cannot reach the generated Caddy
+loopback listener. A directory bind is preferred for
+containerboot file watching, while an existing workspace-local file bind remains
+restart-safe because LocalLink applies equivalent live commands.
+
 ### Identity
 
 The Identity layer adds application login through an OIDC provider such as

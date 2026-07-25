@@ -378,6 +378,14 @@ export interface PrivateEdgeRuntimeOwnership {
   backupPath: string;
   configExisted: boolean;
   startedByLocalLink: boolean;
+  tailscale?: {
+    serviceName: string;
+    configPath: string;
+    configTarget: string;
+    backupPath: string;
+    configExisted: boolean;
+    startedByLocalLink: boolean;
+  };
   status: 'applying' | 'active' | 'rollback-failed';
   updatedAt: string;
 }

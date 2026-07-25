@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import type {
   ExtensionAutomation,
   ExtensionKind,
@@ -8,6 +10,8 @@ import type {
 import { isCommandMissingResult, parseJsonOutput, runCommand, type CommandRunner } from '../shared/utils';
 import { parseTailscaleServeRoutes } from '../runtime/network-edge';
 import { detectCaddyRuntime } from '../runtime/caddy-runtime';
+import { detectTailscaleRuntime, tailscaleRuntimeCommand } from '../runtime/tailscale-runtime';
+import { WorkspaceStateRepository } from '../state/workspace-state';
 
 interface CapabilitySpec {
   id: string;
@@ -136,11 +140,56 @@ async function privateEdgeRecord(
   spec: CapabilitySpec,
   extension: WorkspaceExtension,
   commandRunner: CommandRunner,
+  workspaceRoot?: string,
 ): Promise<ExtensionLifecycleRecord> {
   const base = baseDeclaredRecord(spec, extension);
   if (!extension.enabled || extension.missingEnv.length > 0) return base;
 
-  const statusResult = await commandRunner(extension.command || 'tailscale', ['status', '--json'], { timeoutMs: 2_000 });
+  const runtime = workspaceRoot
+    ? await detectTailscaleRuntime(workspaceRoot, commandRunner, extension.command || 'tailscale')
+    : undefined;
+  const target = runtime
+    ? tailscaleRuntimeCommand(runtime, extension.command || 'tailscale')
+    : { command: extension.command || 'tailscale', argsPrefix: [] };
+  if (runtime?.source === 'docker-compose' && !runtime.running) {
+    return {
+      ...base,
+      state: 'installed',
+      summary: `Private Edge is declared and the ${runtime.serviceName} Docker sidecar is ready to be started.`,
+      nextStep: 'Select services and review a confirmed route plan; LocalLink can start the workspace sidecar.',
+      checks: [...base.checks, {
+        id: 'tailscale-runtime',
+        label: 'Tailscale Docker runtime',
+        status: runtime.manageable ? 'warning' : 'missing',
+        detail: runtime.detail,
+        owner: 'locallink',
+      }],
+    };
+  }
+  if (runtime?.source === 'missing') {
+    const commandMissing = /not available on PATH/i.test(runtime.detail);
+    return {
+      ...base,
+      state: commandMissing ? 'waiting-external' : 'waiting-user',
+      automation: 'manual',
+      summary: commandMissing
+        ? 'Private Edge is declared, but Tailscale is not installed on this machine.'
+        : 'Private Edge is declared, but Tailscale is not connected.',
+      nextStep: commandMissing
+        ? 'Install Tailscale, then return to LocalLink to verify and configure private routes.'
+        : 'Authenticate this machine with Tailscale and approve the required tailnet access policy.',
+      checks: [...base.checks, {
+        id: commandMissing ? 'tailscale-cli' : 'tailscale-connection',
+        label: commandMissing ? 'Tailscale CLI' : 'Tailnet connection',
+        status: 'missing',
+        detail: runtime.detail,
+        owner: commandMissing ? 'system' : 'user',
+      }],
+    };
+  }
+  const statusResult = target
+    ? await commandRunner(target.command, [...target.argsPrefix, 'status', '--json'], { cwd: workspaceRoot, timeoutMs: 2_000 })
+    : { ok: false, code: null, signal: null, stdout: '', stderr: runtime?.detail || 'Tailscale is unavailable.', timedOut: false, error: runtime?.detail };
   if (isCommandMissingResult(statusResult)) {
     return {
       ...base,
@@ -177,11 +226,34 @@ async function privateEdgeRecord(
     };
   }
 
-  const serveResult = await commandRunner(extension.command || 'tailscale', ['serve', 'status', '--json'], { timeoutMs: 2_000 });
+  const serveResult = await commandRunner(
+    target!.command,
+    [...target!.argsPrefix, 'serve', 'status', '--json'],
+    { cwd: workspaceRoot, timeoutMs: 2_000 },
+  );
   const routes = serveResult.ok ? parseTailscaleServeRoutes(serveResult.stdout) : [];
   const workspacePorts = new Set(extension.exposedPorts.filter((port) => Boolean(port && port !== '—')));
-  const workspaceRoutes = routes.filter((route) => workspacePorts.has(route.targetPort));
+  let workspaceRoutes = routes.filter((route) => workspacePorts.has(route.targetPort));
   const routedPorts = new Set(workspaceRoutes.map((route) => route.targetPort));
+  if (workspaceRoot && extension.adapter === 'tailscale-caddy') {
+    const state = new WorkspaceStateRepository(path.join(workspaceRoot, '.locallink', 'workspace-state.json'));
+    const ownership = (await state.load()).privateEdgeRoutes.filter((route) => route.adapter === 'tailscale-caddy');
+    const ownedRoutes = ownership.flatMap((owned) => routes.filter((route) => {
+      if (route.targetPort !== owned.proxyPort) return false;
+      try {
+        const url = new URL(route.url);
+        return (url.port || (url.protocol === 'https:' ? '443' : '80')) === owned.httpsPort;
+      } catch {
+        return false;
+      }
+    }));
+    workspaceRoutes = [...workspaceRoutes, ...ownedRoutes].filter((route, index, values) => (
+      values.findIndex((candidate) => candidate.url === route.url && candidate.targetPort === route.targetPort) === index
+    ));
+    for (const owned of ownership) {
+      if (ownedRoutes.some((route) => route.targetPort === owned.proxyPort)) routedPorts.add(owned.targetPort);
+    }
+  }
   const missingPorts = [...workspacePorts].filter((port) => !routedPorts.has(port));
   if (workspacePorts.size === 0 || missingPorts.length > 0) {
     return {
@@ -318,7 +390,7 @@ export async function buildExtensionLifecycles(
     const extension = extensions.find((candidate) => candidate.kind === spec.kind);
     if (!extension) return availableRecord(spec);
     claimedDeclarations.add(extension.id);
-    if (spec.kind === 'network-edge') return privateEdgeRecord(spec, extension, commandRunner);
+    if (spec.kind === 'network-edge') return privateEdgeRecord(spec, extension, commandRunner, workspaceRoot);
     if (spec.kind === 'reverse-proxy') return reverseProxyRecord(spec, extension, commandRunner, workspaceRoot);
     return baseDeclaredRecord(spec, extension);
   }));
