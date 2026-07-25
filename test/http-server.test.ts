@@ -134,7 +134,11 @@ test('HTTP server exposes a read-only OpenObserve onboarding plan', async () => 
   (context.observabilityPlanner as unknown as {
     portAllocator: { findNextAvailablePort: (startFrom: number) => Promise<{ startFrom: number; nextFree: number; busy: number[] }> };
   }).portAllocator = {
-    findNextAvailablePort: async (startFrom) => ({ startFrom, nextFree: 5508, busy: [5080] }),
+    findNextAvailablePort: async (startFrom) => ({
+      startFrom,
+      nextFree: startFrom === 5080 ? 5508 : startFrom,
+      busy: startFrom === 5080 ? [5080] : [],
+    }),
   };
   await context.initialize();
   const server = context.createServer();
@@ -151,6 +155,8 @@ test('HTTP server exposes a read-only OpenObserve onboarding plan', async () => 
   assert.equal(response.json().provider, 'openobserve');
   assert.equal(response.json().canApply, true);
   assert.equal(response.json().service.installed, false);
+  assert.equal(response.json().collector.installed, false);
+  assert.equal(response.json().collector.httpPort, '4318');
   assert.ok(response.json().steps.some((step: { id: string }) => step.id === 'configure-openobserve-credentials'));
   assert.equal(await fs.readFile(path.join(root, 'docker-compose.yml'), 'utf8'), composeBefore);
   await server.close();

@@ -12,6 +12,15 @@ import {
   type OpenObserveHttpProbe,
   type OpenObserveRuntimeDetection,
 } from '../runtime/openobserve-runtime';
+import {
+  detectOtelCollectorRuntime,
+  otelCollectorStartCommand,
+  type OtelCollectorHttpProbe,
+  type OtelLogDeliveryResult,
+  type OtelLogDeliveryVerifier,
+  type OtelCollectorRuntimeDetection,
+  verifyOtelLogDelivery,
+} from '../runtime/otel-collector-runtime';
 import { detectTailscaleRuntime, tailscaleRuntimeCommand } from '../runtime/tailscale-runtime';
 import type { PrivateEdgeRouteOwnership, WorkspaceExtension } from '../shared/contracts';
 import { AppError } from '../shared/errors';
@@ -19,6 +28,13 @@ import type { CommandRunner } from '../shared/utils';
 import { runCommand } from '../shared/utils';
 import { WorkspaceStateRepository } from '../state/workspace-state';
 import { deriveWorkspaceIdentity } from '../workspace/identity';
+import {
+  OTEL_COLLECTOR_CONFIG_RELATIVE_PATH,
+  OTEL_COLLECTOR_VERIFICATION_RELATIVE_PATH,
+  readOtelCollectorVerification,
+  writeOtelCollectorConfig,
+  writeOtelCollectorVerification,
+} from './otel-collector-config';
 import { ExtensionPlanner, type ExtensionPlanStep } from './planner';
 
 export interface ObservabilityInstallPlan {
@@ -40,10 +56,33 @@ export interface ObservabilityInstallPlan {
     localUrl: string;
     privateUrl?: string;
   };
+  collector: {
+    name: string;
+    installed: boolean;
+    running: boolean;
+    healthy: boolean;
+    configured: boolean;
+    managedByLocalLink: boolean;
+    configurationState: OtelCollectorRuntimeDetection['configurationState'];
+    credentialInjectionConfigured: boolean;
+    loopbackOnly: boolean;
+    grpcPort: string;
+    httpPort: string;
+    healthPort: string;
+    grpcEndpoint: string;
+    httpEndpoint: string;
+    healthUrl: string;
+    configPath: string;
+    deliveryVerified: boolean;
+    lastDeliveryVerifiedAt?: string;
+  };
   telemetry: {
     organization: string;
     stream: string;
     otlpBaseUrl: string;
+    receiverGrpcEndpoint: string;
+    receiverHttpEndpoint: string;
+    protocol: 'http/protobuf';
     credentialsConfigured: boolean;
   };
   privateEdge: {
@@ -62,11 +101,13 @@ export interface ObservabilityApplyResult {
   applied: boolean;
   changedFiles: string[];
   started: boolean;
+  verification?: OtelLogDeliveryResult;
   plan: ObservabilityInstallPlan;
 }
 
 const OPENOBSERVE_DATA_VOLUME = 'openobserve-data';
 const OPENOBSERVE_IMAGE = 'public.ecr.aws/zinclabs/openobserve:v0.90.3';
+const OTEL_COLLECTOR_IMAGE = 'otel/opentelemetry-collector:0.157.0';
 
 function observabilityExtension(extensions: WorkspaceExtension[]): WorkspaceExtension | undefined {
   return extensions.find((extension) => extension.kind === 'observability');
@@ -170,6 +211,8 @@ export class ObservabilityPlanner {
     private readonly edgePlanner = new ExtensionPlanner(root, configRepository, commandRunner, workspaceState),
     private readonly portAllocator = new PortAllocator(),
     private readonly httpProbe?: OpenObserveHttpProbe,
+    private readonly collectorHttpProbe?: OtelCollectorHttpProbe,
+    private readonly deliveryVerifier: OtelLogDeliveryVerifier = verifyOtelLogDelivery,
   ) {}
 
   private async plannedPort(runtime: OpenObserveRuntimeDetection, configured?: string): Promise<string> {
@@ -190,6 +233,65 @@ export class ObservabilityPlanner {
     return runtime;
   }
 
+  private async plannedCollectorPorts(
+    runtime: OtelCollectorRuntimeDetection,
+    env: Record<string, string>,
+    unavailable: string[] = [],
+  ): Promise<{ grpc: string; http: string; health: string }> {
+    const selected = new Set(unavailable.filter(validPort));
+    const allocate = async (configured: string | undefined, fallback: number): Promise<string> => {
+      let requested = validPort(configured) ? Number(configured) : fallback;
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const port = String((await this.portAllocator.findNextAvailablePort(requested)).nextFree);
+        if (!selected.has(port)) {
+          selected.add(port);
+          return port;
+        }
+        requested = Number(port) + 1;
+      }
+      throw new AppError(
+        'OTEL_COLLECTOR_PORTS_UNAVAILABLE',
+        'LocalLink could not allocate distinct workspace ports for the OpenTelemetry Collector.',
+        409,
+      );
+    };
+
+    const grpc = runtime.available && validPort(runtime.grpcPort)
+      ? runtime.grpcPort
+      : await allocate(env.OTEL_COLLECTOR_GRPC_PORT, 4317);
+    selected.add(grpc);
+    const http = runtime.available && validPort(runtime.httpPort)
+      ? runtime.httpPort
+      : await allocate(env.OTEL_COLLECTOR_HTTP_PORT, 4318);
+    selected.add(http);
+    const health = runtime.available && validPort(runtime.healthPort)
+      ? runtime.healthPort
+      : await allocate(env.OTEL_COLLECTOR_HEALTH_PORT, 13133);
+    return { grpc, http, health };
+  }
+
+  private async waitForHealthyCollector(
+    env: Record<string, string>,
+    attempts = 30,
+  ): Promise<OtelCollectorRuntimeDetection> {
+    let runtime = await detectOtelCollectorRuntime(
+      this.root,
+      this.commandRunner,
+      env,
+      this.collectorHttpProbe,
+    );
+    for (let attempt = 1; attempt < attempts && !runtime.healthy; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      runtime = await detectOtelCollectorRuntime(
+        this.root,
+        this.commandRunner,
+        env,
+        this.collectorHttpProbe,
+      );
+    }
+    return runtime;
+  }
+
   async plan(capability: string): Promise<ObservabilityInstallPlan> {
     if (capability !== 'observability') {
       throw new AppError(
@@ -203,12 +305,25 @@ export class ObservabilityPlanner {
     const model = await this.configRepository.loadProjectModel();
     const workspace = deriveWorkspaceIdentity(this.root, model.env.LOCALLINK_WORKSPACE_ID);
     const declaration = observabilityExtension(model.extensions);
-    const runtime = await detectOpenObserveRuntime(this.root, this.commandRunner, model.env, this.httpProbe);
+    const [runtime, collectorRuntime] = await Promise.all([
+      detectOpenObserveRuntime(this.root, this.commandRunner, model.env, this.httpProbe),
+      detectOtelCollectorRuntime(this.root, this.commandRunner, model.env, this.collectorHttpProbe),
+    ]);
     const port = await this.plannedPort(runtime, model.env.OPENOBSERVE_PORT);
+    const collectorPorts = await this.plannedCollectorPorts(collectorRuntime, model.env, [port]);
     const organization = model.env.OPENOBSERVE_ORGANIZATION || 'default';
     const stream = model.env.OPENOBSERVE_STREAM || 'default';
     const localUrl = `http://127.0.0.1:${port}`;
     const otlpBaseUrl = `${localUrl}/api/${organization}`;
+    const receiverGrpcEndpoint = `http://127.0.0.1:${collectorPorts.grpc}`;
+    const receiverHttpEndpoint = `http://127.0.0.1:${collectorPorts.http}`;
+    const collectorHealthUrl = `http://127.0.0.1:${collectorPorts.health}/`;
+    const deliveryVerification = await readOtelCollectorVerification(this.root, {
+      receiverHttpEndpoint,
+      backendOtlpBaseUrl: otlpBaseUrl,
+      organization,
+      stream,
+    });
 
     await this.workspaceState.load();
     const existingOwnership = this.workspaceState.read().privateEdgeRoutes.find((route) => route.serviceId === 'openobserve');
@@ -232,6 +347,10 @@ export class ObservabilityPlanner {
       && runtime.healthy
       && runtime.credentialState === 'unverified';
     const existingUnsafeStorage = runtime.available && !runtime.persistent;
+    const customCollectorNeedsReview = collectorRuntime.available
+      && !collectorRuntime.managedByLocalLink;
+    const collectorContractConfigured = model.env.OTEL_EXPORTER_OTLP_ENDPOINT === receiverHttpEndpoint
+      && model.env.OTEL_EXPORTER_OTLP_PROTOCOL === 'http/protobuf';
 
     const steps: ExtensionPlanStep[] = [
       {
@@ -305,7 +424,7 @@ export class ObservabilityPlanner {
       },
       {
         id: 'configure-openobserve-otlp',
-        label: 'Configure the OpenObserve OTLP contract',
+        label: 'Configure the OpenObserve backend contract',
         owner: 'locallink',
         status: model.env.OPENOBSERVE_OTLP_BASE_URL === otlpBaseUrl
           && model.env.OPENOBSERVE_ORGANIZATION === organization
@@ -314,7 +433,77 @@ export class ObservabilityPlanner {
           : 'pending',
         automatic: true,
         targetFile: '.env',
-        detail: `Use OTLP/HTTP base ${otlpBaseUrl} for organization ${organization} and stream ${stream}; signal exporters append /v1/logs, /v1/metrics, or /v1/traces.`,
+        detail: `Use internal OTLP/HTTP base ${otlpBaseUrl} for organization ${organization} and stream ${stream}. Applications will send to the workspace collector instead of carrying backend credentials.`,
+      },
+      {
+        id: 'install-otel-collector',
+        label: 'Install the workspace OpenTelemetry Collector',
+        owner: customCollectorNeedsReview ? 'user' : 'locallink',
+        status: collectorRuntime.available
+          ? customCollectorNeedsReview ? 'blocked' : 'complete'
+          : 'pending',
+        automatic: !customCollectorNeedsReview,
+        targetFile: 'docker-compose.yml',
+        detail: collectorRuntime.available
+          ? customCollectorNeedsReview
+            ? `Existing service ${collectorRuntime.serviceName} is not explicitly LocalLink-managed. Review and adopt it before LocalLink replaces any receiver or exporter contract.`
+            : `Docker Compose service ${collectorRuntime.serviceName} is available and its existing image will be preserved.`
+          : `Install the official OpenTelemetry Collector image with isolated workspace receiver ports ${collectorPorts.grpc}/${collectorPorts.http}.`,
+      },
+      {
+        id: 'configure-otel-collector',
+        label: 'Configure logs, metrics, and traces pipelines',
+        owner: customCollectorNeedsReview ? 'user' : 'locallink',
+        status: collectorRuntime.configurationState === 'valid'
+          && collectorRuntime.credentialInjectionConfigured
+          ? 'complete'
+          : customCollectorNeedsReview ? 'blocked' : 'pending',
+        automatic: !customCollectorNeedsReview,
+        targetFile: OTEL_COLLECTOR_CONFIG_RELATIVE_PATH,
+        detail: collectorRuntime.configurationState === 'valid'
+          && collectorRuntime.credentialInjectionConfigured
+          ? 'All three OTLP signals forward to OpenObserve, whose authorization value is injected only through the container environment.'
+          : customCollectorNeedsReview
+            ? 'The existing collector pipeline is user-owned; LocalLink will not overwrite it implicitly.'
+            : `Generate ${OTEL_COLLECTOR_CONFIG_RELATIVE_PATH} with environment references and no stored credential value.`,
+      },
+      {
+        id: 'secure-otel-receivers',
+        label: 'Restrict telemetry receivers to loopback',
+        owner: customCollectorNeedsReview ? 'user' : 'locallink',
+        status: collectorRuntime.loopbackOnly ? 'complete' : customCollectorNeedsReview ? 'blocked' : 'pending',
+        automatic: !customCollectorNeedsReview,
+        targetFile: 'docker-compose.yml',
+        detail: collectorRuntime.loopbackOnly
+          ? `OTLP/gRPC :${collectorPorts.grpc}, OTLP/HTTP :${collectorPorts.http}, and health :${collectorPorts.health} are loopback-only.`
+          : customCollectorNeedsReview
+            ? 'The existing collector publishes one or more ports beyond loopback and must be reviewed before recreation.'
+            : 'Publish the receivers and health probe only on 127.0.0.1; telemetry ingestion is never a Private Edge route.',
+      },
+      {
+        id: 'configure-application-otlp',
+        label: 'Write the generic application telemetry contract',
+        owner: 'locallink',
+        status: collectorContractConfigured ? 'complete' : 'pending',
+        automatic: true,
+        targetFile: '.env',
+        detail: `Applications use OTEL_EXPORTER_OTLP_ENDPOINT=${receiverHttpEndpoint} and OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf with no OpenObserve authorization header.`,
+      },
+      {
+        id: 'start-otel-collector',
+        label: 'Start and verify telemetry delivery',
+        owner: customCollectorNeedsReview ? 'user' : 'locallink',
+        status: collectorRuntime.healthy && collectorRuntime.configured && deliveryVerification
+          ? 'complete'
+          : customCollectorNeedsReview ? 'blocked' : 'pending',
+        automatic: !customCollectorNeedsReview,
+        detail: collectorRuntime.healthy && collectorRuntime.configured && deliveryVerification
+          ? `The collector is healthy and a timestamped OTLP log reached OpenObserve at ${deliveryVerification.verifiedAt}.`
+          : customCollectorNeedsReview
+            ? 'Validate and explicitly adopt the existing collector before LocalLink starts or recreates it.'
+            : collectorRuntime.healthy && collectorRuntime.configured
+              ? 'Send a timestamped canary through the collector and require it to appear in the configured OpenObserve stream.'
+              : 'Start the collector after OpenObserve, require its health endpoint to pass, then verify end-to-end log delivery.',
       },
       {
         id: 'select-openobserve-edge',
@@ -366,14 +555,20 @@ export class ObservabilityPlanner {
     ];
 
     const automaticPending = steps.some((step) => step.owner === 'locallink' && step.status === 'pending');
-    const blocking = credentialInvalid || credentialUnverified || existingUnsafeStorage;
+    const blocking = credentialInvalid
+      || credentialUnverified
+      || existingUnsafeStorage
+      || customCollectorNeedsReview;
     const state: ObservabilityInstallPlan['state'] = blocking
       ? 'error'
       : automaticPending
         ? 'ready-to-apply'
         : !routeActive
           ? 'ready-to-route'
-          : runtime.healthy && runtime.credentialState === 'valid'
+          : runtime.healthy
+            && runtime.credentialState === 'valid'
+            && collectorRuntime.healthy
+            && collectorRuntime.configured
             ? 'healthy'
             : 'waiting-user';
 
@@ -388,11 +583,13 @@ export class ObservabilityPlanner {
           ? 'OpenObserve is healthy, but authenticated API access could not be verified; the existing service will not be recreated.'
         : existingUnsafeStorage
           ? 'OpenObserve exists without persistent storage and requires an explicit backup/migration decision.'
+          : customCollectorNeedsReview
+            ? 'An unowned Docker OpenTelemetry Collector exists and requires explicit review before LocalLink can adopt its configuration.'
           : automaticPending
-            ? 'LocalLink can install or safely reconcile the workspace-owned OpenObserve components.'
+            ? 'LocalLink can safely reconcile OpenObserve and its workspace-local OpenTelemetry Collector.'
             : !routeActive
-              ? 'OpenObserve is healthy locally; review and confirm its Private Edge route.'
-              : 'OpenObserve is healthy, persistent, authenticated, and privately reachable.',
+              ? 'OpenObserve and the telemetry collector are healthy locally; review and confirm the OpenObserve UI’s Private Edge route.'
+              : 'OpenObserve is healthy, persistent, authenticated, privately reachable, and receiving through a workspace-local telemetry gateway.',
       canApply: automaticPending && !blocking,
       service: {
         name: runtime.serviceName || 'openobserve',
@@ -406,10 +603,33 @@ export class ObservabilityPlanner {
         localUrl,
         privateUrl,
       },
+      collector: {
+        name: collectorRuntime.serviceName || 'otel-collector',
+        installed: collectorRuntime.available,
+        running: collectorRuntime.running,
+        healthy: collectorRuntime.healthy,
+        configured: collectorRuntime.configured,
+        managedByLocalLink: collectorRuntime.managedByLocalLink,
+        configurationState: collectorRuntime.configurationState,
+        credentialInjectionConfigured: collectorRuntime.credentialInjectionConfigured,
+        loopbackOnly: collectorRuntime.loopbackOnly,
+        grpcPort: collectorPorts.grpc,
+        httpPort: collectorPorts.http,
+        healthPort: collectorPorts.health,
+        grpcEndpoint: receiverGrpcEndpoint,
+        httpEndpoint: receiverHttpEndpoint,
+        healthUrl: collectorHealthUrl,
+        configPath: OTEL_COLLECTOR_CONFIG_RELATIVE_PATH,
+        deliveryVerified: Boolean(deliveryVerification),
+        lastDeliveryVerifiedAt: deliveryVerification?.verifiedAt,
+      },
       telemetry: {
         organization,
         stream,
         otlpBaseUrl,
+        receiverGrpcEndpoint,
+        receiverHttpEndpoint,
+        protocol: 'http/protobuf',
         credentialsConfigured: runtime.credentialsConfigured,
       },
       privateEdge: {
@@ -440,6 +660,12 @@ export class ObservabilityPlanner {
     await this.configRepository.hydrateProcessEnv();
     let model = await this.configRepository.loadProjectModel();
     let runtime = await detectOpenObserveRuntime(this.root, this.commandRunner, model.env, this.httpProbe);
+    let collectorRuntime = await detectOtelCollectorRuntime(
+      this.root,
+      this.commandRunner,
+      model.env,
+      this.collectorHttpProbe,
+    );
     const freshInstall = !runtime.available;
     const username = model.env.OPENOBSERVE_USERNAME || 'root@localhost';
     const password = model.env.OPENOBSERVE_PASSWORD || (freshInstall ? generatedPassword() : '');
@@ -456,6 +682,8 @@ export class ObservabilityPlanner {
     const endpoint = `http://127.0.0.1:${port}`;
     const otlpBaseUrl = `${endpoint}/api/${organization}`;
     const authorization = accessKey(username, password);
+    const receiverGrpcEndpoint = before.collector.grpcEndpoint;
+    const receiverHttpEndpoint = before.collector.httpEndpoint;
 
     await this.configRepository.writeInfraConfig({
       targetFile: '.env',
@@ -470,6 +698,11 @@ export class ObservabilityPlanner {
           OPENOBSERVE_ORGANIZATION: organization,
           OPENOBSERVE_STREAM: stream,
           OPENOBSERVE_OTLP_BASE_URL: otlpBaseUrl,
+          OTEL_COLLECTOR_GRPC_PORT: before.collector.grpcPort,
+          OTEL_COLLECTOR_HTTP_PORT: before.collector.httpPort,
+          OTEL_COLLECTOR_HEALTH_PORT: before.collector.healthPort,
+          OTEL_EXPORTER_OTLP_ENDPOINT: receiverHttpEndpoint,
+          OTEL_EXPORTER_OTLP_PROTOCOL: 'http/protobuf',
         },
       },
     });
@@ -488,8 +721,13 @@ export class ObservabilityPlanner {
           OPENOBSERVE_ORGANIZATION: 'default',
           OPENOBSERVE_STREAM: 'default',
           OPENOBSERVE_OTLP_BASE_URL: 'http://127.0.0.1:5080/api/default',
+          OTEL_COLLECTOR_GRPC_PORT: '4317',
+          OTEL_COLLECTOR_HTTP_PORT: '4318',
+          OTEL_COLLECTOR_HEALTH_PORT: '13133',
+          OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318',
+          OTEL_EXPORTER_OTLP_PROTOCOL: 'http/protobuf',
         },
-        unset: ['OPENOBSERVE_TOKEN'],
+        unset: ['OPENOBSERVE_TOKEN', 'OTEL_EXPORTER_OTLP_HEADERS'],
       },
     });
     changedFiles.push('.env.example');
@@ -532,6 +770,55 @@ export class ObservabilityPlanner {
               [OPENOBSERVE_DATA_VOLUME]: {},
             },
           } : {}),
+        },
+      });
+      changedFiles.push('docker-compose.yml');
+    }
+
+    const collectorConfig = await writeOtelCollectorConfig(
+      this.root,
+      runtime.serviceName || 'openobserve',
+    );
+    if (collectorConfig.changed) changedFiles.push(OTEL_COLLECTOR_CONFIG_RELATIVE_PATH);
+    const freshCollectorInstall = !collectorRuntime.available;
+    if (freshCollectorInstall || collectorRuntime.managedByLocalLink || collectorRuntime.configured) {
+      await this.configRepository.writeInfraConfig({
+        targetFile: 'docker-compose.yml',
+        patch: {
+          kind: 'compose',
+          serviceName: collectorRuntime.serviceName || 'otel-collector',
+          updates: {
+            ...(freshCollectorInstall ? {
+              image: OTEL_COLLECTOR_IMAGE,
+              restart: 'unless-stopped',
+              profiles: ['observability'],
+            } : {}),
+            ports: [
+              '127.0.0.1:${OTEL_COLLECTOR_GRPC_PORT:-4317}:4317',
+              '127.0.0.1:${OTEL_COLLECTOR_HTTP_PORT:-4318}:4318',
+              '127.0.0.1:${OTEL_COLLECTOR_HEALTH_PORT:-13133}:13133',
+            ],
+            environment: {
+              OPENOBSERVE_ACCESS_KEY_B64: '${OPENOBSERVE_ACCESS_KEY_B64}',
+              OPENOBSERVE_ORGANIZATION: '${OPENOBSERVE_ORGANIZATION:-default}',
+              OPENOBSERVE_STREAM: '${OPENOBSERVE_STREAM:-default}',
+            },
+            volumes: [`./${OTEL_COLLECTOR_CONFIG_RELATIVE_PATH}:/etc/otelcol/config.yaml:ro`],
+            dependsOn: [runtime.serviceName || 'openobserve'],
+            labels: {
+              'locallink.name': 'OpenTelemetry Collector',
+              'locallink.provider': 'opentelemetry-collector',
+              'locallink.managedBy': 'locallink',
+              'locallink.group': 'docker',
+              'locallink.runtime': 'docker',
+              'locallink.notes': 'Workspace-local OpenTelemetry gateway.',
+              'locallink.detail': 'Receives standard OTLP logs, metrics, and traces on loopback and forwards them to the configured observability backend.',
+              'locallink.tags': 'docker,observability,opentelemetry,otlp,logs,metrics,traces',
+              'locallink.portEnv': 'OTEL_COLLECTOR_HTTP_PORT',
+              'locallink.envVars': 'OTEL_COLLECTOR_GRPC_PORT;OTEL_COLLECTOR_HTTP_PORT;OTEL_EXPORTER_OTLP_ENDPOINT;OTEL_EXPORTER_OTLP_PROTOCOL',
+              'locallink.docsUrl': 'https://opentelemetry.io/docs/collector/',
+            },
+          },
         },
       });
       changedFiles.push('docker-compose.yml');
@@ -622,12 +909,90 @@ export class ObservabilityPlanner {
       );
     }
 
+    await this.configRepository.hydrateProcessEnv();
+    model = await this.configRepository.loadProjectModel();
+    collectorRuntime = await detectOtelCollectorRuntime(
+      this.root,
+      this.commandRunner,
+      model.env,
+      this.collectorHttpProbe,
+    );
+    const collectorNeedsRestart = !collectorRuntime.running
+      || !collectorRuntime.configured
+      || collectorConfig.changed;
+    if (collectorNeedsRestart) {
+      const start = otelCollectorStartCommand(
+        collectorRuntime,
+        collectorRuntime.running && (collectorConfig.changed || !collectorRuntime.configured),
+      );
+      if (!start) {
+        throw new AppError(
+          'OTEL_COLLECTOR_START_UNSUPPORTED',
+          'The OpenTelemetry Collector is not a manageable Docker Compose service.',
+          409,
+        );
+      }
+      const result = await this.commandRunner(start.command, start.args, {
+        cwd: this.root,
+        timeoutMs: 180_000,
+      });
+      if (!result.ok) {
+        throw new AppError(
+          'OTEL_COLLECTOR_START_FAILED',
+          `The telemetry gateway configuration was saved, but Docker could not start ${collectorRuntime.serviceName}: ${result.stderr || result.error || 'unknown error'}`,
+          502,
+        );
+      }
+      started = true;
+      collectorRuntime = await this.waitForHealthyCollector(model.env);
+    }
+    if (!collectorRuntime.healthy) {
+      throw new AppError(
+        'OTEL_COLLECTOR_HEALTHCHECK_FAILED',
+        `The OpenTelemetry Collector is running, but its health endpoint did not pass. Inspect docker compose logs ${collectorRuntime.serviceName || 'otel-collector'}.`,
+        502,
+      );
+    }
+    if (!collectorRuntime.configured) {
+      throw new AppError(
+        'OTEL_COLLECTOR_CONFIGURATION_FAILED',
+        'The OpenTelemetry Collector started, but its receiver, exporter, credential-injection, or loopback contract could not be verified.',
+        502,
+      );
+    }
+    const verification = await this.deliveryVerifier({
+      collectorHttpEndpoint: receiverHttpEndpoint,
+      openObserveEndpoint: endpoint,
+      organization,
+      stream,
+      username,
+      password,
+      workspaceId: before.workspace.id,
+    });
+    if (!verification.ok || !verification.verifiedAt) {
+      throw new AppError(
+        'OTEL_COLLECTOR_DELIVERY_FAILED',
+        verification.detail,
+        502,
+      );
+    }
+    await writeOtelCollectorVerification(this.root, {
+      version: 1,
+      verifiedAt: verification.verifiedAt,
+      receiverHttpEndpoint,
+      backendOtlpBaseUrl: otlpBaseUrl,
+      organization,
+      stream,
+    });
+    changedFiles.push(OTEL_COLLECTOR_VERIFICATION_RELATIVE_PATH);
+
     return {
       capability: 'observability',
       provider: 'openobserve',
       applied: changedFiles.length > 0 || started,
       changedFiles: unique(changedFiles),
       started,
+      verification,
       plan: await this.plan('observability'),
     };
   }

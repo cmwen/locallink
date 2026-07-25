@@ -10,8 +10,8 @@
     <main class="shell">
       <header class="hero">
         <div class="eyebrow">Observability foundation</div>
-        <h1>OpenObserve onboarding, access, and recovery</h1>
-        <p>LocalLink automates the safe infrastructure boundary. Applications keep a provider-neutral OpenTelemetry interface, while OpenObserve supplies the workspace backend and private UI.</p>
+        <h1>OpenObserve and OpenTelemetry onboarding</h1>
+        <p>LocalLink automates the safe infrastructure boundary. Applications send vendor-neutral OTLP to a workspace-local OpenTelemetry Collector, while OpenObserve supplies the persistent backend and private UI.</p>
       </header>
 
       <section class="section">
@@ -21,18 +21,20 @@ locallink extension apply observability
 
 # Only when the resulting plan contains a fresh route token:
 locallink extension apply-routes private-edge "&lt;token-from-plan&gt;"</code></pre>
-        <p>The plan inspects Docker state, persistent storage, <code>/healthz</code>, authenticated API access, local port binding, OTLP values, and the Private Edge route. Planning never writes files or changes containers.</p>
-        <p>Apply preserves an existing OpenObserve image, data volume, username, password, organization, and stream. A new installation receives an available loopback port, an official OSS image, a named volume, and generated credentials stored only in the local <code>.env</code>. The file is restricted to mode <code>0600</code>.</p>
+        <p>The plan inspects Docker state, persistent storage, <code>/healthz</code>, authenticated API access, collector configuration and health, the last matching end-to-end delivery verification, local port bindings, OTLP values, and the Private Edge route. Planning never writes files or changes containers.</p>
+        <p>Apply preserves an existing OpenObserve image, data volume, username, password, organization, and stream. A new installation receives available loopback ports, official OpenObserve and OpenTelemetry Collector images, a named volume, and generated credentials stored only in the local <code>.env</code>. The file is restricted to mode <code>0600</code>.</p>
       </section>
 
       <section class="section">
         <h2>Access model</h2>
         <ul>
-          <li><code>OPENOBSERVE_ENDPOINT</code> is the loopback UI/API origin used by local tools.</li>
-          <li><code>OPENOBSERVE_OTLP_BASE_URL</code> is <code>http://127.0.0.1:&lt;port&gt;/api/&lt;organization&gt;</code> with no trailing slash.</li>
-          <li>OTLP/HTTP exporters append <code>/v1/logs</code>, <code>/v1/metrics</code>, or <code>/v1/traces</code>.</li>
-          <li>The authorization header is <code>Basic &lt;OPENOBSERVE_ACCESS_KEY_B64&gt;</code>; a <code>stream-name</code> header selects the stream.</li>
-          <li>The Tailscale+Caddy URL is for people opening the UI. Local applications should normally ingest through loopback.</li>
+          <li><code>OTEL_EXPORTER_OTLP_ENDPOINT</code> is the workspace collector’s loopback OTLP/HTTP origin.</li>
+          <li><code>OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf</code> gives applications a standard, backend-neutral export contract.</li>
+          <li>Each application sets its own <code>OTEL_SERVICE_NAME</code> and chooses which signals and instrumentation to enable.</li>
+          <li><code>OPENOBSERVE_ENDPOINT</code> and <code>OPENOBSERVE_OTLP_BASE_URL</code> are backend values for LocalLink and the collector, not normal application configuration.</li>
+          <li><code>.locallink/otel-collector.yaml</code> references <code>OPENOBSERVE_ACCESS_KEY_B64</code>; it never contains the actual credential. Docker injects that value at runtime.</li>
+          <li>Apply sends a timestamped canary to <code>/v1/logs</code> and searches for it through the authenticated OpenObserve API. The local verification record contains endpoints, organization, stream, and time—but no secret.</li>
+          <li>The Tailscale+Caddy URL is for people opening the OpenObserve UI. OTLP ingestion and collector health are never published through Private Edge.</li>
         </ul>
       </section>
 
@@ -51,7 +53,7 @@ locallink extension apply-routes private-edge "&lt;token-from-plan&gt;"</code></
 
       <section class="section">
         <h2>What still belongs to the application</h2>
-        <p>LocalLink provides the endpoint and authorization contract. The application chooses its service name and which signals to emit. Custom spans, metrics, log correlation, sampling, and sensitive-data filtering remain application decisions. Use standard <code>OTEL_*</code> variables so the backend can be replaced without rewriting instrumentation.</p>
+        <p>LocalLink provides the collector endpoint and transport contract. The application chooses its service name and which signals to emit. Custom spans, metrics, log correlation, sampling, and sensitive-data filtering remain application decisions. Use standard <code>OTEL_*</code> variables so the collector or backend can be replaced without rewriting instrumentation.</p>
       </section>
     </main>
   </body>

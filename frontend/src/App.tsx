@@ -562,7 +562,7 @@ export function App() {
 
   async function manageObservability(action: 'plan' | 'apply' | 'routes') {
     if (source !== 'api') {
-      setStatus('OpenObserve planning needs the live LocalLink API.');
+      setStatus('Observability planning needs the live LocalLink API.');
       return;
     }
     setExtensionApplying(true);
@@ -575,7 +575,7 @@ export function App() {
         const result = await applyObservability();
         setObservabilityPlan(result.plan);
         setStatus(result.applied
-          ? `OpenObserve setup updated ${result.changedFiles.join(', ')}${result.started ? ' and started/recreated the service' : ''}.`
+          ? `Observability setup updated ${result.changedFiles.join(', ')}${result.started ? ' and started/recreated its Docker services' : ''}.`
           : result.plan.summary);
         await refreshState();
       } else {
@@ -590,7 +590,7 @@ export function App() {
         await refreshState();
       }
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'OpenObserve planning failed.');
+      setStatus(error instanceof Error ? error.message : 'Observability planning failed.');
     } finally {
       setExtensionApplying(false);
     }
@@ -1161,9 +1161,9 @@ function ExtensionsWorkspace({
               {!identityPlan?.canApply && identityPlan?.privateEdge.confirmationToken && identityPlan.privateEdge.state === 'ready' ? (
                 <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageIdentity('routes')}>Publish Pocket ID privately</button>
               ) : null}
-              <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageObservability('plan')}>Preview OpenObserve setup</button>
+              <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageObservability('plan')}>Preview observability setup</button>
               {observabilityPlan?.canApply ? (
-                <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageObservability('apply')}>Install/configure OpenObserve</button>
+                <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageObservability('apply')}>Install/configure observability</button>
               ) : null}
               {!observabilityPlan?.canApply && observabilityPlan?.privateEdge.confirmationToken && observabilityPlan.privateEdge.state === 'ready' ? (
                 <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageObservability('routes')}>Publish OpenObserve privately</button>
@@ -1273,7 +1273,7 @@ function ExtensionsWorkspace({
           </article> : null}
 
           {showConfig && observabilityPlan ? <article className="config-card">
-            <strong>OpenObserve onboarding plan</strong>
+            <strong>Observability onboarding plan</strong>
             <p>{observabilityPlan.summary}</p>
             <div className="config-lines">
               <ConfigLine label="Provider" value="OpenObserve · generic OpenTelemetry contract" />
@@ -1281,7 +1281,12 @@ function ExtensionsWorkspace({
               <ConfigLine label="Persistent state" value={observabilityPlan.service.persistent ? 'Configured' : 'Not configured'} />
               <ConfigLine label="Host binding" value={observabilityPlan.service.loopbackOnly ? `Loopback-only on :${observabilityPlan.service.port}` : `Port :${observabilityPlan.service.port} needs loopback restriction`} />
               <ConfigLine label="Credential verification" value={observabilityPlan.service.credentialState} />
-              <ConfigLine label="OTLP base" value={observabilityPlan.telemetry.otlpBaseUrl} />
+              <ConfigLine label="Telemetry gateway" value={`${observabilityPlan.collector.installed ? 'installed' : 'missing'} / ${observabilityPlan.collector.running ? 'running' : 'stopped'} / ${observabilityPlan.collector.healthy ? 'healthy' : 'not healthy'}`} />
+              <ConfigLine label="Collector configuration" value={`${observabilityPlan.collector.configurationState} / ${observabilityPlan.collector.credentialInjectionConfigured ? 'backend authorization injected' : 'authorization incomplete'} / ${observabilityPlan.collector.loopbackOnly ? 'loopback-only' : 'binding needs attention'}`} />
+              <ConfigLine label="End-to-end delivery" value={observabilityPlan.collector.deliveryVerified ? `Verified ${observabilityPlan.collector.lastDeliveryVerifiedAt || ''}` : 'Not yet verified'} />
+              <ConfigLine label="Application OTLP/HTTP" value={`${observabilityPlan.telemetry.receiverHttpEndpoint} · ${observabilityPlan.telemetry.protocol}`} />
+              <ConfigLine label="Application OTLP/gRPC" value={observabilityPlan.telemetry.receiverGrpcEndpoint} />
+              <ConfigLine label="Backend OTLP base" value={observabilityPlan.telemetry.otlpBaseUrl} />
               <ConfigLine label="Organization / stream" value={`${observabilityPlan.telemetry.organization} / ${observabilityPlan.telemetry.stream}`} />
               <ConfigLine label="Private UI" value={observabilityPlan.service.privateUrl || observabilityPlan.privateEdge.url || 'Waiting for a Private Edge route'} />
               {observabilityPlan.steps.map((step) => (

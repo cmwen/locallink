@@ -300,10 +300,33 @@ export interface ObservabilityInstallPlan {
     localUrl: string;
     privateUrl?: string;
   };
+  collector: {
+    name: string;
+    installed: boolean;
+    running: boolean;
+    healthy: boolean;
+    configured: boolean;
+    managedByLocalLink: boolean;
+    configurationState: 'valid' | 'missing' | 'custom' | 'unreadable';
+    credentialInjectionConfigured: boolean;
+    loopbackOnly: boolean;
+    grpcPort: string;
+    httpPort: string;
+    healthPort: string;
+    grpcEndpoint: string;
+    httpEndpoint: string;
+    healthUrl: string;
+    configPath: string;
+    deliveryVerified: boolean;
+    lastDeliveryVerifiedAt?: string;
+  };
   telemetry: {
     organization: string;
     stream: string;
     otlpBaseUrl: string;
+    receiverGrpcEndpoint: string;
+    receiverHttpEndpoint: string;
+    protocol: 'http/protobuf';
     credentialsConfigured: boolean;
   };
   privateEdge: {
@@ -322,6 +345,13 @@ export interface ObservabilityApplyResult {
   applied: boolean;
   changedFiles: string[];
   started: boolean;
+  verification?: {
+    ok: boolean;
+    receiverAccepted: boolean;
+    backendConfirmed: boolean;
+    verifiedAt?: string;
+    detail: string;
+  };
   plan: ObservabilityInstallPlan;
 }
 

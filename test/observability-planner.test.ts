@@ -59,6 +59,7 @@ async function createWorkspace(): Promise<string> {
 test('Observability apply installs OpenObserve on a free workspace port, generates local credentials, and preserves edge selections', async () => {
   const root = await createWorkspace();
   let openObserveRunning = false;
+  let collectorRunning = false;
   const actions: string[] = [];
   const runner: CommandRunner = async (command, args) => {
     if (command === 'tailscale' && args[0] === 'status') {
@@ -69,11 +70,14 @@ test('Observability apply installs OpenObserve on a free workspace port, generat
       return result({
         stdout: args.at(-1) === 'openobserve' && openObserveRunning
           ? JSON.stringify({ State: 'running' })
-          : '',
+          : args.at(-1) === 'otel-collector' && collectorRunning
+            ? JSON.stringify({ State: 'running' })
+            : '',
       });
     }
     if (command === 'docker' && args.includes('up')) {
-      openObserveRunning = true;
+      if (args.at(-1) === 'openobserve') openObserveRunning = true;
+      if (args.at(-1) === 'otel-collector') collectorRunning = true;
       actions.push(`up:${args.at(-1)}`);
       return result();
     }
@@ -94,6 +98,14 @@ test('Observability apply installs OpenObserve on a free workspace port, generat
     edge,
     new FixedPortAllocator(),
     probe,
+    async () => ({ ok: true, status: 200 }),
+    async () => ({
+      ok: true,
+      receiverAccepted: true,
+      backendConfirmed: true,
+      verifiedAt: '2026-07-25T14:30:00.000Z',
+      detail: 'verified',
+    }),
   );
 
   const preview = await planner.plan('observability');
@@ -104,10 +116,16 @@ test('Observability apply installs OpenObserve on a free workspace port, generat
   const applied = await planner.apply('observability');
   assert.equal(applied.applied, true);
   assert.equal(applied.started, true);
-  assert.deepEqual(actions, ['up:openobserve']);
+  assert.deepEqual(actions, ['up:openobserve', 'up:otel-collector']);
   assert.equal(applied.plan.service.healthy, true);
   assert.equal(applied.plan.service.credentialState, 'valid');
   assert.equal(applied.plan.service.loopbackOnly, true);
+  assert.equal(applied.plan.collector.healthy, true);
+  assert.equal(applied.plan.collector.configured, true);
+  assert.equal(applied.plan.collector.loopbackOnly, true);
+  assert.equal(applied.plan.collector.deliveryVerified, true);
+  assert.equal(applied.verification?.backendConfirmed, true);
+  assert.equal(applied.plan.telemetry.receiverHttpEndpoint, 'http://127.0.0.1:4318');
   assert.equal(applied.plan.state, 'ready-to-route');
 
   const compose = parseDocument(await fs.readFile(path.join(root, 'docker-compose.yml'), 'utf8')).toJS() as any;
@@ -116,16 +134,44 @@ test('Observability apply installs OpenObserve on a free workspace port, generat
   assert.equal(compose.services.openobserve.environment.ZO_ROOT_USER_PASSWORD, '${OPENOBSERVE_PASSWORD}');
   assert.ok(compose.services.openobserve.volumes.includes('openobserve-data:/data'));
   assert.ok(compose.volumes['openobserve-data']);
+  assert.equal(compose.services['otel-collector'].image, 'otel/opentelemetry-collector:0.157.0');
+  assert.deepEqual(compose.services['otel-collector'].ports, [
+    '127.0.0.1:${OTEL_COLLECTOR_GRPC_PORT:-4317}:4317',
+    '127.0.0.1:${OTEL_COLLECTOR_HTTP_PORT:-4318}:4318',
+    '127.0.0.1:${OTEL_COLLECTOR_HEALTH_PORT:-13133}:13133',
+  ]);
+  assert.equal(
+    compose.services['otel-collector'].environment.OPENOBSERVE_ACCESS_KEY_B64,
+    '${OPENOBSERVE_ACCESS_KEY_B64}',
+  );
 
   const env = await fs.readFile(path.join(root, '.env'), 'utf8');
   assert.match(env, /^OPENOBSERVE_PORT=5508$/m);
   assert.match(env, /^OPENOBSERVE_PASSWORD=.+$/m);
   assert.match(env, /^OPENOBSERVE_ACCESS_KEY_B64=.+$/m);
   assert.match(env, /^OPENOBSERVE_OTLP_BASE_URL=http:\/\/127\.0\.0\.1:5508\/api\/default$/m);
+  assert.match(env, /^OTEL_COLLECTOR_GRPC_PORT=4317$/m);
+  assert.match(env, /^OTEL_COLLECTOR_HTTP_PORT=4318$/m);
+  assert.match(env, /^OTEL_EXPORTER_OTLP_ENDPOINT=http:\/\/127\.0\.0\.1:4318$/m);
+  assert.match(env, /^OTEL_EXPORTER_OTLP_PROTOCOL=http\/protobuf$/m);
   assert.equal((await fs.stat(path.join(root, '.env'))).mode & 0o777, 0o600);
   const example = await fs.readFile(path.join(root, '.env.example'), 'utf8');
   assert.match(example, /^OPENOBSERVE_PASSWORD=$/m);
   assert.doesNotMatch(example, /^OPENOBSERVE_TOKEN=/m);
+  assert.doesNotMatch(example, /^OTEL_EXPORTER_OTLP_HEADERS=/m);
+
+  const collectorConfig = await fs.readFile(path.join(root, '.locallink', 'otel-collector.yaml'), 'utf8');
+  assert.equal((await fs.stat(path.join(root, '.locallink', 'otel-collector.yaml'))).mode & 0o777, 0o644);
+  assert.match(collectorConfig, /otlp_http\/openobserve/);
+  assert.match(collectorConfig, /\$\{env:OPENOBSERVE_ACCESS_KEY_B64\}/);
+  const generatedAccessKey = env.match(/^OPENOBSERVE_ACCESS_KEY_B64=(.+)$/m)?.[1];
+  assert.ok(generatedAccessKey);
+  assert.doesNotMatch(collectorConfig, new RegExp(generatedAccessKey!));
+  const verification = JSON.parse(
+    await fs.readFile(path.join(root, '.locallink', 'otel-collector-verification.json'), 'utf8'),
+  );
+  assert.equal(verification.verifiedAt, '2026-07-25T14:30:00.000Z');
+  assert.equal(verification.receiverHttpEndpoint, 'http://127.0.0.1:4318');
 
   const extensions = parseDocument(await fs.readFile(path.join(root, 'locallink.extensions.yml'), 'utf8')).toJS() as any;
   const edgeDeclaration = extensions.extensions.find((extension: any) => extension.kind === 'network-edge');

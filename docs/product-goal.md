@@ -100,18 +100,22 @@ swappable between compatible identity providers.
 ### Observability
 
 The Observability layer installs and connects an OTLP-compatible backend such as
-OpenObserve. LocalLink now owns safe OpenObserve installation/adoption, generated
-first-install credentials, persistent storage, loopback binding, local OTLP
-endpoints, credential verification, and private UI route selection. Existing
-data, images, and account credentials are preserved; invalid credentials or
-non-persistent existing data stop for a user decision. Collector and
-application-exporter wiring remains the next automation layer. Services should integrate through standard
-OpenTelemetry variables and protocols rather than importing OpenObserve-specific
-configuration into application code.
+OpenObserve. LocalLink owns safe OpenObserve installation/adoption, generated
+first-install credentials, persistent storage, loopback binding, credential
+verification, and private UI route selection. It also installs a workspace-local
+OpenTelemetry Collector with collision-safe loopback receivers, three-signal
+pipelines, a health endpoint, runtime-injected backend authorization, and an
+end-to-end timestamped log canary that must be searchable in OpenObserve. The
+generated collector configuration and verification record contain no secret value. Existing OpenObserve
+data, images, and account credentials are preserved; invalid credentials,
+non-persistent existing data, or a non-adopted unowned collector stop for a user
+decision.
 
 Applications with a declared OTLP contract should require little or no manual
-configuration. Custom instrumentation remains application work, but its export
-interface should stay vendor-neutral.
+configuration. LocalLink writes the standard HTTP/protobuf receiver endpoint;
+each application still chooses a distinct service name and instrumentation.
+Custom instrumentation remains application work, but its export interface stays
+vendor-neutral.
 
 ## Coding-agent integration
 

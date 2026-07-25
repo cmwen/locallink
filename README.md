@@ -181,7 +181,17 @@ locallink extension apply observability
 locallink extension apply-routes private-edge "<token-from-plan>"
 ```
 
-For a new workspace, LocalLink chooses an available loopback port, installs the official OpenObserve OSS image, creates persistent storage, generates local root credentials, derives the OTLP/HTTP authorization value, starts the container, and verifies `/healthz` plus authenticated API access. Existing images, volumes, credentials, organizations, streams, and matching Tailscale+Caddy routes are preserved and adopted.
+For a new workspace, LocalLink chooses available loopback ports, installs the official OpenObserve OSS image and OpenTelemetry Collector image, creates persistent storage, generates local root credentials, starts both containers, and verifies OpenObserve `/healthz`, authenticated API access, the collector configuration, and its health endpoint. Existing OpenObserve images, volumes, credentials, organizations, streams, and matching Tailscale+Caddy routes are preserved and adopted.
+
+Applications send standard OTLP to the workspace collector:
+
+```dotenv
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:<workspace-http-port>
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_SERVICE_NAME=<application-name>
+```
+
+LocalLink writes the first two values to the workspace `.env`; each application owns its distinct service name and instrumentation. The generated `.locallink/otel-collector.yaml` forwards logs, metrics, and traces to OpenObserve. It contains environment references but no credential value: Docker injects the derived authorization into the collector at runtime. Apply sends a timestamped OTLP canary through the same receiver and requires it to appear in the configured OpenObserve stream; a non-secret verification timestamp is recorded locally. OTLP receiver and health ports remain loopback-only and are never selected for Private Edge; only the OpenObserve UI is privately published.
 
 If an existing password no longer authenticates or its data is not persistent, LocalLink stops for an explicit recovery or migration decision. It never silently resets the root account, replaces the volume, or treats a reinstall as login recovery. See [the OpenObserve and OTLP operations guide](docs/openobserve.html).
 

@@ -15,6 +15,8 @@ import { WorkspaceStateRepository } from '../state/workspace-state';
 import { ConfigRepository } from '../config/files';
 import { detectPocketIdRuntime } from '../runtime/pocket-id-runtime';
 import { detectOpenObserveRuntime } from '../runtime/openobserve-runtime';
+import { detectOtelCollectorRuntime } from '../runtime/otel-collector-runtime';
+import { readOtelCollectorVerification } from './otel-collector-config';
 
 interface CapabilitySpec {
   id: string;
@@ -660,6 +662,96 @@ async function observabilityRecord(
     };
   }
 
+  const collector = await detectOtelCollectorRuntime(workspaceRoot, commandRunner, model.env);
+  if (!collector.available) {
+    return {
+      ...base,
+      state: 'waiting-configuration',
+      automation: 'automatic',
+      summary: 'OpenObserve is healthy, but the workspace OpenTelemetry Collector is not installed.',
+      nextStep: 'Apply the reviewed Observability plan to install a loopback-only telemetry gateway for applications.',
+      checks: [
+        ...base.checks,
+        {
+          id: 'openobserve-health',
+          label: 'OpenObserve health and credentials',
+          status: 'ok',
+          detail: runtime.detail,
+          owner: 'system',
+        },
+        {
+          id: 'otel-collector-runtime',
+          label: 'OpenTelemetry Collector',
+          status: 'missing',
+          detail: collector.detail,
+          owner: 'locallink',
+        },
+      ],
+    };
+  }
+
+  if (!collector.managedByLocalLink) {
+    return {
+      ...base,
+      state: 'waiting-user',
+      automation: 'guided',
+      summary: 'An unowned Docker OpenTelemetry Collector exists and has not been adopted.',
+      nextStep: 'Review its receiver, exporter, credential, and binding configuration before allowing LocalLink to manage it.',
+      checks: [...base.checks, {
+        id: 'otel-collector-ownership',
+        label: 'OpenTelemetry Collector ownership',
+        status: 'warning',
+        detail: collector.detail,
+        owner: 'user',
+      }],
+    };
+  }
+
+  if (!collector.running || !collector.healthy || !collector.configured) {
+    return {
+      ...base,
+      state: collector.running && !collector.healthy ? 'error' : 'waiting-configuration',
+      automation: 'automatic',
+      summary: !collector.running
+        ? 'The workspace OpenTelemetry Collector is configured but not running.'
+        : !collector.healthy
+          ? 'The workspace OpenTelemetry Collector is running but unhealthy.'
+          : 'The workspace OpenTelemetry Collector does not satisfy its receiver, exporter, credential, or loopback contract.',
+      nextStep: collector.running && !collector.healthy
+        ? `Inspect docker compose logs ${collector.serviceName || 'otel-collector'}, then reapply the Observability plan.`
+        : 'Apply the reviewed Observability plan to reconcile and verify the workspace telemetry gateway.',
+      checks: [...base.checks, {
+        id: 'otel-collector-health',
+        label: 'OpenTelemetry Collector',
+        status: collector.running && collector.healthy ? 'warning' : 'missing',
+        detail: collector.detail,
+        owner: 'locallink',
+      }],
+    };
+  }
+  const deliveryVerification = await readOtelCollectorVerification(workspaceRoot, {
+    receiverHttpEndpoint: collector.httpEndpoint || '',
+    backendOtlpBaseUrl: runtime.otlpBaseUrl || '',
+    organization: runtime.organization || 'default',
+    stream: runtime.stream || 'default',
+  });
+  if (!deliveryVerification) {
+    return {
+      ...base,
+      state: 'waiting-configuration',
+      automation: 'automatic',
+      summary: 'OpenObserve and the collector are healthy, but end-to-end telemetry delivery has not been verified.',
+      nextStep: 'Apply the reviewed Observability plan to send a timestamped OTLP canary and confirm it in OpenObserve.',
+      checks: [...base.checks, {
+        id: 'otel-delivery',
+        label: 'End-to-end telemetry delivery',
+        status: 'warning',
+        detail: 'No matching non-secret collector delivery verification record exists for the current endpoints and stream.',
+        owner: 'locallink',
+      }],
+    };
+  }
+
   const state = new WorkspaceStateRepository(path.join(workspaceRoot, '.locallink', 'workspace-state.json'));
   const ownership = (await state.load()).privateEdgeRoutes.find((route) => (
     route.serviceId === 'openobserve' && route.status === 'active'
@@ -681,6 +773,13 @@ async function observabilityRecord(
           owner: 'system',
         },
         {
+          id: 'otel-collector-health',
+          label: 'Application telemetry gateway',
+          status: 'ok',
+          detail: `${collector.detail} Delivery last verified at ${deliveryVerification.verifiedAt}.`,
+          owner: 'system',
+        },
+        {
           id: 'openobserve-route',
           label: 'Private OpenObserve UI',
           status: 'missing',
@@ -695,8 +794,8 @@ async function observabilityRecord(
     ...base,
     state: 'healthy',
     automation: 'guided',
-    summary: `OpenObserve is healthy, persistent, authenticated, and privately reachable at ${ownership.url}.`,
-    nextStep: `Open ${ownership.url} to inspect telemetry, then configure applications with the standard OTLP environment contract.`,
+    summary: `OpenObserve and the workspace telemetry gateway are healthy; the UI is privately reachable at ${ownership.url}.`,
+    nextStep: `Applications can send standard OTLP to ${collector.httpEndpoint}; open ${ownership.url} to inspect telemetry.`,
     checks: [
       ...base.checks,
       {
@@ -704,6 +803,13 @@ async function observabilityRecord(
         label: 'OpenObserve health and credentials',
         status: 'ok',
         detail: runtime.detail,
+        owner: 'system',
+      },
+      {
+        id: 'otel-collector-health',
+        label: 'Application telemetry gateway',
+        status: 'ok',
+        detail: `${collector.detail} Delivery last verified at ${deliveryVerification.verifiedAt}.`,
         owner: 'system',
       },
       {
