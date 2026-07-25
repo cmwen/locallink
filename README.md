@@ -17,8 +17,8 @@ should consume generic OIDC and OpenTelemetry contracts so Pocket ID,
 OpenObserve, or another compatible provider can be replaced without rewriting
 the application.
 
-Coding agents are also a first-class user. The product direction includes an
-installable LocalLink agent skill that teaches agents how to discover workspace
+Coding agents are also a first-class user. LocalLink includes an installable
+agent skill that teaches agents how to discover workspace
 configuration, declare services and Dockerfile blueprints, and integrate generic
 OIDC and OTLP interfaces without copying secrets or coupling applications to one
 provider.
@@ -193,6 +193,8 @@ OTEL_SERVICE_NAME=<application-name>
 
 LocalLink writes the first two values to the workspace `.env`; each application owns its distinct service name and instrumentation. The generated `.locallink/otel-collector.yaml` forwards logs, metrics, and traces to OpenObserve. It contains environment references but no credential value: Docker injects the derived authorization into the collector at runtime. Apply sends a timestamped OTLP canary through the same receiver and requires it to appear in the configured OpenObserve stream; a non-secret verification timestamp is recorded locally. OTLP receiver and health ports remain loopback-only and are never selected for Private Edge; only the OpenObserve UI is privately published.
 
+Docker applications must map `${LOCALLINK_OTEL_DOCKER_ENDPOINT}` into their own `OTEL_EXPORTER_OTLP_ENDPOINT`; `127.0.0.1` inside an application container is not the collector. LocalLink derives the Compose endpoint from the workspace collector service name.
+
 If an existing password no longer authenticates or its data is not persistent, LocalLink stops for an explicit recovery or migration decision. It never silently resets the root account, replaces the volume, or treats a reinstall as login recovery. See [the OpenObserve and OTLP operations guide](docs/openobserve.html).
 
 LocalLink's Dashboard, reverse proxy, Tailscale edge, Pocket ID, and observability capabilities are explained in [the out-of-box extension guide](docs/extensions.html). Workspace capability declarations live in `locallink.extensions.yml`; runtime services and secrets remain separately explicit. Extensions are optional: a workspace that enables none of them still retains the dashboard, service discovery, runtime state, ports, logs, and lifecycle controls.
@@ -231,6 +233,32 @@ locallink init my-local-infra
 
 The generated starter is extension-free: it includes the dashboard declaration, isolated Docker/PM2 namespaces, automatic dashboard port selection, the Dockerfile blueprint convention, optional service metadata fields, the Phase 2 advisor toggle, and the agent guardrails file. Private Edge, identity, and observability capabilities can be added later per workspace.
 
+### Install the coding-agent skill
+
+```bash
+# Default Codex home: ${CODEX_HOME:-~/.codex}/skills
+locallink skill install
+
+# Generic agent home: ${AGENTS_HOME:-~/.agents}/skills
+locallink skill install --target agents
+
+# Keep the skill inside this workspace
+locallink skill install --target workspace
+```
+
+LocalLink-managed copies update idempotently by content digest. If an unowned `locallink-workspace` skill already exists, installation stops without changing it. `--force` explicitly moves that directory to a timestamped backup before installing the bundled version.
+
+For a declared application, print one read-only integration view:
+
+```bash
+locallink service contract example-api
+```
+
+The contract joins its Private Edge route, generic OIDC registration values,
+and topology-correct OpenTelemetry settings. It includes secret key names and
+configured/not-configured booleans, never credential values. Application
+integrations remain opt-in through service metadata.
+
 ### Dev/test helpers
 
 ```bash
@@ -248,6 +276,7 @@ All dashboard APIs are local-only and served from the same process as the UI.
 | --- | --- | --- |
 | `GET` | `/api/state` | Rebuilds the current dashboard snapshot from external runtime managers: services, ports, PWA status, logs, and constraints. |
 | `GET` | `/api/extensions` | Separates available capabilities, workspace declarations, host installation, manual onboarding, configuration, and runtime health. |
+| `GET` | `/api/services/:selector/contract` | Returns the selected service’s secret-free Private Edge, OIDC, and OpenTelemetry integration contract. |
 | `POST` | `/api/extensions/plan` | Preview workspace-owned Private Edge, Identity, or Observability changes and user-owned security checkpoints without writing files. |
 | `POST` | `/api/extensions/apply` | Idempotently apply a Private Edge selection, install/configure Pocket ID, or install/adopt OpenObserve while preserving existing secrets, data, and edge selections. |
 | `POST` | `/api/extensions/routes/apply` | Apply a freshly confirmed Tailscale Serve route plan, verify every selected route, record workspace ownership, and roll back newly created routes on failure. |

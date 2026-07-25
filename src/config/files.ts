@@ -19,6 +19,9 @@ import {
   type ProjectModel,
   type ServiceDefinition,
   type ServiceGroup,
+  type ServiceIdentityIntegration,
+  type ServiceIntegrations,
+  type ServiceObservabilityIntegration,
   type TargetFile,
   type WorkspaceExtension,
   type WriteInfraConfigInput,
@@ -289,6 +292,91 @@ function normalizeMetadataList(input: unknown): string[] {
   return [];
 }
 
+function normalizePath(value: unknown, fallback: string): string {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  return trimmed.startsWith('/') && !trimmed.startsWith('//') ? trimmed : fallback;
+}
+
+function normalizeEnvPrefix(value: unknown, fallback: string): string {
+  const normalized = String(value || fallback)
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return normalized || fallback;
+}
+
+function normalizeIdentityIntegration(
+  input: unknown,
+  fallbackPrefix: string,
+): ServiceIdentityIntegration | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const value = input as Record<string, unknown>;
+  if (value.enabled === false) return undefined;
+  return {
+    callbackPath: normalizePath(value.callbackPath, '/auth/oidc/callback'),
+    postLogoutPath: normalizePath(value.postLogoutPath, '/'),
+    scopes: normalizeMetadataList(value.scopes).length > 0
+      ? normalizeMetadataList(value.scopes)
+      : ['openid', 'profile', 'email'],
+    envPrefix: normalizeEnvPrefix(value.envPrefix, fallbackPrefix),
+  };
+}
+
+function normalizeObservabilityIntegration(
+  input: unknown,
+  fallbackServiceName: string,
+): ServiceObservabilityIntegration | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const value = input as Record<string, unknown>;
+  if (value.enabled === false) return undefined;
+  const serviceName = typeof value.serviceName === 'string' && value.serviceName.trim()
+    ? value.serviceName.trim()
+    : fallbackServiceName;
+  return { serviceName };
+}
+
+function normalizeIntegrations(
+  input: unknown,
+  serviceId: string,
+): ServiceIntegrations | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const value = input as Record<string, unknown>;
+  const identity = normalizeIdentityIntegration(value.identity, normalizeEnvPrefix(serviceId, 'SERVICE'));
+  const observability = normalizeObservabilityIntegration(value.observability, serviceId);
+  return identity || observability ? { identity, observability } : undefined;
+}
+
+function integrationsFromLabels(
+  labels: Record<string, string>,
+  serviceId: string,
+): ServiceIntegrations | undefined {
+  const identityDeclared = [
+    'locallink.oidcCallbackPath',
+    'locallink.oidcPostLogoutPath',
+    'locallink.oidcScopes',
+    'locallink.oidcEnvPrefix',
+  ].some((key) => key in labels);
+  const observabilityDeclared = 'locallink.otelServiceName' in labels;
+  if (!identityDeclared && !observabilityDeclared) return undefined;
+  return {
+    identity: identityDeclared
+      ? normalizeIdentityIntegration({
+          callbackPath: labels['locallink.oidcCallbackPath'],
+          postLogoutPath: labels['locallink.oidcPostLogoutPath'],
+          scopes: labels['locallink.oidcScopes'],
+          envPrefix: labels['locallink.oidcEnvPrefix'],
+        }, normalizeEnvPrefix(serviceId, 'SERVICE'))
+      : undefined,
+    observability: observabilityDeclared
+      ? normalizeObservabilityIntegration({
+          serviceName: labels['locallink.otelServiceName'],
+        }, serviceId)
+      : undefined,
+  };
+}
+
 function resolveEnvValue(input: unknown, env: Record<string, string>): string {
   const value = String(input ?? '');
   return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g, (_match, key: string, fallback = '') => env[key] || fallback);
@@ -356,9 +444,10 @@ function buildComposeDefinitions(raw: string, env: Record<string, string>): Serv
     const defaults = defaultNotes(group, titleCaseFromKey(serviceName));
     const portEnv = labels['locallink.portEnv'];
     const name = labels['locallink.name'] || titleCaseFromKey(serviceName);
+    const id = slugify(name);
 
     return {
-      id: slugify(name),
+      id,
       name,
       kind: kindLabelForGroup(group),
       group,
@@ -373,6 +462,7 @@ function buildComposeDefinitions(raw: string, env: Record<string, string>): Serv
       downstream: normalizeMetadataList(labels['locallink.downstream']),
       envVars: normalizeMetadataList(labels['locallink.envVars']),
       docsUrl: typeof labels['locallink.docsUrl'] === 'string' ? labels['locallink.docsUrl'] : undefined,
+      integrations: integrationsFromLabels(labels, id),
     };
   });
 }
@@ -433,6 +523,7 @@ function buildEcosystemDefinitions(
     const metadata = app.locallink && typeof app.locallink === 'object' ? app.locallink : {};
     const group = (metadata.group as ServiceGroup) || 'pm2';
     const displayName = typeof metadata.name === 'string' ? metadata.name : app.name;
+    const id = slugify(displayName);
     const defaults = defaultNotes(group, displayName);
     const resolvedCwd = typeof app.cwd === 'string' ? path.resolve(path.dirname(filePath), app.cwd) : path.dirname(filePath);
     const portEnv = typeof metadata.portEnv === 'string' ? metadata.portEnv : undefined;
@@ -455,7 +546,7 @@ function buildEcosystemDefinitions(
       app.env?.LOCALLINK_MCP_PORT;
 
     return {
-      id: slugify(displayName),
+      id,
       name: displayName,
       kind: typeof metadata.kind === 'string' ? metadata.kind : kindLabelForGroup(group),
       group,
@@ -483,6 +574,7 @@ function buildEcosystemDefinitions(
       downstream: normalizeMetadataList(metadata.downstream),
       envVars: normalizeMetadataList(metadata.envVars),
       docsUrl: typeof metadata.docsUrl === 'string' ? metadata.docsUrl : undefined,
+      integrations: normalizeIntegrations(metadata.integrations, id),
     };
   });
 }
@@ -515,6 +607,7 @@ function buildServiceRegistryDefinitions(
     .filter((service): service is Record<string, unknown> => !!service && typeof service === 'object')
     .map((service) => {
       const displayName = typeof service.name === 'string' ? service.name : 'Unnamed Service';
+      const id = slugify(displayName);
       const group = (service.group as ServiceGroup) || 'pm2';
       const runtime =
         (service.runtime as ServiceDefinition['runtime']) || (group === 'windows' ? 'taskfile' : 'pm2');
@@ -536,7 +629,7 @@ function buildServiceRegistryDefinitions(
       const defaults = defaultNotes(group, displayName);
 
       return {
-        id: slugify(displayName),
+        id,
         name: displayName,
         kind: typeof service.kind === 'string' ? service.kind : kindLabelForGroup(group),
         group,
@@ -566,6 +659,7 @@ function buildServiceRegistryDefinitions(
         downstream: normalizeMetadataList(service.downstream),
         envVars: normalizeMetadataList(service.envVars),
         docsUrl: typeof service.docsUrl === 'string' ? service.docsUrl : undefined,
+        integrations: normalizeIntegrations(service.integrations, id),
       };
     });
 }

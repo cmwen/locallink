@@ -115,9 +115,26 @@ export interface ServiceDefinition {
   downstream?: string[];
   envVars?: string[];
   docsUrl?: string;
+  integrations?: ServiceIntegrations;
   blueprint?: ServiceBlueprint;
   compliance?: ServiceCompliance;
   windowsProcessName?: string;
+}
+
+export interface ServiceIdentityIntegration {
+  callbackPath: string;
+  postLogoutPath: string;
+  scopes: string[];
+  envPrefix: string;
+}
+
+export interface ServiceObservabilityIntegration {
+  serviceName: string;
+}
+
+export interface ServiceIntegrations {
+  identity?: ServiceIdentityIntegration;
+  observability?: ServiceObservabilityIntegration;
 }
 
 export interface ServiceRecord extends ServiceDefinition {

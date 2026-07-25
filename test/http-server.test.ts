@@ -77,6 +77,63 @@ test('HTTP server exposes the per-workspace extension lifecycle', async () => {
   await server.close();
 });
 
+test('HTTP server exposes a read-only application integration contract', async () => {
+  const root = await createTempProject();
+  const context = new AppContext(root);
+  await context.initialize();
+  context.readApplicationContract = async (selector: string) => ({
+    version: 1,
+    workspace: await context.getWorkspaceIdentity(),
+    service: {
+      id: selector,
+      name: 'Example API',
+      group: 'docker',
+    },
+    local: { url: 'http://127.0.0.1:5100' },
+    privateEdge: {
+      state: 'not-selected',
+      declared: true,
+      selected: false,
+      requiresConfirmation: false,
+      detail: 'Not selected.',
+    },
+    identity: {
+      state: 'not-declared',
+      declared: false,
+      provider: 'oidc',
+      scopes: ['openid'],
+      confidentialClient: true,
+      environment: [],
+      manualRegistrationRequired: true,
+      detail: 'Not declared.',
+    },
+    observability: {
+      state: 'not-declared',
+      declared: false,
+      provider: 'opentelemetry',
+      topology: 'docker',
+      endpoint: 'http://otel-collector:4318',
+      protocol: 'http/protobuf',
+      serviceName: selector,
+      deliveryVerified: true,
+      environment: [],
+      detail: 'Not declared.',
+    },
+    nextSteps: [],
+  });
+  const server = context.createServer();
+
+  const response = await server.inject({
+    method: 'GET',
+    url: '/api/services/example-api/contract',
+  });
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().service.id, 'example-api');
+  assert.equal(response.headers['cache-control'], 'no-store');
+  await server.close();
+});
+
 test('HTTP server plans before applying workspace-owned Private Edge changes', async () => {
   const root = await createTempProject();
   const context = new AppContext(root);

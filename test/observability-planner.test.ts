@@ -126,6 +126,7 @@ test('Observability apply installs OpenObserve on a free workspace port, generat
   assert.equal(applied.plan.collector.deliveryVerified, true);
   assert.equal(applied.verification?.backendConfirmed, true);
   assert.equal(applied.plan.telemetry.receiverHttpEndpoint, 'http://127.0.0.1:4318');
+  assert.equal(applied.plan.telemetry.dockerReceiverHttpEndpoint, 'http://otel-collector:4318');
   assert.equal(applied.plan.state, 'ready-to-route');
 
   const compose = parseDocument(await fs.readFile(path.join(root, 'docker-compose.yml'), 'utf8')).toJS() as any;
@@ -154,6 +155,7 @@ test('Observability apply installs OpenObserve on a free workspace port, generat
   assert.match(env, /^OTEL_COLLECTOR_HTTP_PORT=4318$/m);
   assert.match(env, /^OTEL_EXPORTER_OTLP_ENDPOINT=http:\/\/127\.0\.0\.1:4318$/m);
   assert.match(env, /^OTEL_EXPORTER_OTLP_PROTOCOL=http\/protobuf$/m);
+  assert.match(env, /^LOCALLINK_OTEL_DOCKER_ENDPOINT=http:\/\/otel-collector:4318$/m);
   assert.equal((await fs.stat(path.join(root, '.env'))).mode & 0o777, 0o600);
   const example = await fs.readFile(path.join(root, '.env.example'), 'utf8');
   assert.match(example, /^OPENOBSERVE_PASSWORD=$/m);

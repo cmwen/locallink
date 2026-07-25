@@ -4,13 +4,17 @@ import path from 'node:path';
 
 import type { FastifyInstance } from 'fastify';
 
+import {
+  installBundledAgentSkill,
+  type AgentSkillTarget,
+} from './agents/skill-installer';
 import { AppContext } from './app-context';
 import { initializeWorkspace } from './init/scaffold';
 import { startMcpServer } from './mcp/server';
 import { parseCliOptions } from './shared/cli-options';
 import { AppError, formatFatalError } from './shared/errors';
 import { configureLogger, getLoggerLevel, logError, logInfo } from './shared/logger';
-import { resolveProjectRoot } from './shared/paths';
+import { resolvePaths, resolveProjectRoot } from './shared/paths';
 import {
   formatActionableStartupDiagnosticsReport,
   formatStartupDiagnosticsReport,
@@ -62,6 +66,8 @@ function normalizeCommand(rawCommand: string | undefined): string {
     case 'extension':
     case 'doctor':
     case 'init':
+    case 'skill':
+    case 'service':
       return rawCommand;
     case 'help':
     case '-h':
@@ -83,6 +89,7 @@ function printHelp(): void {
       '  locallink [--log-level LEVEL] doctor    Print startup diagnostics and install guidance',
       '  locallink [--log-level LEVEL] snapshot  Print the current dashboard state as JSON',
       '  locallink [--log-level LEVEL] extensions Print declared, installed, manual, and healthy extension states',
+      '  locallink [--log-level LEVEL] service contract SERVICE Print a secret-free application integration contract',
       '  locallink [--log-level LEVEL] extension plan private-edge [SERVICE...]  Preview changes and select services',
       '  locallink [--log-level LEVEL] extension apply private-edge [SERVICE...] Apply workspace declarations and selection',
       '  locallink [--log-level LEVEL] extension plan identity  Preview Pocket ID installation and manual checkpoints',
@@ -91,6 +98,7 @@ function printHelp(): void {
       '  locallink [--log-level LEVEL] extension apply observability Install/adopt OpenObserve and its workspace OTLP collector safely',
       '  locallink [--log-level LEVEL] extension apply-routes private-edge TOKEN Apply a freshly confirmed host route plan',
       '  locallink [--log-level LEVEL] extension reconcile-routes private-edge TOKEN Remove stale owned routes safely',
+      '  locallink skill install [--target codex|agents|workspace] [--force] Install or update the LocalLink agent skill',
       '  locallink [--log-level LEVEL] init      Scaffold a starter LocalLink workspace here',
       '  locallink [--log-level LEVEL] init NAME Scaffold a starter LocalLink workspace in ./NAME',
       '',
@@ -101,8 +109,20 @@ function printHelp(): void {
       'Options:',
       '  -l, --log-level LEVEL  One of: silent, error, warn, info, debug',
       '                          Defaults to info. Can also be set via LOCALLINK_LOG_LEVEL.',
+      '  --target TARGET        Agent skill destination: codex (default), agents, or workspace',
+      '  --force                Back up and replace an unowned skill at the selected destination',
       '',
     ].join('\n'),
+  );
+}
+
+function parseAgentSkillTarget(value: string | undefined): AgentSkillTarget {
+  if (!value) return 'codex';
+  if (value === 'codex' || value === 'agents' || value === 'workspace') return value;
+  throw new AppError(
+    'INVALID_SKILL_TARGET',
+    `Unsupported agent skill target "${value}". Use one of: codex, agents, workspace.`,
+    400,
   );
 }
 
@@ -146,6 +166,33 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
 
+  if (command === 'skill') {
+    if (options.positionals[1] !== 'install' || options.positionals.length > 2) {
+      throw new AppError(
+        'INVALID_SKILL_COMMAND',
+        'Use "locallink skill install [--target codex|agents|workspace] [--force]".',
+        400,
+      );
+    }
+    const paths = resolvePaths(workspaceRoot);
+    const result = await installBundledAgentSkill({
+      appRoot: paths.appRoot,
+      workspaceRoot,
+      target: parseAgentSkillTarget(options.target),
+      force: options.force,
+    });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (options.target || options.force) {
+    throw new AppError(
+      'MISPLACED_SKILL_OPTION',
+      '--target and --force are supported only by "locallink skill install".',
+      400,
+    );
+  }
+
   const context = new AppContext(workspaceRoot);
   await context.initialize();
   const diagnostics = await context.getStartupDiagnostics();
@@ -184,6 +231,21 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     const workspace = await context.getWorkspaceIdentity();
     const extensions = await context.readExtensionLifecycle();
     process.stdout.write(`${JSON.stringify({ workspace, extensions }, null, 2)}\n`);
+    return;
+  }
+
+  if (command === 'service') {
+    const action = options.positionals[1];
+    const selector = options.positionals[2];
+    if (action !== 'contract' || !selector || options.positionals.length > 3) {
+      throw new AppError(
+        'INVALID_SERVICE_COMMAND',
+        'Use "locallink service contract SERVICE".',
+        400,
+      );
+    }
+    const contract = await context.readApplicationContract(selector);
+    process.stdout.write(`${JSON.stringify(contract, null, 2)}\n`);
     return;
   }
 
@@ -226,7 +288,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   throw new AppError(
     'UNKNOWN_COMMAND',
-    `Unsupported command "${command}". Use "web", "mcp", "doctor", "snapshot", "extensions", or "extension".`,
+    `Unsupported command "${command}". Use "web", "mcp", "doctor", "snapshot", "extensions", "extension", "service", "skill", or "init".`,
     400,
   );
 }

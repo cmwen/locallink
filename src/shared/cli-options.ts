@@ -4,11 +4,15 @@ import { CLI_LOG_LEVELS, type CliLogLevel, parseCliLogLevel } from './logger';
 export interface ParsedCliOptions {
   positionals: string[];
   logLevel?: CliLogLevel;
+  target?: string;
+  force: boolean;
 }
 
 export function parseCliOptions(argv: string[]): ParsedCliOptions {
   const positionals: string[] = [];
   let logLevel = parseCliLogLevel(process.env.LOCALLINK_LOG_LEVEL);
+  let target: string | undefined;
+  let force = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -48,11 +52,36 @@ export function parseCliOptions(argv: string[]): ParsedCliOptions {
       continue;
     }
 
+    if (argument === '--target') {
+      const value = argv[index + 1];
+      if (!value || value.startsWith('-')) {
+        throw new AppError('INVALID_SKILL_TARGET', '--target requires one of: codex, agents, workspace.', 400);
+      }
+      target = value;
+      index += 1;
+      continue;
+    }
+
+    if (argument.startsWith('--target=')) {
+      target = argument.slice('--target='.length);
+      if (!target) {
+        throw new AppError('INVALID_SKILL_TARGET', '--target requires one of: codex, agents, workspace.', 400);
+      }
+      continue;
+    }
+
+    if (argument === '--force') {
+      force = true;
+      continue;
+    }
+
     positionals.push(argument);
   }
 
   return {
     positionals,
     logLevel,
+    target,
+    force,
   };
 }

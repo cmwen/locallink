@@ -63,7 +63,8 @@ service declaration   → lifecycle and runtime status
 
       <section id="agents" class="section">
         <h2>Coding-agent contract</h2>
-        <p>LocalLink plans to provide an installable agent skill for discovering workspace capabilities, declaring services and Dockerfile blueprints, and integrating generic OIDC and OpenTelemetry interfaces. The skill should teach safe patterns; LocalLink remains the authority for generated configuration, secrets, and lifecycle state.</p>
+        <p>LocalLink bundles the <code>locallink-workspace</code> agent skill for discovering workspace capabilities, declaring services and Dockerfile blueprints, and integrating generic OIDC and OpenTelemetry interfaces. Install it with <code>locallink skill install</code>, or select <code>--target agents</code> / <code>--target workspace</code>. LocalLink-managed copies update by content digest; an unowned collision is preserved unless <code>--force</code> explicitly moves it to a timestamped backup.</p>
+        <p>The skill teaches safe patterns; LocalLink remains the authority for generated configuration, secrets, and lifecycle state. It distinguishes loopback OTLP for host/PM2 apps from the derived Compose endpoint for Docker apps and never tells applications to carry OpenObserve credentials.</p>
         <p>See the <a href="./product-goal.md">product goal</a> for the agreed capability boundaries and configuration-ownership direction.</p>
       </section>
 

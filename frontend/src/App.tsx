@@ -1285,6 +1285,7 @@ function ExtensionsWorkspace({
               <ConfigLine label="Collector configuration" value={`${observabilityPlan.collector.configurationState} / ${observabilityPlan.collector.credentialInjectionConfigured ? 'backend authorization injected' : 'authorization incomplete'} / ${observabilityPlan.collector.loopbackOnly ? 'loopback-only' : 'binding needs attention'}`} />
               <ConfigLine label="End-to-end delivery" value={observabilityPlan.collector.deliveryVerified ? `Verified ${observabilityPlan.collector.lastDeliveryVerifiedAt || ''}` : 'Not yet verified'} />
               <ConfigLine label="Application OTLP/HTTP" value={`${observabilityPlan.telemetry.receiverHttpEndpoint} · ${observabilityPlan.telemetry.protocol}`} />
+              <ConfigLine label="Docker OTLP/HTTP" value={observabilityPlan.telemetry.dockerReceiverHttpEndpoint} />
               <ConfigLine label="Application OTLP/gRPC" value={observabilityPlan.telemetry.receiverGrpcEndpoint} />
               <ConfigLine label="Backend OTLP base" value={observabilityPlan.telemetry.otlpBaseUrl} />
               <ConfigLine label="Organization / stream" value={`${observabilityPlan.telemetry.organization} / ${observabilityPlan.telemetry.stream}`} />

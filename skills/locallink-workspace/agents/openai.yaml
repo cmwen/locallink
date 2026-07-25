@@ -1,0 +1,4 @@
+interface:
+  display_name: "LocalLink Workspace"
+  short_description: "Build secure, observable LocalLink services"
+  default_prompt: "Use $locallink-workspace to add or integrate a service in this LocalLink workspace."

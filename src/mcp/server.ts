@@ -149,6 +149,17 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
   );
 
   server.registerTool(
+    'read_application_contract',
+    {
+      description: 'Return a read-only, secret-free Private Edge, generic OIDC, and OpenTelemetry contract for one declared service.',
+      inputSchema: z.object({
+        service: z.string().min(1),
+      }),
+    },
+    async ({ service }) => textResponse(JSON.stringify(await context.readApplicationContract(service), null, 2)),
+  );
+
+  server.registerTool(
     'apply_extension_workspace_plan',
     {
       description: 'Apply only the workspace declaration and local environment portion of a previously reviewable extension plan.',

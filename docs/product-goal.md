@@ -119,8 +119,8 @@ vendor-neutral.
 
 ## Coding-agent integration
 
-Coding agents are a first-class LocalLink user. LocalLink should provide an
-installable agent skill that teaches an agent how to:
+Coding agents are a first-class LocalLink user. LocalLink provides the
+installable `locallink-workspace` skill, which teaches an agent how to:
 
 - Discover the active workspace, installed capabilities, and generated service
   connection information without exposing secrets in logs.
@@ -133,10 +133,19 @@ installable agent skill that teaches an agent how to:
 - Validate health, login redirects, telemetry delivery, and edge URLs after a
   change.
 
-The CLI should eventually offer an explicit command to install or update this
-skill for supported coding agents. The skill is guidance and an interface
+The CLI installs or updates the bundled skill with `locallink skill install`.
+Codex, generic agent-home, and workspace-local targets are explicit. Managed
+copies update by digest; an unowned collision is preserved unless `--force`
+moves it to a timestamped backup. The skill is guidance and an interface
 contract; LocalLink remains the authority for workspace state, generated values,
 and lifecycle operations.
+
+The implemented `locallink service contract <service>` command is the
+service-specific discovery boundary used by humans and agents. It joins the
+reviewed Private Edge route, provider-neutral OIDC registration contract, and
+the correct host-or-Docker OTLP endpoint without returning a credential value.
+Identity and observability remain explicit per-service declarations rather than
+being silently inferred from healthy shared infrastructure.
 
 ## Configuration ownership
 

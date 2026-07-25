@@ -29,6 +29,7 @@ locallink extension apply-routes private-edge "&lt;token-from-plan&gt;"</code></
         <h2>Access model</h2>
         <ul>
           <li><code>OTEL_EXPORTER_OTLP_ENDPOINT</code> is the workspace collector’s loopback OTLP/HTTP origin.</li>
+          <li>Docker applications map <code>LOCALLINK_OTEL_DOCKER_ENDPOINT</code> into their standard <code>OTEL_EXPORTER_OTLP_ENDPOINT</code>; container loopback must not be used to reach the collector.</li>
           <li><code>OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf</code> gives applications a standard, backend-neutral export contract.</li>
           <li>Each application sets its own <code>OTEL_SERVICE_NAME</code> and chooses which signals and instrumentation to enable.</li>
           <li><code>OPENOBSERVE_ENDPOINT</code> and <code>OPENOBSERVE_OTLP_BASE_URL</code> are backend values for LocalLink and the collector, not normal application configuration.</li>

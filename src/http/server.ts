@@ -69,6 +69,9 @@ const extensionRouteReconcileSchema = z.object({
   capability: z.literal('private-edge'),
   confirmationToken: z.string().regex(/^private-edge-removal:[a-f0-9]{64}$/),
 });
+const serviceContractParamsSchema = z.object({
+  selector: z.string().min(1),
+});
 
 function toErrorPayload(error: unknown) {
   if (isAppError(error)) {
@@ -147,6 +150,13 @@ export function createHttpServer(context: AppContext) {
   app.get('/api/extensions', async (_request, reply) => {
     reply.header('Cache-Control', 'no-store');
     return context.readExtensionLifecycle();
+  });
+
+  app.get('/api/services/:selector/contract', async (request, reply) => {
+    const parsed = serviceContractParamsSchema.safeParse(request.params);
+    if (!parsed.success) throw new AppError('INVALID_PARAMS', parsed.error.issues[0]?.message || 'Invalid service selector.', 400);
+    reply.header('Cache-Control', 'no-store');
+    return context.readApplicationContract(parsed.data.selector);
   });
 
   app.post('/api/extensions/plan', async (request, reply) => {

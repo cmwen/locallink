@@ -82,6 +82,7 @@ export interface ObservabilityInstallPlan {
     otlpBaseUrl: string;
     receiverGrpcEndpoint: string;
     receiverHttpEndpoint: string;
+    dockerReceiverHttpEndpoint: string;
     protocol: 'http/protobuf';
     credentialsConfigured: boolean;
   };
@@ -317,6 +318,7 @@ export class ObservabilityPlanner {
     const otlpBaseUrl = `${localUrl}/api/${organization}`;
     const receiverGrpcEndpoint = `http://127.0.0.1:${collectorPorts.grpc}`;
     const receiverHttpEndpoint = `http://127.0.0.1:${collectorPorts.http}`;
+    const dockerReceiverHttpEndpoint = `http://${collectorRuntime.serviceName || 'otel-collector'}:4318`;
     const collectorHealthUrl = `http://127.0.0.1:${collectorPorts.health}/`;
     const deliveryVerification = await readOtelCollectorVerification(this.root, {
       receiverHttpEndpoint,
@@ -350,7 +352,8 @@ export class ObservabilityPlanner {
     const customCollectorNeedsReview = collectorRuntime.available
       && !collectorRuntime.managedByLocalLink;
     const collectorContractConfigured = model.env.OTEL_EXPORTER_OTLP_ENDPOINT === receiverHttpEndpoint
-      && model.env.OTEL_EXPORTER_OTLP_PROTOCOL === 'http/protobuf';
+      && model.env.OTEL_EXPORTER_OTLP_PROTOCOL === 'http/protobuf'
+      && model.env.LOCALLINK_OTEL_DOCKER_ENDPOINT === dockerReceiverHttpEndpoint;
 
     const steps: ExtensionPlanStep[] = [
       {
@@ -487,7 +490,7 @@ export class ObservabilityPlanner {
         status: collectorContractConfigured ? 'complete' : 'pending',
         automatic: true,
         targetFile: '.env',
-        detail: `Applications use OTEL_EXPORTER_OTLP_ENDPOINT=${receiverHttpEndpoint} and OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf with no OpenObserve authorization header.`,
+        detail: `Host apps use OTEL_EXPORTER_OTLP_ENDPOINT=${receiverHttpEndpoint}; Docker apps map LOCALLINK_OTEL_DOCKER_ENDPOINT=${dockerReceiverHttpEndpoint} into the same standard variable. Neither sends an OpenObserve authorization header.`,
       },
       {
         id: 'start-otel-collector',
@@ -629,6 +632,7 @@ export class ObservabilityPlanner {
         otlpBaseUrl,
         receiverGrpcEndpoint,
         receiverHttpEndpoint,
+        dockerReceiverHttpEndpoint,
         protocol: 'http/protobuf',
         credentialsConfigured: runtime.credentialsConfigured,
       },
@@ -703,6 +707,7 @@ export class ObservabilityPlanner {
           OTEL_COLLECTOR_HEALTH_PORT: before.collector.healthPort,
           OTEL_EXPORTER_OTLP_ENDPOINT: receiverHttpEndpoint,
           OTEL_EXPORTER_OTLP_PROTOCOL: 'http/protobuf',
+          LOCALLINK_OTEL_DOCKER_ENDPOINT: `http://${collectorRuntime.serviceName || 'otel-collector'}:4318`,
         },
       },
     });
@@ -726,6 +731,7 @@ export class ObservabilityPlanner {
           OTEL_COLLECTOR_HEALTH_PORT: '13133',
           OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318',
           OTEL_EXPORTER_OTLP_PROTOCOL: 'http/protobuf',
+          LOCALLINK_OTEL_DOCKER_ENDPOINT: 'http://otel-collector:4318',
         },
         unset: ['OPENOBSERVE_TOKEN', 'OTEL_EXPORTER_OTLP_HEADERS'],
       },
@@ -815,7 +821,7 @@ export class ObservabilityPlanner {
               'locallink.detail': 'Receives standard OTLP logs, metrics, and traces on loopback and forwards them to the configured observability backend.',
               'locallink.tags': 'docker,observability,opentelemetry,otlp,logs,metrics,traces',
               'locallink.portEnv': 'OTEL_COLLECTOR_HTTP_PORT',
-              'locallink.envVars': 'OTEL_COLLECTOR_GRPC_PORT;OTEL_COLLECTOR_HTTP_PORT;OTEL_EXPORTER_OTLP_ENDPOINT;OTEL_EXPORTER_OTLP_PROTOCOL',
+              'locallink.envVars': 'OTEL_COLLECTOR_GRPC_PORT;OTEL_COLLECTOR_HTTP_PORT;OTEL_EXPORTER_OTLP_ENDPOINT;OTEL_EXPORTER_OTLP_PROTOCOL;LOCALLINK_OTEL_DOCKER_ENDPOINT',
               'locallink.docsUrl': 'https://opentelemetry.io/docs/collector/',
             },
           },

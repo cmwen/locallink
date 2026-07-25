@@ -197,7 +197,7 @@ test('ConfigRepository loads optional service metadata from ecosystem and compos
   const root = await createTempProject();
   await fs.writeFile(
     path.join(root, 'docker-compose.yml'),
-    'services:\n  postgres:\n    image: postgres:16-alpine\n    labels:\n      locallink.name: Postgres Compose\n      locallink.group: docker\n      locallink.dependsOn: auth\n      locallink.downstream: api;worker\n      locallink.envVars: POSTGRES_PORT\n      locallink.docsUrl: https://example.com/postgres\n',
+    'services:\n  postgres:\n    image: postgres:16-alpine\n    labels:\n      locallink.name: Postgres Compose\n      locallink.group: docker\n      locallink.dependsOn: auth\n      locallink.downstream: api;worker\n      locallink.envVars: POSTGRES_PORT\n      locallink.docsUrl: https://example.com/postgres\n      locallink.oidcCallbackPath: /auth/oidc/callback\n      locallink.oidcScopes: openid;profile;email\n      locallink.oidcEnvPrefix: POSTGRES_UI\n      locallink.otelServiceName: workspace.postgres\n',
     'utf8',
   );
   await fs.writeFile(
@@ -222,6 +222,15 @@ test('ConfigRepository loads optional service metadata from ecosystem and compos
   assert.deepEqual(postgres.downstream, ['api', 'worker']);
   assert.deepEqual(postgres.envVars, ['POSTGRES_PORT']);
   assert.equal(postgres.docsUrl, 'https://example.com/postgres');
+  assert.deepEqual(postgres.integrations?.identity, {
+    callbackPath: '/auth/oidc/callback',
+    postLogoutPath: '/',
+    scopes: ['openid', 'profile', 'email'],
+    envPrefix: 'POSTGRES_UI',
+  });
+  assert.deepEqual(postgres.integrations?.observability, {
+    serviceName: 'workspace.postgres',
+  });
 });
 
 test('ConfigRepository resolves loopback Compose bindings and environment fallbacks to the published port', async () => {

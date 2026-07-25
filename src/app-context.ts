@@ -26,6 +26,10 @@ import { verifyBlueprintCompliance } from './runtime/lego';
 import { inspectProcess, reviewProcessTermination, terminateProcess } from './runtime/resources';
 import { WorkspaceStateRepository } from './state/workspace-state';
 import { RuntimeResolver } from './runtime/snapshot';
+import {
+  buildApplicationServiceContract,
+  type ApplicationServiceContract,
+} from './services/application-contract';
 import { StartupDiagnosticsService } from './startup/diagnostics';
 import { resolvePaths } from './shared/paths';
 import { logDebug, logInfo, mirrorBrokerEntry } from './shared/logger';
@@ -56,6 +60,19 @@ import type {
   WorkspaceState,
 } from './shared/contracts';
 import { AppError } from './shared/errors';
+
+async function captureReadOnlyPlan<T>(
+  operation: Promise<T>,
+  fallback: string,
+): Promise<{ plan?: T; error?: string }> {
+  try {
+    return { plan: await operation };
+  } catch (error) {
+    return {
+      error: error instanceof AppError ? error.message : fallback,
+    };
+  }
+}
 
 export class AppContext {
   readonly paths;
@@ -191,6 +208,31 @@ export class AppContext {
     await this.configRepository.hydrateProcessEnv();
     const model = await this.configRepository.loadProjectModel();
     return buildExtensionLifecycles(model.extensions, undefined, this.paths.root);
+  }
+
+  async readApplicationContract(selector: string): Promise<ApplicationServiceContract> {
+    await this.configRepository.hydrateProcessEnv();
+    const model = await this.configRepository.loadProjectModel();
+    const [edgePlan, identityResult, observabilityResult] = await Promise.all([
+      this.extensionPlanner.plan('private-edge'),
+      captureReadOnlyPlan(
+        this.identityPlanner.plan('identity'),
+        'The workspace identity plan could not be evaluated.',
+      ),
+      captureReadOnlyPlan(
+        this.observabilityPlanner.plan('observability'),
+        'The workspace observability plan could not be evaluated.',
+      ),
+    ]);
+    return buildApplicationServiceContract({
+      model,
+      edgePlan,
+      identityPlan: identityResult.plan,
+      identityPlanError: identityResult.error,
+      observabilityPlan: observabilityResult.plan,
+      observabilityPlanError: observabilityResult.error,
+      selector,
+    });
   }
 
   async planExtension(

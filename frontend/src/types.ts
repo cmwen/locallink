@@ -326,6 +326,7 @@ export interface ObservabilityInstallPlan {
     otlpBaseUrl: string;
     receiverGrpcEndpoint: string;
     receiverHttpEndpoint: string;
+    dockerReceiverHttpEndpoint: string;
     protocol: 'http/protobuf';
     credentialsConfigured: boolean;
   };
