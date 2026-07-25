@@ -3,6 +3,8 @@ import type {
   ExtensionLifecycleRecord,
   ExtensionApplyResult,
   ExtensionInstallPlan,
+  IdentityApplyResult,
+  IdentityInstallPlan,
   LogEntry,
   PortResolution,
   ProcessInspection,
@@ -287,6 +289,22 @@ export async function applyPrivateEdge(services?: string[]): Promise<ExtensionAp
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ capability: 'private-edge', services }),
+  });
+}
+
+export async function planIdentity(): Promise<IdentityInstallPlan> {
+  return fetchJson<IdentityInstallPlan>('./api/extensions/plan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ capability: 'identity' }),
+  });
+}
+
+export async function applyIdentity(): Promise<IdentityApplyResult> {
+  return fetchJson<IdentityApplyResult>('./api/extensions/apply', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ capability: 'identity' }),
   });
 }
 

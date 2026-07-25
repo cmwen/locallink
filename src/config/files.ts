@@ -34,6 +34,7 @@ const { builders: b, namedTypes: n, visit } = types;
 type BabelParse = (source: string, options?: any) => any;
 
 let babelParsePromise: Promise<BabelParse> | undefined;
+const HYDRATED_PROCESS_ENV = new Map<string, string>();
 
 function loadBabelParse(): Promise<BabelParse> {
   babelParsePromise ??= import('@babel/parser').then(({ parse: babelParse }) => babelParse as BabelParse);
@@ -136,7 +137,9 @@ function parseEnvMap(content: string): Record<string, string> {
 
 function mergeRuntimeEnv(values: Record<string, string>): Record<string, string> {
   const runtimeOverrides = Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+    Object.entries(process.env).filter((entry): entry is [string, string] => (
+      typeof entry[1] === 'string' && HYDRATED_PROCESS_ENV.get(entry[0]) !== entry[1]
+    )),
   );
   return {
     ...values,
@@ -235,6 +238,11 @@ function normalizeLabels(labels: unknown): Record<string, string> {
     return {};
   }
 
+  const node = labels as { toJSON?: () => unknown };
+  if (typeof node.toJSON === 'function') {
+    return normalizeLabels(node.toJSON());
+  }
+
   if (Array.isArray(labels)) {
     return Object.fromEntries(
       labels
@@ -253,6 +261,13 @@ function normalizeLabels(labels: unknown): Record<string, string> {
   }
 
   return {};
+}
+
+function normalizeStringList(value: unknown): string[] {
+  if (!value) return [];
+  const node = value as { toJSON?: () => unknown };
+  const plain = typeof node.toJSON === 'function' ? node.toJSON() : value;
+  return Array.isArray(plain) ? plain.map(String) : [];
 }
 
 function normalizeMetadataList(input: unknown): string[] {
@@ -577,15 +592,44 @@ function applyComposePatch(content: string, patch: ComposePatch): string {
   if (updates.restart) {
     serviceNode.set('restart', updates.restart);
   }
+  if (updates.profiles) {
+    serviceNode.set('profiles', document.createNode(updates.profiles));
+  }
   if (updates.ports) {
     serviceNode.set('ports', document.createNode(updates.ports));
   }
   if (updates.environment) {
-    serviceNode.set('environment', document.createNode(updates.environment));
+    const existingEnvironment = normalizeLabels(serviceNode.get('environment') as unknown);
+    serviceNode.set('environment', document.createNode({ ...existingEnvironment, ...updates.environment }));
+  }
+  if (updates.volumes) {
+    const existingVolumes = normalizeStringList(serviceNode.get('volumes') as unknown);
+    const volumes = [...new Set([...existingVolumes, ...updates.volumes])];
+    serviceNode.set('volumes', document.createNode(volumes));
+  }
+  if (updates.dependsOn) {
+    const existingDependsOn = normalizeStringList(serviceNode.get('depends_on') as unknown);
+    const dependsOn = [...new Set([...existingDependsOn, ...updates.dependsOn])];
+    serviceNode.set('depends_on', document.createNode(dependsOn));
+  }
+  if (updates.healthcheck) {
+    serviceNode.set('healthcheck', document.createNode(updates.healthcheck));
   }
   if (updates.labels) {
     const existingLabels = normalizeLabels(serviceNode.get('labels') as unknown);
     serviceNode.set('labels', document.createNode({ ...existingLabels, ...updates.labels }));
+  }
+  if (patch.topLevelVolumes) {
+    let volumesNode = document.get('volumes', true) as YAMLMap<unknown, unknown> | undefined;
+    if (!volumesNode || !(volumesNode instanceof YAMLMap)) {
+      volumesNode = document.createNode({}) as YAMLMap<unknown, unknown>;
+      document.set('volumes', volumesNode);
+    }
+    for (const [volumeName, volumeConfig] of Object.entries(patch.topLevelVolumes)) {
+      if (!volumesNode.has(volumeName)) {
+        volumesNode.set(volumeName, document.createNode(volumeConfig));
+      }
+    }
   }
 
   return String(document);
@@ -869,8 +913,10 @@ export class ConfigRepository {
   async hydrateProcessEnv(): Promise<void> {
     const envContent = await readFileOrEmpty(this.getFilePath('.env'));
     for (const [key, value] of Object.entries(parseEnvMap(envContent))) {
-      if (process.env[key] === undefined) {
+      const trackedValue = HYDRATED_PROCESS_ENV.get(key);
+      if (process.env[key] === undefined || (trackedValue !== undefined && process.env[key] === trackedValue)) {
         process.env[key] = value;
+        HYDRATED_PROCESS_ENV.set(key, value);
       }
     }
   }

@@ -12,6 +12,8 @@ import { parseTailscaleServeRoutes } from '../runtime/network-edge';
 import { detectCaddyRuntime } from '../runtime/caddy-runtime';
 import { detectTailscaleRuntime, tailscaleRuntimeCommand } from '../runtime/tailscale-runtime';
 import { WorkspaceStateRepository } from '../state/workspace-state';
+import { ConfigRepository } from '../config/files';
+import { detectPocketIdRuntime } from '../runtime/pocket-id-runtime';
 
 interface CapabilitySpec {
   id: string;
@@ -380,6 +382,149 @@ async function reverseProxyRecord(
   };
 }
 
+async function identityRecord(
+  spec: CapabilitySpec,
+  extension: WorkspaceExtension,
+  commandRunner: CommandRunner,
+  workspaceRoot?: string,
+): Promise<ExtensionLifecycleRecord> {
+  const base = baseDeclaredRecord(spec, workspaceRoot ? { ...extension, missingEnv: [] } : extension);
+  if (!extension.enabled || !workspaceRoot) return base;
+
+  const model = await new ConfigRepository(workspaceRoot).loadProjectModel();
+  const runtime = await detectPocketIdRuntime(workspaceRoot, commandRunner, model.env);
+  if (!runtime.available) {
+    return {
+      ...base,
+      state: 'waiting-configuration',
+      automation: 'automatic',
+      summary: 'Identity is declared, but the Pocket ID Docker service is not installed.',
+      nextStep: 'Run the reviewed Identity workspace plan; LocalLink can install Pocket ID with persistent storage and a generated secret.',
+      checks: [...base.checks, {
+        id: 'pocket-id-runtime',
+        label: 'Pocket ID runtime',
+        status: 'missing',
+        detail: runtime.detail,
+        owner: 'locallink',
+      }],
+    };
+  }
+
+  if (!runtime.encryptionConfigured || !runtime.appUrl?.startsWith('https://') || !runtime.persistent) {
+    const missing = [
+      !runtime.encryptionConfigured ? 'an encryption key' : '',
+      !runtime.appUrl?.startsWith('https://') ? 'a private HTTPS issuer' : '',
+      !runtime.persistent ? 'persistent /app/data storage' : '',
+    ].filter(Boolean);
+    return {
+      ...base,
+      state: 'waiting-configuration',
+      automation: 'automatic',
+      summary: 'Pocket ID is installed, but its workspace-owned configuration is incomplete.',
+      nextStep: `Run the Identity plan to configure ${missing.join(', ')}.`,
+      checks: [...base.checks, {
+        id: 'pocket-id-configuration',
+        label: 'Pocket ID configuration',
+        status: 'missing',
+        detail: runtime.detail,
+        owner: 'locallink',
+      }],
+    };
+  }
+
+  if (!runtime.running) {
+    return {
+      ...base,
+      state: 'installed',
+      automation: 'automatic',
+      summary: 'Pocket ID is configured with persistent storage but is not running.',
+      nextStep: 'Apply the reviewed Identity plan; LocalLink can start the Docker service and verify its built-in healthcheck.',
+      checks: [...base.checks, {
+        id: 'pocket-id-runtime',
+        label: 'Pocket ID runtime',
+        status: 'warning',
+        detail: runtime.detail,
+        owner: 'locallink',
+      }],
+    };
+  }
+
+  if (!runtime.healthy) {
+    return {
+      ...base,
+      state: 'error',
+      automation: 'automatic',
+      summary: 'Pocket ID is running, but its built-in healthcheck is failing.',
+      nextStep: `Inspect docker compose logs ${runtime.serviceName || 'pocket-id'} before publishing or registering OIDC clients.`,
+      checks: [...base.checks, {
+        id: 'pocket-id-health',
+        label: 'Pocket ID health',
+        status: 'missing',
+        detail: runtime.detail,
+        owner: 'system',
+      }],
+    };
+  }
+
+  const state = new WorkspaceStateRepository(path.join(workspaceRoot, '.locallink', 'workspace-state.json'));
+  const ownership = (await state.load()).privateEdgeRoutes.find((route) => (
+    route.serviceId === 'pocket-id'
+    && route.status === 'active'
+    && (!runtime.appUrl || route.url === runtime.appUrl)
+  ));
+  if (!ownership) {
+    return {
+      ...base,
+      state: 'waiting-configuration',
+      automation: 'guided',
+      summary: 'Pocket ID is healthy locally, but LocalLink has not verified its private HTTPS route.',
+      nextStep: 'Review and confirm the generated Private Edge route before creating the first administrator.',
+      checks: [
+        ...base.checks,
+        {
+          id: 'pocket-id-health',
+          label: 'Pocket ID health',
+          status: 'ok',
+          detail: runtime.detail,
+          owner: 'system',
+        },
+        {
+          id: 'pocket-id-route',
+          label: 'Private HTTPS issuer',
+          status: 'missing',
+          detail: `The configured issuer is ${runtime.appUrl}, but no matching LocalLink-owned active route is recorded.`,
+          owner: 'user',
+        },
+      ],
+    };
+  }
+
+  return {
+    ...base,
+    state: 'healthy',
+    automation: 'guided',
+    summary: `Pocket ID is healthy and privately reachable at ${ownership.url || runtime.appUrl}.`,
+    nextStep: `Complete the one-time administrator/passkey setup at ${(ownership.url || runtime.appUrl)?.replace(/\/$/, '')}/setup, then create one OIDC client per application.`,
+    checks: [
+      ...base.checks,
+      {
+        id: 'pocket-id-health',
+        label: 'Pocket ID health',
+        status: 'ok',
+        detail: runtime.detail,
+        owner: 'system',
+      },
+      {
+        id: 'pocket-id-route',
+        label: 'Private HTTPS issuer',
+        status: 'ok',
+        detail: `LocalLink owns and verifies ${ownership.url || runtime.appUrl}.`,
+        owner: 'locallink',
+      },
+    ],
+  };
+}
+
 export async function buildExtensionLifecycles(
   extensions: WorkspaceExtension[],
   commandRunner: CommandRunner = runCommand,
@@ -392,6 +537,7 @@ export async function buildExtensionLifecycles(
     claimedDeclarations.add(extension.id);
     if (spec.kind === 'network-edge') return privateEdgeRecord(spec, extension, commandRunner, workspaceRoot);
     if (spec.kind === 'reverse-proxy') return reverseProxyRecord(spec, extension, commandRunner, workspaceRoot);
+    if (spec.kind === 'identity-provider') return identityRecord(spec, extension, commandRunner, workspaceRoot);
     return baseDeclaredRecord(spec, extension);
   }));
 

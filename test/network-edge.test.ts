@@ -303,6 +303,41 @@ test('planPrivateEdgeRoutes generates exact reversible commands without mutating
   assert.match(plan.confirmationToken || '', /^private-edge:[a-f0-9]{64}$/);
 });
 
+test('planPrivateEdgeRoutes preserves an owned listener instead of reallocating it', async () => {
+  const commandRunner: CommandRunner = async (_command, args) => ({
+    ok: true,
+    code: 0,
+    signal: null,
+    stdout: args[0] === 'status'
+      ? JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'workspace.tailnet.ts.net.' } })
+      : JSON.stringify({
+          TCP: { 7452: { HTTPS: true } },
+          Web: {
+            'workspace.tailnet.ts.net:7452': {
+              Handlers: { '/': { Proxy: 'http://127.0.0.1:1411' } },
+            },
+          },
+        }),
+    stderr: '',
+    timedOut: false,
+  });
+
+  const plan = await planPrivateEdgeRoutes(
+    'workspace-a',
+    [{ id: 'pocket-id', name: 'Pocket ID', port: '1411' }],
+    'tailscale',
+    commandRunner,
+    '31000',
+    [],
+    undefined,
+    new Map([['pocket-id', '7452']]),
+  );
+
+  assert.equal(plan.state, 'in-sync');
+  assert.equal(plan.routes[0]?.httpsPort, '7452');
+  assert.equal(plan.routes[0]?.url, 'https://workspace.tailnet.ts.net:7452');
+});
+
 test('planPrivateEdgeRoutes detects active listeners and conflicts instead of replacing them', async () => {
   const status = JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'minipc.tailnet.ts.net.' } });
   const runnerWithTarget = (targetPort: string): CommandRunner => async (_command, args) => ({

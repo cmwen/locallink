@@ -4,6 +4,7 @@ import {
   executeServiceAction,
   applyPrivateEdge,
   applyPrivateEdgeRoutes,
+  applyIdentity,
   reconcilePrivateEdgeRoutes,
   cancelVersionUpdate,
   inspectProcess,
@@ -11,6 +12,7 @@ import {
   normalizeState,
   persistTemporaryRuntime,
   planPrivateEdge,
+  planIdentity,
   queueVersionUpdate,
   readDashboardState,
   readWorkspaceState,
@@ -21,6 +23,7 @@ import {
 import type {
   DashboardState,
   ExtensionInstallPlan,
+  IdentityInstallPlan,
   LogEntry,
   ProcessInspection,
   ProcessTerminationReview,
@@ -142,6 +145,7 @@ export function App() {
   const [updateQueued, setUpdateQueued] = useState(false);
   const [queuedVersionId, setQueuedVersionId] = useState('');
   const [extensionPlan, setExtensionPlan] = useState<ExtensionInstallPlan | null>(null);
+  const [identityPlan, setIdentityPlan] = useState<IdentityInstallPlan | null>(null);
   const [extensionApplying, setExtensionApplying] = useState(false);
   const [edgeServiceSelection, setEdgeServiceSelection] = useState<string[]>([]);
   const [edgeSelectionTouched, setEdgeSelectionTouched] = useState(false);
@@ -516,6 +520,42 @@ export function App() {
     }
   }
 
+  async function manageIdentity(action: 'plan' | 'apply' | 'routes') {
+    if (source !== 'api') {
+      setStatus('Pocket ID planning needs the live LocalLink API.');
+      return;
+    }
+    setExtensionApplying(true);
+    try {
+      if (action === 'plan') {
+        const plan = await planIdentity();
+        setIdentityPlan(plan);
+        setStatus(plan.summary);
+      } else if (action === 'apply') {
+        const result = await applyIdentity();
+        setIdentityPlan(result.plan);
+        setStatus(result.applied
+          ? `Pocket ID setup updated ${result.changedFiles.join(', ')}${result.started ? ' and started the service' : ''}.`
+          : result.plan.summary);
+        await refreshState();
+      } else {
+        const token = identityPlan?.privateEdge.confirmationToken;
+        if (!token) throw new Error('Preview Pocket ID again to obtain a fresh Private Edge confirmation token.');
+        const route = identityPlan.privateEdge.url || 'the generated private Pocket ID URL';
+        if (!window.confirm(`Publish Pocket ID through Private Edge?\n\n${route}\n\nThis route remains tailnet-only; LocalLink will verify it and roll it back if the attempt fails.`)) return;
+        const result = await applyPrivateEdgeRoutes(token);
+        setExtensionPlan(result.plan);
+        setIdentityPlan(await planIdentity());
+        setStatus(result.applied ? 'Pocket ID’s private HTTPS route was applied and verified.' : 'Pocket ID’s private route already matched the plan.');
+        await refreshState();
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Pocket ID planning failed.');
+    } finally {
+      setExtensionApplying(false);
+    }
+  }
+
   async function copyVisibleLogs() {
     const text = logs.map((log) => `${log.time} ${log.stream} ${log.level}: ${log.message}`).join('\n');
     await navigator.clipboard?.writeText(text);
@@ -589,10 +629,12 @@ export function App() {
           services={services}
           updateQueued={updateQueued}
           extensionPlan={extensionPlan}
+          identityPlan={identityPlan}
           extensionApplying={extensionApplying}
           edgeServiceSelection={edgeServiceSelection}
           query={queries.extensions}
           managePrivateEdge={managePrivateEdge}
+          manageIdentity={manageIdentity}
           setEdgeServiceSelection={setEdgeServiceSelection}
           setEdgeSelectionTouched={setEdgeSelectionTouched}
           queueUpdate={queueUpdate}
@@ -972,10 +1014,12 @@ function ExtensionsWorkspace({
   services,
   updateQueued,
   extensionPlan,
+  identityPlan,
   extensionApplying,
   edgeServiceSelection,
   query,
   managePrivateEdge,
+  manageIdentity,
   setEdgeServiceSelection,
   setEdgeSelectionTouched,
   queueUpdate,
@@ -985,10 +1029,12 @@ function ExtensionsWorkspace({
   services: ServiceRecord[];
   updateQueued: boolean;
   extensionPlan: ExtensionInstallPlan | null;
+  identityPlan: IdentityInstallPlan | null;
   extensionApplying: boolean;
   edgeServiceSelection: string[];
   query: string;
   managePrivateEdge: (action: 'plan' | 'apply' | 'routes' | 'reconcile') => Promise<void>;
+  manageIdentity: (action: 'plan' | 'apply' | 'routes') => Promise<void>;
   setEdgeServiceSelection: React.Dispatch<React.SetStateAction<string[]>>;
   setEdgeSelectionTouched: React.Dispatch<React.SetStateAction<boolean>>;
   queueUpdate: () => Promise<void>;
@@ -1061,6 +1107,13 @@ function ExtensionsWorkspace({
               ) : null}
               {!extensionPlan?.canApply && extensionPlan?.reconciliation.state === 'ready' && extensionPlan.reconciliation.confirmationToken ? (
                 <button className="btn" type="button" disabled={extensionApplying} onClick={() => void managePrivateEdge('reconcile')}>Reconcile owned routes</button>
+              ) : null}
+              <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageIdentity('plan')}>Preview Pocket ID setup</button>
+              {identityPlan?.canApply ? (
+                <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageIdentity('apply')}>Install/configure Pocket ID</button>
+              ) : null}
+              {!identityPlan?.canApply && identityPlan?.privateEdge.confirmationToken && identityPlan.privateEdge.state === 'ready' ? (
+                <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageIdentity('routes')}>Publish Pocket ID privately</button>
               ) : null}
               <a className="btn" href="./docs/pocket-id-tailscale.html" target="_blank" rel="noreferrer">Private SSO setup</a>
               <a className="btn ghost" href="./docs/extensions.html" target="_blank" rel="noreferrer">Extension guide</a>
@@ -1137,6 +1190,33 @@ function ExtensionsWorkspace({
                 ))}
               </div>
             ) : null}
+          </article> : null}
+
+          {showConfig && identityPlan ? <article className="config-card">
+            <strong>Pocket ID onboarding plan</strong>
+            <p>{identityPlan.summary}</p>
+            <div className="config-lines">
+              <ConfigLine label="Provider" value="Pocket ID · generic OIDC contract" />
+              <ConfigLine label="Docker runtime" value={`${identityPlan.service.installed ? 'installed' : 'missing'} / ${identityPlan.service.running ? 'running' : 'stopped'} / ${identityPlan.service.healthy ? 'healthy' : 'not healthy'}`} />
+              <ConfigLine label="Persistent state" value={identityPlan.service.persistent ? 'Configured at /app/data' : 'Not configured'} />
+              <ConfigLine label="Private issuer" value={identityPlan.service.issuer || identityPlan.privateEdge.url || 'Waiting for a Private Edge route'} />
+              <ConfigLine label="First administrator" value={identityPlan.service.setupUrl || 'Available after the private issuer is configured'} />
+              {identityPlan.steps.map((step) => (
+                <ConfigLine
+                  key={`identity-${step.id}`}
+                  label={`${step.label} · ${step.owner}`}
+                  value={`${step.status} / ${step.automatic ? 'automatic' : 'manual'} / ${step.detail}`}
+                />
+              ))}
+            </div>
+            <div className="actions">
+              {identityPlan.service.issuer ? (
+                <a className="btn" href={identityPlan.service.issuer} target="_blank" rel="noreferrer">Open Pocket ID</a>
+              ) : null}
+              {identityPlan.service.setupUrl ? (
+                <a className="btn ghost" href={identityPlan.service.setupUrl} target="_blank" rel="noreferrer">Open first-admin setup</a>
+              ) : null}
+            </div>
           </article> : null}
 
           {showPorts ? <article className="config-card">

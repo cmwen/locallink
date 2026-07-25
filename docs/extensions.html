@@ -46,7 +46,9 @@ service declaration   → lifecycle and runtime status
 
       <section id="pocket-id" class="section">
         <h2>Pocket ID</h2>
-        <p>Provides passkey-backed OIDC sessions to internal applications after a user reaches them through Tailscale. It depends on a stable HTTPS issuer, persistent data, and an encryption key. LocalLink can automate provider installation, issuer discovery, generated secrets, and health checks; the first administrator/passkey and application identity choices remain user actions. See the <a href="./pocket-id-tailscale.html">private SSO guide</a>.</p>
+        <p>Provides passkey-backed OIDC sessions to internal applications after a user reaches them through Tailscale. <code>locallink extension plan identity</code> is read-only. <code>locallink extension apply identity</code> installs the Pocket ID v2 Docker service, preserves or creates its encryption key, adds persistent storage and a built-in healthcheck, merges Pocket ID into the existing edge selection, derives its stable HTTPS issuer, and starts and verifies the service.</p>
+        <p>New encryption keys are stored without a newline in <code>.locallink/secrets/pocket-id/encryption-key</code> with mode <code>0600</code>; they are not copied into <code>.env.example</code>. An existing <code>POCKET_ID_ENCRYPTION_KEY</code> deployment remains supported and is never silently migrated or rotated. A configured issuer that differs from the new route plan is treated as an identity migration requiring a user decision.</p>
+        <p>The first administrator/passkey, the fresh Private Edge route confirmation, and application identity choices remain user actions. See the <a href="./pocket-id-tailscale.html">private SSO guide</a>.</p>
         <p>Applications should declare a provider-neutral OIDC contract including callback URLs, logout URLs, scopes, and environment-variable names. Coding agents can then configure the application without coupling it directly to Pocket ID.</p>
       </section>
 

@@ -3,6 +3,11 @@ import fs from 'node:fs/promises';
 import { ConfigRepository } from './config/files';
 import { buildExtensionLifecycles } from './extensions/lifecycle';
 import {
+  IdentityPlanner,
+  type IdentityApplyResult,
+  type IdentityInstallPlan,
+} from './extensions/identity-planner';
+import {
   ExtensionPlanner,
   type ExtensionApplyResult,
   type ExtensionInstallPlan,
@@ -56,6 +61,8 @@ export class AppContext {
 
   readonly extensionPlanner;
 
+  readonly identityPlanner;
+
   readonly portAllocator;
 
   readonly runtimeResolver;
@@ -80,6 +87,13 @@ export class AppContext {
     this.logs = new LogBroker(mirrorBrokerEntry);
     this.workspaceState = new WorkspaceStateRepository(this.paths.workspaceStateFile);
     this.extensionPlanner = new ExtensionPlanner(this.paths.root, this.configRepository, undefined, this.workspaceState);
+    this.identityPlanner = new IdentityPlanner(
+      this.paths.root,
+      this.configRepository,
+      undefined,
+      this.workspaceState,
+      this.extensionPlanner,
+    );
     this.portAllocator = new PortAllocator();
     this.runtimeResolver = new RuntimeResolver(
       this.paths.root,
@@ -162,12 +176,16 @@ export class AppContext {
     return buildExtensionLifecycles(model.extensions, undefined, this.paths.root);
   }
 
-  async planExtension(capability: string, services?: string[]): Promise<ExtensionInstallPlan> {
-    return this.extensionPlanner.plan(capability, services);
+  async planExtension(capability: string, services?: string[]): Promise<ExtensionInstallPlan | IdentityInstallPlan> {
+    return capability === 'identity'
+      ? this.identityPlanner.plan(capability)
+      : this.extensionPlanner.plan(capability, services);
   }
 
-  async applyExtension(capability: string, services?: string[]): Promise<ExtensionApplyResult> {
-    const result = await this.extensionPlanner.apply(capability, services);
+  async applyExtension(capability: string, services?: string[]): Promise<ExtensionApplyResult | IdentityApplyResult> {
+    const result = capability === 'identity'
+      ? await this.identityPlanner.apply(capability)
+      : await this.extensionPlanner.apply(capability, services);
     this.logs.append(
       result.applied
         ? `${capability} workspace plan applied to ${result.changedFiles.join(', ')}.`

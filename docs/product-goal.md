@@ -85,6 +85,13 @@ provider, derive its issuer URL, generate local secrets, and verify discovery
 endpoints. A user must still create the first administrator/passkey and approve
 application identity choices.
 
+The implemented Pocket ID adapter uses a loopback-only Docker service, persistent
+`/app/data`, a built-in healthcheck, and a workspace-local mode-`0600` encryption
+key for new installations. It preserves existing environment keys, merges rather
+than replaces edge selections, derives the issuer from the reviewed Private Edge
+plan, and refuses to silently change an existing issuer. Route publication, the
+first administrator/passkey, and OIDC client registration stay explicit.
+
 Applications should integrate through a generic OIDC contract rather than
 depending directly on Pocket ID. A service adapter should declare callback URLs,
 logout URLs, scopes, and environment-variable names. This keeps the application

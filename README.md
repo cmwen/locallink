@@ -155,18 +155,19 @@ For a deeper implementation and operations guide, open [docs/index.html](docs/in
 
 ### Private Pocket ID application SSO
 
-This repository registers Pocket ID as a sample application-identity extension and declares it as an opt-in Docker Compose profile. A newly initialized workspace does not install or enable it. Tailscale remains the network gate with its existing login provider; Pocket ID supplies passkey-backed OIDC sessions to internal applications after the user joins the tailnet.
+Pocket ID is an installable application-identity extension. A newly initialized workspace remains extension-free until the operator chooses Identity. Tailscale remains the network gate with its existing login provider; Pocket ID supplies passkey-backed OIDC sessions to internal applications after the user joins the tailnet.
 
 ```bash
-cp .env.example .env
-openssl rand -base64 32
-# Set POCKET_ID_APP_URL and POCKET_ID_ENCRYPTION_KEY in .env.
-docker compose --profile identity up -d pocket-id
+locallink extension plan identity
+locallink extension apply identity
+
+# The resulting plan includes Pocket ID's fresh, reviewed Private Edge token.
+locallink extension apply-routes private-edge "<token-from-plan>"
 ```
 
-Use [the private Pocket ID + Tailscale setup guide](docs/pocket-id-tailscale.html) to configure a stable tailnet-only HTTPS issuer and register each internal service as an OIDC client. The dashboard also links to the [Pocket ID installation guide](https://pocket-id.org/docs/setup/installation) and [Tailscale Serve guide](https://tailscale.com/docs/features/tailscale-serve).
+The apply command adds a loopback-only Pocket ID v2 service, persistent `/app/data` volume, built-in healthcheck, safe defaults, and explicit Private Edge selection. New workspaces receive a mode-`0600` encryption key under `.locallink/secrets`; an existing environment key is preserved and never rotated automatically. LocalLink derives `POCKET_ID_APP_URL` from the deterministic private route, starts and checks the service, and leaves route confirmation, the first administrator/passkey, and per-application OIDC clients as explicit user decisions.
 
-Client IDs, client secrets, Pocket ID encryption keys, and real issuer domains belong in local secret management—not committed templates. Applications without native OIDC can use an OIDC-aware proxy documented by Pocket ID.
+Use [the private Pocket ID + Tailscale setup guide](docs/pocket-id-tailscale.html) for the remaining administrator and OIDC steps. Client IDs, client secrets, encryption keys, and real issuer domains belong in local secret management—not committed templates. Applications without native OIDC can use an OIDC-aware proxy documented by Pocket ID.
 
 LocalLink's Dashboard, reverse proxy, Tailscale edge, Pocket ID, and observability capabilities are explained in [the out-of-box extension guide](docs/extensions.html). Workspace capability declarations live in `locallink.extensions.yml`; runtime services and secrets remain separately explicit. Extensions are optional: a workspace that enables none of them still retains the dashboard, service discovery, runtime state, ports, logs, and lifecycle controls.
 
@@ -221,8 +222,8 @@ All dashboard APIs are local-only and served from the same process as the UI.
 | --- | --- | --- |
 | `GET` | `/api/state` | Rebuilds the current dashboard snapshot from external runtime managers: services, ports, PWA status, logs, and constraints. |
 | `GET` | `/api/extensions` | Separates available capabilities, workspace declarations, host installation, manual onboarding, configuration, and runtime health. |
-| `POST` | `/api/extensions/plan` | Preview workspace-owned Private Edge changes, optional explicit service selections, and user-owned security checkpoints without writing files. |
-| `POST` | `/api/extensions/apply` | Idempotently apply only the declaration, selected service ports, and local environment portion of a Private Edge plan. |
+| `POST` | `/api/extensions/plan` | Preview workspace-owned Private Edge or Identity changes and user-owned security checkpoints without writing files. |
+| `POST` | `/api/extensions/apply` | Idempotently apply a Private Edge workspace selection or install/configure Pocket ID while preserving existing secrets and edge selections. |
 | `POST` | `/api/extensions/routes/apply` | Apply a freshly confirmed Tailscale Serve route plan, verify every selected route, record workspace ownership, and roll back newly created routes on failure. |
 | `POST` | `/api/extensions/routes/reconcile` | Remove only deselected listeners that still match LocalLink ownership, forget stale ownership safely, verify the result, and restore earlier removals if the attempt fails. |
 | `GET` | `/api/configs` | Returns the raw infra files plus the derived service list. |
@@ -246,6 +247,7 @@ HTTP request bodies use camelCase:
 - `/api/configs`: `{ "targetFile": "...", "content"?: "...", "patch"?: { ... } }`
 - `/api/ports/next`: `{ "startFrom"?: 5000, "reserve"?: true, "service"?: "new service" }`
 - `/api/tasks`: `{ "runtime": "docker|pm2|taskfile", "serviceName": "...", "action": "start|stop|restart|up" }`
+- `/api/extensions/plan` and `/api/extensions/apply`: `{ "capability": "private-edge|identity", "services"?: ["service-id"] }`
 - `/api/extensions/routes/apply`: `{ "capability": "private-edge", "confirmationToken": "private-edge:<token-from-fresh-plan>" }`
 - `/api/extensions/routes/reconcile`: `{ "capability": "private-edge", "confirmationToken": "private-edge-removal:<token-from-fresh-plan>" }`
 

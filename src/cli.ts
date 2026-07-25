@@ -85,6 +85,8 @@ function printHelp(): void {
       '  locallink [--log-level LEVEL] extensions Print declared, installed, manual, and healthy extension states',
       '  locallink [--log-level LEVEL] extension plan private-edge [SERVICE...]  Preview changes and select services',
       '  locallink [--log-level LEVEL] extension apply private-edge [SERVICE...] Apply workspace declarations and selection',
+      '  locallink [--log-level LEVEL] extension plan identity  Preview Pocket ID installation and manual checkpoints',
+      '  locallink [--log-level LEVEL] extension apply identity Install/configure Pocket ID and select its Private Edge route',
       '  locallink [--log-level LEVEL] extension apply-routes private-edge TOKEN Apply a freshly confirmed host route plan',
       '  locallink [--log-level LEVEL] extension reconcile-routes private-edge TOKEN Remove stale owned routes safely',
       '  locallink [--log-level LEVEL] init      Scaffold a starter LocalLink workspace here',
@@ -191,7 +193,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (!capability || (action !== 'plan' && action !== 'apply' && action !== 'apply-routes' && action !== 'reconcile-routes')) {
       throw new AppError(
         'INVALID_EXTENSION_COMMAND',
-        'Use "locallink extension plan private-edge", "locallink extension apply private-edge", "locallink extension apply-routes private-edge TOKEN", or "locallink extension reconcile-routes private-edge TOKEN".',
+        'Use "locallink extension plan|apply private-edge [SERVICE...]", "locallink extension plan|apply identity", "locallink extension apply-routes private-edge TOKEN", or "locallink extension reconcile-routes private-edge TOKEN".',
         400,
       );
     }

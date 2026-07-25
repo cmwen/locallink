@@ -64,6 +64,55 @@ test('ConfigRepository patches docker-compose.yml while preserving leading comme
   assert.match(nextContent, /5000:3000/);
 });
 
+test('ConfigRepository merges Compose environments, mounts, dependencies, healthchecks, and named volumes', async () => {
+  const root = await createTempProject();
+  const composePath = path.join(root, 'docker-compose.yml');
+  await fs.writeFile(composePath, `services:
+  identity:
+    image: old
+    environment:
+      KEEP_ME: "yes"
+    volumes:
+      - existing-data:/existing
+    depends_on:
+      - database
+volumes:
+  existing-data: {}
+`, 'utf8');
+  const repository = new ConfigRepository(root);
+
+  await repository.writeInfraConfig({
+    targetFile: 'docker-compose.yml',
+    patch: {
+      kind: 'compose',
+      serviceName: 'identity',
+      updates: {
+        environment: { ADD_ME: 'also' },
+        volumes: ['identity-data:/app/data'],
+        dependsOn: ['edge'],
+        profiles: ['identity'],
+        healthcheck: {
+          test: ['CMD', '/app/identity', 'healthcheck'],
+          interval: '10s',
+          retries: 3,
+        },
+      },
+      topLevelVolumes: {
+        'identity-data': {},
+      },
+    },
+  });
+
+  const parsed = (await import('yaml')).parseDocument(await fs.readFile(composePath, 'utf8')).toJS() as any;
+  assert.deepEqual(parsed.services.identity.environment, { KEEP_ME: 'yes', ADD_ME: 'also' });
+  assert.deepEqual(parsed.services.identity.volumes, ['existing-data:/existing', 'identity-data:/app/data']);
+  assert.deepEqual(parsed.services.identity.depends_on, ['database', 'edge']);
+  assert.deepEqual(parsed.services.identity.profiles, ['identity']);
+  assert.deepEqual(parsed.services.identity.healthcheck.test, ['CMD', '/app/identity', 'healthcheck']);
+  assert.ok(parsed.volumes['existing-data']);
+  assert.ok(parsed.volumes['identity-data']);
+});
+
 test('ConfigRepository patches ecosystem.config.js with process.env references', async () => {
   const root = await createTempProject();
   const ecosystemPath = path.join(root, 'ecosystem.config.js');

@@ -232,14 +232,15 @@ export class ExtensionPlanner {
     if (!lifecycle) {
       throw new AppError('EXTENSION_PLAN_FAILED', 'Private Edge lifecycle could not be evaluated.', 500);
     }
+    await this.workspaceState.load();
     const routePlan = await routeAdapter.planRoutes(
       workspace.id,
       selectedServices,
       this.commandRunner,
       model.env.LOCALLINK_PRIVATE_EDGE_PORT_START,
       this.root,
+      this.workspaceState.read().privateEdgeRoutes,
     );
-    await this.workspaceState.load();
     const reconciliation = await routeAdapter.planRemovals(
       workspace.id,
       this.workspaceState.read().privateEdgeRoutes,

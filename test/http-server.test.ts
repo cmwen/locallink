@@ -106,6 +106,28 @@ test('HTTP server plans before applying workspace-owned Private Edge changes', a
   await server.close();
 });
 
+test('HTTP server exposes a read-only Pocket ID onboarding plan', async () => {
+  const root = await createTempProject();
+  const context = new AppContext(root);
+  await context.initialize();
+  const server = context.createServer();
+  const composeBefore = await fs.readFile(path.join(root, 'docker-compose.yml'), 'utf8');
+
+  const response = await server.inject({
+    method: 'POST',
+    url: '/api/extensions/plan',
+    payload: { capability: 'identity' },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().capability, 'identity');
+  assert.equal(response.json().provider, 'pocket-id');
+  assert.equal(response.json().canApply, true);
+  assert.ok(response.json().steps.some((step: { owner: string }) => step.owner === 'user'));
+  assert.equal(await fs.readFile(path.join(root, 'docker-compose.yml'), 'utf8'), composeBefore);
+  await server.close();
+});
+
 test('HTTP server accepts Docker Caddy route confirmation tokens', async () => {
   const root = await createTempProject();
   const context = new AppContext(root);

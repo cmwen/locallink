@@ -141,7 +141,7 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
     {
       description: 'Preview workspace-owned extension changes and explicit user-owned onboarding checkpoints without mutating files.',
       inputSchema: z.object({
-        capability: z.literal('private-edge'),
+        capability: z.enum(['private-edge', 'identity']),
         services: z.array(z.string()).optional(),
       }),
     },
@@ -153,7 +153,7 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
     {
       description: 'Apply only the workspace declaration and local environment portion of a previously reviewable extension plan.',
       inputSchema: z.object({
-        capability: z.literal('private-edge'),
+        capability: z.enum(['private-edge', 'identity']),
         services: z.array(z.string()).optional(),
       }),
     },

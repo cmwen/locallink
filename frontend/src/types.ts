@@ -247,6 +247,41 @@ export interface ExtensionApplyResult {
   plan: ExtensionInstallPlan;
 }
 
+export interface IdentityInstallPlan {
+  capability: 'identity';
+  provider: 'pocket-id';
+  state: 'ready-to-apply' | 'ready-to-route' | 'waiting-user' | 'healthy' | 'error';
+  summary: string;
+  canApply: boolean;
+  service: {
+    name: string;
+    installed: boolean;
+    running: boolean;
+    healthy: boolean;
+    persistent: boolean;
+    port: string;
+    issuer?: string;
+    setupUrl?: string;
+  };
+  privateEdge: {
+    declared: boolean;
+    selected: boolean;
+    state: string;
+    url?: string;
+    confirmationToken?: string;
+  };
+  steps: ExtensionPlanStep[];
+}
+
+export interface IdentityApplyResult {
+  capability: 'identity';
+  provider: 'pocket-id';
+  applied: boolean;
+  changedFiles: string[];
+  started: boolean;
+  plan: IdentityInstallPlan;
+}
+
 export interface ResourceProcess {
   pid: number;
   name: string;

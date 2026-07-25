@@ -58,7 +58,7 @@ const temporaryRuntimeSchema = z.object({
 const versionUpdateSchema = z.object({ from: z.string().min(1), to: z.string().min(1) });
 const portReservationSchema = z.object({ service: z.string().min(1), port: z.number().int().min(1024).max(65535) });
 const extensionCapabilitySchema = z.object({
-  capability: z.literal('private-edge'),
+  capability: z.enum(['private-edge', 'identity']),
   services: z.array(z.string().min(1)).max(100).optional(),
 });
 const extensionRouteApplySchema = z.object({

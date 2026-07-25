@@ -240,6 +240,7 @@ export async function planPrivateEdgeRoutes(
   configuredPortStart?: string,
   commandArgsPrefix: string[] = [],
   offlineServeConfig?: string,
+  routePreferences: Map<string, string> = new Map(),
 ): Promise<PrivateEdgeRoutePlan> {
   if (services.length === 0) {
     return {
@@ -294,7 +295,12 @@ export async function planPrivateEdgeRoutes(
   const ordered = [...services].sort((left, right) => left.id.localeCompare(right.id));
   const generatedPorts = new Set<number>();
   const routes = ordered.map((service, index): PrivateEdgePlannedRoute => {
-    let numericPort = configuredStart === undefined ? generatedHttpsPort(workspaceId, service.id) : configuredStart + index;
+    const preferredPort = Number(routePreferences.get(service.id));
+    let numericPort = Number.isInteger(preferredPort) && preferredPort >= 1 && preferredPort <= 65535
+      ? preferredPort
+      : configuredStart === undefined
+        ? generatedHttpsPort(workspaceId, service.id)
+        : configuredStart + index;
     if (numericPort > 65535) numericPort = 1024 + (numericPort - 65536);
     while (generatedPorts.has(numericPort)) numericPort = numericPort === 65535 ? 1024 : numericPort + 1;
     generatedPorts.add(numericPort);
@@ -446,6 +452,7 @@ export interface PrivateEdgeRouteAdapter {
     commandRunner: CommandRunner,
     configuredPortStart?: string,
     workspaceRoot?: string,
+    ownership?: PrivateEdgeRouteOwnership[],
   ): Promise<PrivateEdgeRoutePlan>;
   planRemovals(
     workspaceId: string,
@@ -469,8 +476,23 @@ class TailscaleServeRouteAdapter implements PrivateEdgeRouteAdapter {
     commandRunner: CommandRunner,
     configuredPortStart?: string,
     _workspaceRoot?: string,
+    ownership: PrivateEdgeRouteOwnership[] = [],
   ): Promise<PrivateEdgeRoutePlan> {
-    return planPrivateEdgeRoutes(workspaceId, services, this.command, commandRunner, configuredPortStart);
+    const preferences = new Map(
+      ownership
+        .filter((route) => route.adapter === this.id)
+        .map((route) => [route.serviceId, route.httpsPort]),
+    );
+    return planPrivateEdgeRoutes(
+      workspaceId,
+      services,
+      this.command,
+      commandRunner,
+      configuredPortStart,
+      [],
+      undefined,
+      preferences,
+    );
   }
 
   async planRemovals(
@@ -534,20 +556,26 @@ function buildPrivateEdgeCaddyfile(
   workspaceId: string,
   services: Array<{ id: string; name: string; port: string }>,
   upstreamHost = '127.0.0.1',
+  ownership: PrivateEdgeRouteOwnership[] = [],
 ): { content: string; proxyPorts: Map<string, string> } {
   const used = new Set<number>();
   const proxyPorts = new Map<string, string>();
-  const blocks = [...services].sort((left, right) => left.id.localeCompare(right.id)).map((service) => {
-    let port = generatedCaddyPort(workspaceId, service.id);
+  const blocks = [...services].sort((left, right) => left.id.localeCompare(right.id)).flatMap((service) => {
+    const owned = ownership.find((route) => route.adapter === 'tailscale-caddy' && route.serviceId === service.id);
+    const preferredPort = Number(owned?.proxyPort);
+    let port = Number.isInteger(preferredPort) && preferredPort >= 1 && preferredPort <= 65535
+      ? preferredPort
+      : generatedCaddyPort(workspaceId, service.id);
     while (used.has(port)) port = port >= 59999 ? 20000 : port + 1;
     used.add(port);
     proxyPorts.set(service.id, String(port));
-    return [
+    if (owned?.adopted) return [];
+    return [[
       `http://127.0.0.1:${port} {`,
       '  bind 127.0.0.1',
       `  reverse_proxy http://${upstreamHost}:${service.port}`,
       '}',
-    ].join('\n');
+    ].join('\n')];
   });
   const content = [
     '{',
@@ -576,6 +604,7 @@ class TailscaleCaddyRouteAdapter implements PrivateEdgeRouteAdapter {
     commandRunner: CommandRunner,
     configuredPortStart?: string,
     workspaceRoot?: string,
+    ownership: PrivateEdgeRouteOwnership[] = [],
   ): Promise<PrivateEdgeRoutePlan> {
     const generatedPath = '.locallink/generated/private-edge/Caddyfile';
     const [caddyRuntime, tailscaleRuntime] = await Promise.all([
@@ -596,6 +625,7 @@ class TailscaleCaddyRouteAdapter implements PrivateEdgeRouteAdapter {
       workspaceId,
       services,
       sharedSidecarNamespace ? 'host.docker.internal' : '127.0.0.1',
+      ownership,
     );
     const proxyServices = services.map((service) => ({ ...service, port: proxyPorts.get(service.id)! }));
     const tailscalePlan = await planPrivateEdgeRoutes(
@@ -608,6 +638,11 @@ class TailscaleCaddyRouteAdapter implements PrivateEdgeRouteAdapter {
       tailscaleRuntime.source === 'docker-compose' && tailscaleRuntime.manageable
         ? sidecarConfig ?? '{}'
         : undefined,
+      new Map(
+        ownership
+          .filter((route) => route.adapter === this.id)
+          .map((route) => [route.serviceId, route.httpsPort]),
+      ),
     );
     const routes = tailscalePlan.routes.map((route) => {
       const service = services.find((candidate) => candidate.id === route.serviceId)!;

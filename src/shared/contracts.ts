@@ -357,6 +357,7 @@ export interface PortReservation {
 
 export interface PrivateEdgeRouteOwnership {
   adapter: string;
+  adopted?: boolean;
   serviceId: string;
   serviceName: string;
   targetPort: string;
@@ -433,10 +434,21 @@ export interface ComposePatch {
   updates: {
     image?: string;
     restart?: string;
+    profiles?: string[];
     ports?: string[];
     environment?: Record<string, string>;
+    volumes?: string[];
+    dependsOn?: string[];
+    healthcheck?: {
+      test: string[];
+      interval?: string;
+      timeout?: string;
+      retries?: number;
+      start_period?: string;
+    };
     labels?: Record<string, string>;
   };
+  topLevelVolumes?: Record<string, Record<string, unknown>>;
 }
 
 export interface EcosystemPatch {
