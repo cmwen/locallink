@@ -14,6 +14,7 @@ import { detectTailscaleRuntime, tailscaleRuntimeCommand } from '../runtime/tail
 import { WorkspaceStateRepository } from '../state/workspace-state';
 import { ConfigRepository } from '../config/files';
 import { detectPocketIdRuntime } from '../runtime/pocket-id-runtime';
+import { detectOpenObserveRuntime } from '../runtime/openobserve-runtime';
 
 interface CapabilitySpec {
   id: string;
@@ -391,7 +392,7 @@ async function identityRecord(
   const base = baseDeclaredRecord(spec, workspaceRoot ? { ...extension, missingEnv: [] } : extension);
   if (!extension.enabled || !workspaceRoot) return base;
 
-  const model = await new ConfigRepository(workspaceRoot).loadProjectModel();
+  const model = await new ConfigRepository(workspaceRoot, false).loadProjectModel();
   const runtime = await detectPocketIdRuntime(workspaceRoot, commandRunner, model.env);
   if (!runtime.available) {
     return {
@@ -525,6 +526,197 @@ async function identityRecord(
   };
 }
 
+async function observabilityRecord(
+  spec: CapabilitySpec,
+  extension: WorkspaceExtension,
+  commandRunner: CommandRunner,
+  workspaceRoot?: string,
+): Promise<ExtensionLifecycleRecord> {
+  const base = baseDeclaredRecord(spec, workspaceRoot ? { ...extension, missingEnv: [] } : extension);
+  if (!extension.enabled || !workspaceRoot) return base;
+
+  const model = await new ConfigRepository(workspaceRoot, false).loadProjectModel();
+  const runtime = await detectOpenObserveRuntime(workspaceRoot, commandRunner, model.env);
+  if (!runtime.available) {
+    return {
+      ...base,
+      state: 'waiting-configuration',
+      automation: 'automatic',
+      summary: 'Observability is declared, but the OpenObserve Docker service is not installed.',
+      nextStep: 'Run the reviewed Observability plan; LocalLink can install OpenObserve with persistent storage and generated local credentials.',
+      checks: [...base.checks, {
+        id: 'openobserve-runtime',
+        label: 'OpenObserve runtime',
+        status: 'missing',
+        detail: runtime.detail,
+        owner: 'locallink',
+      }],
+    };
+  }
+
+  if (!runtime.persistent) {
+    return {
+      ...base,
+      state: 'waiting-user',
+      automation: 'guided',
+      summary: 'OpenObserve is installed, but its data is not backed by declared persistent storage.',
+      nextStep: 'Back up the existing container data and choose a volume migration; LocalLink will not attach a volume that could hide existing data.',
+      checks: [...base.checks, {
+        id: 'openobserve-storage',
+        label: 'Persistent telemetry data',
+        status: 'missing',
+        detail: runtime.detail,
+        owner: 'user',
+      }],
+    };
+  }
+
+  if (runtime.credentialState === 'missing' || runtime.credentialState === 'invalid') {
+    return {
+      ...base,
+      state: 'waiting-user',
+      automation: 'guided',
+      summary: runtime.credentialState === 'invalid'
+        ? 'OpenObserve is installed, but the saved workspace credentials no longer authenticate.'
+        : 'OpenObserve is installed, but LocalLink cannot find a usable workspace credential record.',
+      nextStep: runtime.credentialState === 'invalid'
+        ? 'Recover or explicitly reset the OpenObserve root account; LocalLink will preserve the existing data and will not silently rotate it.'
+        : 'Recover the existing root credential or explicitly choose an account reset before changing the service.',
+      checks: [...base.checks, {
+        id: 'openobserve-credentials',
+        label: 'OpenObserve credentials',
+        status: 'missing',
+        detail: runtime.detail,
+        owner: 'user',
+      }],
+    };
+  }
+
+  if (!runtime.running) {
+    return {
+      ...base,
+      state: 'installed',
+      automation: 'automatic',
+      summary: 'OpenObserve has persistent storage and configured credentials but is not running.',
+      nextStep: 'Apply the reviewed Observability plan; LocalLink can start the Docker service and verify /healthz and API authentication.',
+      checks: [...base.checks, {
+        id: 'openobserve-runtime',
+        label: 'OpenObserve runtime',
+        status: 'warning',
+        detail: runtime.detail,
+        owner: 'locallink',
+      }],
+    };
+  }
+
+  if (!runtime.healthy) {
+    return {
+      ...base,
+      state: 'error',
+      automation: 'automatic',
+      summary: 'OpenObserve is running, but its /healthz endpoint is failing.',
+      nextStep: `Inspect docker compose logs ${runtime.serviceName || 'openobserve'} before changing credentials or publishing the UI.`,
+      checks: [...base.checks, {
+        id: 'openobserve-health',
+        label: 'OpenObserve health',
+        status: 'missing',
+        detail: runtime.detail,
+        owner: 'system',
+      }],
+    };
+  }
+
+  if (runtime.credentialState !== 'valid') {
+    return {
+      ...base,
+      state: 'waiting-configuration',
+      automation: 'guided',
+      summary: 'OpenObserve is healthy, but API authentication could not be verified.',
+      nextStep: 'Confirm local connectivity and the configured organization, then retry the Observability plan.',
+      checks: [...base.checks, {
+        id: 'openobserve-credentials',
+        label: 'OpenObserve credentials',
+        status: 'warning',
+        detail: runtime.detail,
+        owner: 'system',
+      }],
+    };
+  }
+
+  if (!runtime.loopbackOnly) {
+    return {
+      ...base,
+      state: 'waiting-configuration',
+      automation: 'automatic',
+      summary: 'OpenObserve is healthy and authenticated, but its Docker port is not restricted to loopback.',
+      nextStep: 'Apply the reviewed Observability plan to recreate only this service with a loopback-only host binding while preserving its volume and credentials.',
+      checks: [...base.checks, {
+        id: 'openobserve-binding',
+        label: 'Private host binding',
+        status: 'warning',
+        detail: runtime.detail,
+        owner: 'locallink',
+      }],
+    };
+  }
+
+  const state = new WorkspaceStateRepository(path.join(workspaceRoot, '.locallink', 'workspace-state.json'));
+  const ownership = (await state.load()).privateEdgeRoutes.find((route) => (
+    route.serviceId === 'openobserve' && route.status === 'active'
+  ));
+  if (!ownership) {
+    return {
+      ...base,
+      state: 'waiting-configuration',
+      automation: 'guided',
+      summary: 'OpenObserve is healthy locally, but LocalLink has not verified a private HTTPS UI route.',
+      nextStep: 'Review and confirm the generated Private Edge route. Local OTLP ingestion remains available independently.',
+      checks: [
+        ...base.checks,
+        {
+          id: 'openobserve-health',
+          label: 'OpenObserve health and credentials',
+          status: 'ok',
+          detail: runtime.detail,
+          owner: 'system',
+        },
+        {
+          id: 'openobserve-route',
+          label: 'Private OpenObserve UI',
+          status: 'missing',
+          detail: 'No LocalLink-owned active Private Edge route is recorded for OpenObserve.',
+          owner: 'user',
+        },
+      ],
+    };
+  }
+
+  return {
+    ...base,
+    state: 'healthy',
+    automation: 'guided',
+    summary: `OpenObserve is healthy, persistent, authenticated, and privately reachable at ${ownership.url}.`,
+    nextStep: `Open ${ownership.url} to inspect telemetry, then configure applications with the standard OTLP environment contract.`,
+    checks: [
+      ...base.checks,
+      {
+        id: 'openobserve-health',
+        label: 'OpenObserve health and credentials',
+        status: 'ok',
+        detail: runtime.detail,
+        owner: 'system',
+      },
+      {
+        id: 'openobserve-route',
+        label: 'Private OpenObserve UI',
+        status: 'ok',
+        detail: `LocalLink owns and verifies ${ownership.url}.`,
+        owner: 'locallink',
+      },
+    ],
+  };
+}
+
 export async function buildExtensionLifecycles(
   extensions: WorkspaceExtension[],
   commandRunner: CommandRunner = runCommand,
@@ -538,6 +730,7 @@ export async function buildExtensionLifecycles(
     if (spec.kind === 'network-edge') return privateEdgeRecord(spec, extension, commandRunner, workspaceRoot);
     if (spec.kind === 'reverse-proxy') return reverseProxyRecord(spec, extension, commandRunner, workspaceRoot);
     if (spec.kind === 'identity-provider') return identityRecord(spec, extension, commandRunner, workspaceRoot);
+    if (spec.kind === 'observability') return observabilityRecord(spec, extension, commandRunner, workspaceRoot);
     return baseDeclaredRecord(spec, extension);
   }));
 

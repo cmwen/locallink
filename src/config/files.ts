@@ -135,7 +135,11 @@ function parseEnvMap(content: string): Record<string, string> {
   return values;
 }
 
-function mergeRuntimeEnv(values: Record<string, string>): Record<string, string> {
+function mergeRuntimeEnv(
+  values: Record<string, string>,
+  includeProcessOverrides = true,
+): Record<string, string> {
+  if (!includeProcessOverrides) return values;
   const runtimeOverrides = Object.fromEntries(
     Object.entries(process.env).filter((entry): entry is [string, string] => (
       typeof entry[1] === 'string' && HYDRATED_PROCESS_ENV.get(entry[0]) !== entry[1]
@@ -904,7 +908,10 @@ function initialContentForTarget(targetFile: TargetFile): string {
 }
 
 export class ConfigRepository {
-  constructor(private readonly root: string) {}
+  constructor(
+    private readonly root: string,
+    private readonly includeProcessOverrides = true,
+  ) {}
 
   getFilePath(targetFile: TargetFile): string {
     return getInfraFilePath(this.root, targetFile);
@@ -914,7 +921,11 @@ export class ConfigRepository {
     const envContent = await readFileOrEmpty(this.getFilePath('.env'));
     for (const [key, value] of Object.entries(parseEnvMap(envContent))) {
       const trackedValue = HYDRATED_PROCESS_ENV.get(key);
-      if (process.env[key] === undefined || (trackedValue !== undefined && process.env[key] === trackedValue)) {
+      if (
+        !this.includeProcessOverrides
+        || process.env[key] === undefined
+        || (trackedValue !== undefined && process.env[key] === trackedValue)
+      ) {
         process.env[key] = value;
         HYDRATED_PROCESS_ENV.set(key, value);
       }
@@ -923,7 +934,7 @@ export class ConfigRepository {
 
   async loadProjectModel(): Promise<ProjectModel> {
     const envContent = await readFileOrEmpty(this.getFilePath('.env'));
-    const env = mergeRuntimeEnv(parseEnvMap(envContent));
+    const env = mergeRuntimeEnv(parseEnvMap(envContent), this.includeProcessOverrides);
     const composeContent = await readFileOrEmpty(this.getFilePath('docker-compose.yml'));
     const servicesContent = await readFileOrEmpty(this.getFilePath('locallink.services.yml'));
     const extensionsContent = await readFileOrEmpty(this.getFilePath('locallink.extensions.yml'));

@@ -100,8 +100,12 @@ swappable between compatible identity providers.
 ### Observability
 
 The Observability layer installs and connects an OTLP-compatible backend such as
-OpenObserve. LocalLink should own generated credentials, endpoints, collector or
-exporter wiring, and verification. Services should integrate through standard
+OpenObserve. LocalLink now owns safe OpenObserve installation/adoption, generated
+first-install credentials, persistent storage, loopback binding, local OTLP
+endpoints, credential verification, and private UI route selection. Existing
+data, images, and account credentials are preserved; invalid credentials or
+non-persistent existing data stop for a user decision. Collector and
+application-exporter wiring remains the next automation layer. Services should integrate through standard
 OpenTelemetry variables and protocols rather than importing OpenObserve-specific
 configuration into application code.
 

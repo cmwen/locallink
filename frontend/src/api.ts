@@ -5,6 +5,8 @@ import type {
   ExtensionInstallPlan,
   IdentityApplyResult,
   IdentityInstallPlan,
+  ObservabilityApplyResult,
+  ObservabilityInstallPlan,
   LogEntry,
   PortResolution,
   ProcessInspection,
@@ -305,6 +307,22 @@ export async function applyIdentity(): Promise<IdentityApplyResult> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ capability: 'identity' }),
+  });
+}
+
+export async function planObservability(): Promise<ObservabilityInstallPlan> {
+  return fetchJson<ObservabilityInstallPlan>('./api/extensions/plan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ capability: 'observability' }),
+  });
+}
+
+export async function applyObservability(): Promise<ObservabilityApplyResult> {
+  return fetchJson<ObservabilityApplyResult>('./api/extensions/apply', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ capability: 'observability' }),
   });
 }
 

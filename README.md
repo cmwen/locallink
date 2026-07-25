@@ -169,6 +169,22 @@ The apply command adds a loopback-only Pocket ID v2 service, persistent `/app/da
 
 Use [the private Pocket ID + Tailscale setup guide](docs/pocket-id-tailscale.html) for the remaining administrator and OIDC steps. Client IDs, client secrets, encryption keys, and real issuer domains belong in local secret management—not committed templates. Applications without native OIDC can use an OIDC-aware proxy documented by Pocket ID.
 
+### OpenObserve observability
+
+OpenObserve is an installable observability extension with conservative adoption for existing data:
+
+```bash
+locallink extension plan observability
+locallink extension apply observability
+
+# Only when the plan returns a fresh Private Edge confirmation token:
+locallink extension apply-routes private-edge "<token-from-plan>"
+```
+
+For a new workspace, LocalLink chooses an available loopback port, installs the official OpenObserve OSS image, creates persistent storage, generates local root credentials, derives the OTLP/HTTP authorization value, starts the container, and verifies `/healthz` plus authenticated API access. Existing images, volumes, credentials, organizations, streams, and matching Tailscale+Caddy routes are preserved and adopted.
+
+If an existing password no longer authenticates or its data is not persistent, LocalLink stops for an explicit recovery or migration decision. It never silently resets the root account, replaces the volume, or treats a reinstall as login recovery. See [the OpenObserve and OTLP operations guide](docs/openobserve.html).
+
 LocalLink's Dashboard, reverse proxy, Tailscale edge, Pocket ID, and observability capabilities are explained in [the out-of-box extension guide](docs/extensions.html). Workspace capability declarations live in `locallink.extensions.yml`; runtime services and secrets remain separately explicit. Extensions are optional: a workspace that enables none of them still retains the dashboard, service discovery, runtime state, ports, logs, and lifecycle controls.
 
 Private Edge service exposure is opt-in per workspace. LocalLink records selected service ports in the network-edge declaration and only associates Tailscale routes or dashboard edge URLs with those selected ports.
@@ -222,8 +238,8 @@ All dashboard APIs are local-only and served from the same process as the UI.
 | --- | --- | --- |
 | `GET` | `/api/state` | Rebuilds the current dashboard snapshot from external runtime managers: services, ports, PWA status, logs, and constraints. |
 | `GET` | `/api/extensions` | Separates available capabilities, workspace declarations, host installation, manual onboarding, configuration, and runtime health. |
-| `POST` | `/api/extensions/plan` | Preview workspace-owned Private Edge or Identity changes and user-owned security checkpoints without writing files. |
-| `POST` | `/api/extensions/apply` | Idempotently apply a Private Edge workspace selection or install/configure Pocket ID while preserving existing secrets and edge selections. |
+| `POST` | `/api/extensions/plan` | Preview workspace-owned Private Edge, Identity, or Observability changes and user-owned security checkpoints without writing files. |
+| `POST` | `/api/extensions/apply` | Idempotently apply a Private Edge selection, install/configure Pocket ID, or install/adopt OpenObserve while preserving existing secrets, data, and edge selections. |
 | `POST` | `/api/extensions/routes/apply` | Apply a freshly confirmed Tailscale Serve route plan, verify every selected route, record workspace ownership, and roll back newly created routes on failure. |
 | `POST` | `/api/extensions/routes/reconcile` | Remove only deselected listeners that still match LocalLink ownership, forget stale ownership safely, verify the result, and restore earlier removals if the attempt fails. |
 | `GET` | `/api/configs` | Returns the raw infra files plus the derived service list. |

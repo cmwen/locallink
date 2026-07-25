@@ -8,6 +8,11 @@ import {
   type IdentityInstallPlan,
 } from './extensions/identity-planner';
 import {
+  ObservabilityPlanner,
+  type ObservabilityApplyResult,
+  type ObservabilityInstallPlan,
+} from './extensions/observability-planner';
+import {
   ExtensionPlanner,
   type ExtensionApplyResult,
   type ExtensionInstallPlan,
@@ -63,6 +68,8 @@ export class AppContext {
 
   readonly identityPlanner;
 
+  readonly observabilityPlanner;
+
   readonly portAllocator;
 
   readonly runtimeResolver;
@@ -83,11 +90,21 @@ export class AppContext {
 
   constructor(root = process.cwd()) {
     this.paths = resolvePaths(root);
-    this.configRepository = new ConfigRepository(this.paths.root);
+    // A LocalLink control-plane process belongs to exactly one workspace. Its
+    // committed/local workspace files must not be shadowed by stale PM2
+    // environment values inherited from an earlier restart.
+    this.configRepository = new ConfigRepository(this.paths.root, false);
     this.logs = new LogBroker(mirrorBrokerEntry);
     this.workspaceState = new WorkspaceStateRepository(this.paths.workspaceStateFile);
     this.extensionPlanner = new ExtensionPlanner(this.paths.root, this.configRepository, undefined, this.workspaceState);
     this.identityPlanner = new IdentityPlanner(
+      this.paths.root,
+      this.configRepository,
+      undefined,
+      this.workspaceState,
+      this.extensionPlanner,
+    );
+    this.observabilityPlanner = new ObservabilityPlanner(
       this.paths.root,
       this.configRepository,
       undefined,
@@ -176,16 +193,26 @@ export class AppContext {
     return buildExtensionLifecycles(model.extensions, undefined, this.paths.root);
   }
 
-  async planExtension(capability: string, services?: string[]): Promise<ExtensionInstallPlan | IdentityInstallPlan> {
+  async planExtension(
+    capability: string,
+    services?: string[],
+  ): Promise<ExtensionInstallPlan | IdentityInstallPlan | ObservabilityInstallPlan> {
     return capability === 'identity'
       ? this.identityPlanner.plan(capability)
-      : this.extensionPlanner.plan(capability, services);
+      : capability === 'observability'
+        ? this.observabilityPlanner.plan(capability)
+        : this.extensionPlanner.plan(capability, services);
   }
 
-  async applyExtension(capability: string, services?: string[]): Promise<ExtensionApplyResult | IdentityApplyResult> {
+  async applyExtension(
+    capability: string,
+    services?: string[],
+  ): Promise<ExtensionApplyResult | IdentityApplyResult | ObservabilityApplyResult> {
     const result = capability === 'identity'
       ? await this.identityPlanner.apply(capability)
-      : await this.extensionPlanner.apply(capability, services);
+      : capability === 'observability'
+        ? await this.observabilityPlanner.apply(capability)
+        : await this.extensionPlanner.apply(capability, services);
     this.logs.append(
       result.applied
         ? `${capability} workspace plan applied to ${result.changedFiles.join(', ')}.`

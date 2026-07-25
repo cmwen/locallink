@@ -412,3 +412,31 @@ test('ConfigRepository prefers explicit process env over .env defaults', async (
     }
   }
 });
+
+test('ConfigRepository can make one workspace file-authoritative for long-lived control-plane processes', async () => {
+  const root = await createTempProject();
+  await fs.writeFile(
+    path.join(root, '.env'),
+    'OPENOBSERVE_PASSWORD=current-workspace-secret\nOPENOBSERVE_PORT=5510\n',
+    'utf8',
+  );
+  const previousPassword = process.env.OPENOBSERVE_PASSWORD;
+  const previousPort = process.env.OPENOBSERVE_PORT;
+  process.env.OPENOBSERVE_PASSWORD = 'stale-pm2-secret';
+  process.env.OPENOBSERVE_PORT = '5080';
+
+  try {
+    const repository = new ConfigRepository(root, false);
+    await repository.hydrateProcessEnv();
+    const model = await repository.loadProjectModel();
+    assert.equal(model.env.OPENOBSERVE_PASSWORD, 'current-workspace-secret');
+    assert.equal(model.env.OPENOBSERVE_PORT, '5510');
+    assert.equal(process.env.OPENOBSERVE_PASSWORD, 'current-workspace-secret');
+    assert.equal(process.env.OPENOBSERVE_PORT, '5510');
+  } finally {
+    if (previousPassword === undefined) delete process.env.OPENOBSERVE_PASSWORD;
+    else process.env.OPENOBSERVE_PASSWORD = previousPassword;
+    if (previousPort === undefined) delete process.env.OPENOBSERVE_PORT;
+    else process.env.OPENOBSERVE_PORT = previousPort;
+  }
+});

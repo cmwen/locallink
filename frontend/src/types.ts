@@ -282,6 +282,49 @@ export interface IdentityApplyResult {
   plan: IdentityInstallPlan;
 }
 
+export interface ObservabilityInstallPlan {
+  capability: 'observability';
+  provider: 'openobserve';
+  state: 'ready-to-apply' | 'ready-to-route' | 'waiting-user' | 'healthy' | 'error';
+  summary: string;
+  canApply: boolean;
+  service: {
+    name: string;
+    installed: boolean;
+    running: boolean;
+    healthy: boolean;
+    persistent: boolean;
+    loopbackOnly: boolean;
+    credentialState: 'valid' | 'invalid' | 'unverified' | 'missing';
+    port: string;
+    localUrl: string;
+    privateUrl?: string;
+  };
+  telemetry: {
+    organization: string;
+    stream: string;
+    otlpBaseUrl: string;
+    credentialsConfigured: boolean;
+  };
+  privateEdge: {
+    declared: boolean;
+    selected: boolean;
+    state: string;
+    url?: string;
+    confirmationToken?: string;
+  };
+  steps: ExtensionPlanStep[];
+}
+
+export interface ObservabilityApplyResult {
+  capability: 'observability';
+  provider: 'openobserve';
+  applied: boolean;
+  changedFiles: string[];
+  started: boolean;
+  plan: ObservabilityInstallPlan;
+}
+
 export interface ResourceProcess {
   pid: number;
   name: string;

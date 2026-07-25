@@ -44,7 +44,7 @@ test('HTTP server exposes the dashboard state endpoint', async () => {
     url: '/api/state',
   });
 
-  assert.equal(response.statusCode, 200);
+  assert.equal(response.statusCode, 200, response.body);
   const payload = response.json();
   assert.equal(payload.app.name, 'LocalLink');
   assert.ok(Array.isArray(payload.services));
@@ -124,6 +124,34 @@ test('HTTP server exposes a read-only Pocket ID onboarding plan', async () => {
   assert.equal(response.json().provider, 'pocket-id');
   assert.equal(response.json().canApply, true);
   assert.ok(response.json().steps.some((step: { owner: string }) => step.owner === 'user'));
+  assert.equal(await fs.readFile(path.join(root, 'docker-compose.yml'), 'utf8'), composeBefore);
+  await server.close();
+});
+
+test('HTTP server exposes a read-only OpenObserve onboarding plan', async () => {
+  const root = await createTempProject();
+  const context = new AppContext(root);
+  (context.observabilityPlanner as unknown as {
+    portAllocator: { findNextAvailablePort: (startFrom: number) => Promise<{ startFrom: number; nextFree: number; busy: number[] }> };
+  }).portAllocator = {
+    findNextAvailablePort: async (startFrom) => ({ startFrom, nextFree: 5508, busy: [5080] }),
+  };
+  await context.initialize();
+  const server = context.createServer();
+  const composeBefore = await fs.readFile(path.join(root, 'docker-compose.yml'), 'utf8');
+
+  const response = await server.inject({
+    method: 'POST',
+    url: '/api/extensions/plan',
+    payload: { capability: 'observability' },
+  });
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().capability, 'observability');
+  assert.equal(response.json().provider, 'openobserve');
+  assert.equal(response.json().canApply, true);
+  assert.equal(response.json().service.installed, false);
+  assert.ok(response.json().steps.some((step: { id: string }) => step.id === 'configure-openobserve-credentials'));
   assert.equal(await fs.readFile(path.join(root, 'docker-compose.yml'), 'utf8'), composeBefore);
   await server.close();
 });

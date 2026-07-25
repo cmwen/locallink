@@ -5,6 +5,7 @@ import {
   applyPrivateEdge,
   applyPrivateEdgeRoutes,
   applyIdentity,
+  applyObservability,
   reconcilePrivateEdgeRoutes,
   cancelVersionUpdate,
   inspectProcess,
@@ -13,6 +14,7 @@ import {
   persistTemporaryRuntime,
   planPrivateEdge,
   planIdentity,
+  planObservability,
   queueVersionUpdate,
   readDashboardState,
   readWorkspaceState,
@@ -24,6 +26,7 @@ import type {
   DashboardState,
   ExtensionInstallPlan,
   IdentityInstallPlan,
+  ObservabilityInstallPlan,
   LogEntry,
   ProcessInspection,
   ProcessTerminationReview,
@@ -146,6 +149,7 @@ export function App() {
   const [queuedVersionId, setQueuedVersionId] = useState('');
   const [extensionPlan, setExtensionPlan] = useState<ExtensionInstallPlan | null>(null);
   const [identityPlan, setIdentityPlan] = useState<IdentityInstallPlan | null>(null);
+  const [observabilityPlan, setObservabilityPlan] = useState<ObservabilityInstallPlan | null>(null);
   const [extensionApplying, setExtensionApplying] = useState(false);
   const [edgeServiceSelection, setEdgeServiceSelection] = useState<string[]>([]);
   const [edgeSelectionTouched, setEdgeSelectionTouched] = useState(false);
@@ -556,6 +560,42 @@ export function App() {
     }
   }
 
+  async function manageObservability(action: 'plan' | 'apply' | 'routes') {
+    if (source !== 'api') {
+      setStatus('OpenObserve planning needs the live LocalLink API.');
+      return;
+    }
+    setExtensionApplying(true);
+    try {
+      if (action === 'plan') {
+        const plan = await planObservability();
+        setObservabilityPlan(plan);
+        setStatus(plan.summary);
+      } else if (action === 'apply') {
+        const result = await applyObservability();
+        setObservabilityPlan(result.plan);
+        setStatus(result.applied
+          ? `OpenObserve setup updated ${result.changedFiles.join(', ')}${result.started ? ' and started/recreated the service' : ''}.`
+          : result.plan.summary);
+        await refreshState();
+      } else {
+        const token = observabilityPlan?.privateEdge.confirmationToken;
+        if (!token) throw new Error('Preview OpenObserve again to obtain a fresh Private Edge confirmation token.');
+        const route = observabilityPlan.privateEdge.url || 'the generated private OpenObserve URL';
+        if (!window.confirm(`Publish the OpenObserve UI through Private Edge?\n\n${route}\n\nLocal OTLP ingestion remains loopback-only. LocalLink will verify the private route and roll it back if the attempt fails.`)) return;
+        const result = await applyPrivateEdgeRoutes(token);
+        setExtensionPlan(result.plan);
+        setObservabilityPlan(await planObservability());
+        setStatus(result.applied ? 'OpenObserve’s private HTTPS route was applied and verified.' : 'OpenObserve’s private route already matched the plan.');
+        await refreshState();
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'OpenObserve planning failed.');
+    } finally {
+      setExtensionApplying(false);
+    }
+  }
+
   async function copyVisibleLogs() {
     const text = logs.map((log) => `${log.time} ${log.stream} ${log.level}: ${log.message}`).join('\n');
     await navigator.clipboard?.writeText(text);
@@ -630,11 +670,13 @@ export function App() {
           updateQueued={updateQueued}
           extensionPlan={extensionPlan}
           identityPlan={identityPlan}
+          observabilityPlan={observabilityPlan}
           extensionApplying={extensionApplying}
           edgeServiceSelection={edgeServiceSelection}
           query={queries.extensions}
           managePrivateEdge={managePrivateEdge}
           manageIdentity={manageIdentity}
+          manageObservability={manageObservability}
           setEdgeServiceSelection={setEdgeServiceSelection}
           setEdgeSelectionTouched={setEdgeSelectionTouched}
           queueUpdate={queueUpdate}
@@ -1015,11 +1057,13 @@ function ExtensionsWorkspace({
   updateQueued,
   extensionPlan,
   identityPlan,
+  observabilityPlan,
   extensionApplying,
   edgeServiceSelection,
   query,
   managePrivateEdge,
   manageIdentity,
+  manageObservability,
   setEdgeServiceSelection,
   setEdgeSelectionTouched,
   queueUpdate,
@@ -1030,11 +1074,13 @@ function ExtensionsWorkspace({
   updateQueued: boolean;
   extensionPlan: ExtensionInstallPlan | null;
   identityPlan: IdentityInstallPlan | null;
+  observabilityPlan: ObservabilityInstallPlan | null;
   extensionApplying: boolean;
   edgeServiceSelection: string[];
   query: string;
   managePrivateEdge: (action: 'plan' | 'apply' | 'routes' | 'reconcile') => Promise<void>;
   manageIdentity: (action: 'plan' | 'apply' | 'routes') => Promise<void>;
+  manageObservability: (action: 'plan' | 'apply' | 'routes') => Promise<void>;
   setEdgeServiceSelection: React.Dispatch<React.SetStateAction<string[]>>;
   setEdgeSelectionTouched: React.Dispatch<React.SetStateAction<boolean>>;
   queueUpdate: () => Promise<void>;
@@ -1056,7 +1102,7 @@ function ExtensionsWorkspace({
   const ports = state.ports.recent
     .filter((entry) => matchesWorkspaceQuery(query, entry.service, entry.port, entry.status, 'port'))
     .slice(0, 5);
-  const showConfig = matchesWorkspaceQuery(query, 'extension config', 'dashboard', 'proxy', 'pocket id', 'identity provider', 'tailscale serve', 'network edge', state.phase2.summary);
+  const showConfig = matchesWorkspaceQuery(query, 'extension config', 'dashboard', 'proxy', 'pocket id', 'identity provider', 'tailscale serve', 'network edge', 'openobserve', 'observability', 'otel', state.phase2.summary);
   const showPorts = ports.length > 0 || matchesWorkspaceQuery(query, 'port list', 'configured ports', 'next open port');
   const showVersion = matchesWorkspaceQuery(query, 'version workflow', 'CLI 0.12.4 0.13.0', 'schedule update', 'cancel update');
   const hasResults = visibleExtensions.length > 0 || showConfig || showPorts || showVersion;
@@ -1114,6 +1160,13 @@ function ExtensionsWorkspace({
               ) : null}
               {!identityPlan?.canApply && identityPlan?.privateEdge.confirmationToken && identityPlan.privateEdge.state === 'ready' ? (
                 <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageIdentity('routes')}>Publish Pocket ID privately</button>
+              ) : null}
+              <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageObservability('plan')}>Preview OpenObserve setup</button>
+              {observabilityPlan?.canApply ? (
+                <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageObservability('apply')}>Install/configure OpenObserve</button>
+              ) : null}
+              {!observabilityPlan?.canApply && observabilityPlan?.privateEdge.confirmationToken && observabilityPlan.privateEdge.state === 'ready' ? (
+                <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageObservability('routes')}>Publish OpenObserve privately</button>
               ) : null}
               <a className="btn" href="./docs/pocket-id-tailscale.html" target="_blank" rel="noreferrer">Private SSO setup</a>
               <a className="btn ghost" href="./docs/extensions.html" target="_blank" rel="noreferrer">Extension guide</a>
@@ -1215,6 +1268,34 @@ function ExtensionsWorkspace({
               ) : null}
               {identityPlan.service.setupUrl ? (
                 <a className="btn ghost" href={identityPlan.service.setupUrl} target="_blank" rel="noreferrer">Open first-admin setup</a>
+              ) : null}
+            </div>
+          </article> : null}
+
+          {showConfig && observabilityPlan ? <article className="config-card">
+            <strong>OpenObserve onboarding plan</strong>
+            <p>{observabilityPlan.summary}</p>
+            <div className="config-lines">
+              <ConfigLine label="Provider" value="OpenObserve · generic OpenTelemetry contract" />
+              <ConfigLine label="Docker runtime" value={`${observabilityPlan.service.installed ? 'installed' : 'missing'} / ${observabilityPlan.service.running ? 'running' : 'stopped'} / ${observabilityPlan.service.healthy ? 'healthy' : 'not healthy'}`} />
+              <ConfigLine label="Persistent state" value={observabilityPlan.service.persistent ? 'Configured' : 'Not configured'} />
+              <ConfigLine label="Host binding" value={observabilityPlan.service.loopbackOnly ? `Loopback-only on :${observabilityPlan.service.port}` : `Port :${observabilityPlan.service.port} needs loopback restriction`} />
+              <ConfigLine label="Credential verification" value={observabilityPlan.service.credentialState} />
+              <ConfigLine label="OTLP base" value={observabilityPlan.telemetry.otlpBaseUrl} />
+              <ConfigLine label="Organization / stream" value={`${observabilityPlan.telemetry.organization} / ${observabilityPlan.telemetry.stream}`} />
+              <ConfigLine label="Private UI" value={observabilityPlan.service.privateUrl || observabilityPlan.privateEdge.url || 'Waiting for a Private Edge route'} />
+              {observabilityPlan.steps.map((step) => (
+                <ConfigLine
+                  key={`observability-${step.id}`}
+                  label={`${step.label} · ${step.owner}`}
+                  value={`${step.status} / ${step.automatic ? 'automatic' : 'manual'} / ${step.detail}`}
+                />
+              ))}
+            </div>
+            <div className="actions">
+              <a className="btn ghost" href={observabilityPlan.service.localUrl} target="_blank" rel="noreferrer">Open local OpenObserve</a>
+              {observabilityPlan.service.privateUrl ? (
+                <a className="btn" href={observabilityPlan.service.privateUrl} target="_blank" rel="noreferrer">Open private OpenObserve</a>
               ) : null}
             </div>
           </article> : null}
