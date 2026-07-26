@@ -11,6 +11,7 @@ import {
 import { AppContext } from './app-context';
 import { initializeWorkspace } from './init/scaffold';
 import { startMcpServer } from './mcp/server';
+import { formatWorkspaceOnboardingReport } from './onboarding/report';
 import { parseCliOptions } from './shared/cli-options';
 import { AppError, formatFatalError } from './shared/errors';
 import { configureLogger, getLoggerLevel, logError, logInfo } from './shared/logger';
@@ -24,7 +25,31 @@ async function runServe(context: AppContext): Promise<FastifyInstance> {
   const server = context.createServer();
   const binding = await context.getBinding();
   let runtime: Awaited<ReturnType<AppContext['recordRuntimeBinding']>> | undefined;
+  let shuttingDown = false;
+  const removeSignalHandlers = () => {
+    process.removeListener('SIGINT', handleSigint);
+    process.removeListener('SIGTERM', handleSigterm);
+  };
+  const shutdown = (signal: 'SIGINT' | 'SIGTERM') => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logInfo('LocalLink dashboard shutdown requested.', {
+      workspaceRoot: context.paths.root,
+      signal,
+    });
+    void server.close().catch((error) => {
+      logError('LocalLink dashboard shutdown failed.', {
+        workspaceRoot: context.paths.root,
+        signal,
+        error: formatFatalError(error),
+      });
+      process.exitCode = 1;
+    });
+  };
+  const handleSigint = () => shutdown('SIGINT');
+  const handleSigterm = () => shutdown('SIGTERM');
   server.addHook('onClose', async () => {
+    removeSignalHandlers();
     if (runtime) await context.clearRuntimeBinding(runtime.pid);
   });
   try {
@@ -41,7 +66,14 @@ async function runServe(context: AppContext): Promise<FastifyInstance> {
       500,
     );
   }
-  runtime = await context.recordRuntimeBinding(binding);
+  try {
+    runtime = await context.recordRuntimeBinding(binding);
+  } catch (error) {
+    await server.close();
+    throw error;
+  }
+  process.once('SIGINT', handleSigint);
+  process.once('SIGTERM', handleSigterm);
   context.logs.append(`Dashboard server for ${runtime.id} listening on ${runtime.url}.`, 'Runtime');
   logInfo('LocalLink dashboard server started.', {
     workspaceId: runtime.id,
@@ -65,6 +97,7 @@ function normalizeCommand(rawCommand: string | undefined): string {
     case 'extensions':
     case 'extension':
     case 'doctor':
+    case 'onboard':
     case 'init':
     case 'skill':
     case 'service':
@@ -87,6 +120,7 @@ function printHelp(): void {
       '  locallink [--log-level LEVEL] web       Start the local PWA web app',
       '  locallink [--log-level LEVEL] mcp       Start the MCP stdio server',
       '  locallink [--log-level LEVEL] doctor    Print startup diagnostics and install guidance',
+      '  locallink [--log-level LEVEL] onboard   Print automatic and manual foundation onboarding steps',
       '  locallink [--log-level LEVEL] snapshot  Print the current dashboard state as JSON',
       '  locallink [--log-level LEVEL] extensions Print declared, installed, manual, and healthy extension states',
       '  locallink [--log-level LEVEL] service contract SERVICE Print a secret-free application integration contract',
@@ -215,9 +249,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   if (command === 'doctor') {
     process.stdout.write(diagnosticsReport);
+    process.stdout.write('\n');
+    process.stdout.write(formatWorkspaceOnboardingReport(await context.readOnboardingReport()));
     if (diagnostics.status === 'error') {
       process.exitCode = 1;
     }
+    return;
+  }
+
+  if (command === 'onboard') {
+    process.stdout.write(formatWorkspaceOnboardingReport(await context.readOnboardingReport()));
     return;
   }
 
@@ -288,7 +329,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   throw new AppError(
     'UNKNOWN_COMMAND',
-    `Unsupported command "${command}". Use "web", "mcp", "doctor", "snapshot", "extensions", "extension", "service", "skill", or "init".`,
+    `Unsupported command "${command}". Use "web", "mcp", "doctor", "onboard", "snapshot", "extensions", "extension", "service", "skill", or "init".`,
     400,
   );
 }

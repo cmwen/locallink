@@ -39,7 +39,9 @@ Two workspaces with the same folder name but different roots must still remain
 isolated. Extension installation, onboarding progress, service discovery, and
 credentials are scoped to one workspace and must never be inferred from another
 workspace on the same host. `.locallink/runtime.json` is the local discovery
-record for users and coding agents that need the active dashboard URL.
+record for users and coding agents that need the active dashboard URL. Dashboard
+SIGINT/SIGTERM shutdown clears its matching record, and the next LocalLink
+initialization reconciles a record whose process has died.
 
 ## Optional capability layers
 
@@ -147,6 +149,12 @@ the correct host-or-Docker OTLP endpoint without returning a credential value.
 Identity and observability remain explicit per-service declarations rather than
 being silently inferred from healthy shared infrastructure.
 
+The implemented `locallink onboard` report keeps the extension-free core
+healthy while labeling undeclared foundations as optional. For each enabled
+foundation it separates LocalLink-owned automatic work, user-owned manual work,
+blocked prerequisites, and safe next commands. `locallink doctor` includes the
+same report after core dependency checks, and HTTP/MCP expose it read-only.
+
 ## Configuration ownership
 
 Configuration should make it obvious what a human edits and what LocalLink owns.
@@ -178,4 +186,6 @@ LocalLink should always tell the user:
 5. What a coding agent may safely change.
 
 Detailed installer flows, manifests, secret storage, and service-adapter schemas
-are intentionally deferred to a separate implementation plan.
+are tracked in the prioritized [future-features roadmap](future-features.md).
+That roadmap is intentionally separate from this product promise so planned
+automation is not mistaken for an implemented capability.

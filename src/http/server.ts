@@ -152,6 +152,11 @@ export function createHttpServer(context: AppContext) {
     return context.readExtensionLifecycle();
   });
 
+  app.get('/api/onboarding', async (_request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    return context.readOnboardingReport();
+  });
+
   app.get('/api/services/:selector/contract', async (request, reply) => {
     const parsed = serviceContractParamsSchema.safeParse(request.params);
     if (!parsed.success) throw new AppError('INVALID_PARAMS', parsed.error.issues[0]?.message || 'Invalid service selector.', 400);

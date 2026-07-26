@@ -160,6 +160,14 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
   );
 
   server.registerTool(
+    'read_onboarding_report',
+    {
+      description: 'Return the workspace core readiness and every automatic, manual, blocked, or optional foundation onboarding step without changing state.',
+    },
+    async () => textResponse(JSON.stringify(await context.readOnboardingReport(), null, 2)),
+  );
+
+  server.registerTool(
     'apply_extension_workspace_plan',
     {
       description: 'Apply only the workspace declaration and local environment portion of a previously reviewable extension plan.',

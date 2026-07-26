@@ -20,6 +20,7 @@ Run from the intended workspace root:
 locallink snapshot
 locallink extensions
 locallink doctor
+locallink onboard
 ```
 
 Use service `id`, `runtimeName`, `portEnv`, dependencies, and environment metadata from the snapshot. Do not identify a runtime only by a friendly display name.

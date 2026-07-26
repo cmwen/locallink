@@ -130,7 +130,7 @@ locallink web
 locallink mcp</code></pre>
           </div>
         </div>
-        <p class="note">Startup diagnostics run on boot and through <code>locallink doctor</code>. Missing PM2, Docker, Task, shell assets, or runtime dependencies are surfaced with install guidance.</p>
+        <p class="note">Startup diagnostics run on boot and through <code>locallink doctor</code>. Missing PM2, Docker, Task, shell assets, or runtime dependencies are surfaced with install guidance; the same command appends the automatic/manual foundation report available separately through <code>locallink onboard</code>.</p>
       </section>
 
       <section id="workspace" class="section">
@@ -373,7 +373,7 @@ locallink: {
 LOCALLINK_PHASE2_PREFERRED_EDGE=auto
 POCKET_ID_APP_URL=https://pocket-id-host.your-tailnet.ts.net
 POCKET_ID_PORT=1411</code></pre>
-        <p class="note">See <a href="./extensions.html">How LocalLink out-of-box extensions work</a> for the declaration, readiness, runtime, and secret boundaries.</p>
+        <p class="note">See <a href="./extensions.html">How LocalLink out-of-box extensions work</a> for the declaration, readiness, runtime, and secret boundaries. Planned work is kept separately in the <a href="./future-features.md">future-features roadmap</a>.</p>
       </section>
 
       <section id="cli" class="section">
@@ -416,6 +416,10 @@ POCKET_ID_PORT=1411</code></pre>
                 <td>Print available, declared, manual-onboarding, installed, and healthy capability states for this workspace.</td>
               </tr>
               <tr>
+                <td><code>locallink onboard</code></td>
+                <td>Separate optional, automatic, manual, and blocked foundation onboarding work without changing the workspace.</td>
+              </tr>
+              <tr>
                 <td><code>locallink extension plan|apply private-edge</code></td>
                 <td>Preview or apply only workspace-owned Private Edge declaration changes while preserving explicit user security checkpoints.</td>
               </tr>
@@ -433,7 +437,7 @@ POCKET_ID_PORT=1411</code></pre>
               </tr>
               <tr>
                 <td><code>locallink doctor</code></td>
-                <td>Print startup diagnostics and install guidance for runtime dependencies.</td>
+                <td>Print startup diagnostics plus the consolidated foundation onboarding ownership report.</td>
               </tr>
             </tbody>
           </table>
@@ -454,6 +458,7 @@ POCKET_ID_PORT=1411</code></pre>
             <tbody>
               <tr><td><code>GET</code></td><td><code>/api/state</code></td><td>Full dashboard snapshot including services, diagnostics, phase2 advisor, logs, ports, and resources.</td></tr>
               <tr><td><code>GET</code></td><td><code>/api/extensions</code></td><td>Per-workspace extension catalog, declaration state, runtime checks, and next onboarding step.</td></tr>
+              <tr><td><code>GET</code></td><td><code>/api/onboarding</code></td><td>Core readiness plus optional, automatic, manual, and blocked foundation onboarding work.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/extensions/plan</code></td><td>Read-only Private Edge onboarding plan.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/extensions/apply</code></td><td>Apply workspace declaration and environment changes without performing external security actions.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/extensions/routes/apply</code></td><td>Apply a fresh token-bound route plan with verification, ownership recording, and scoped rollback.</td></tr>

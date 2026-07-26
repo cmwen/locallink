@@ -24,6 +24,9 @@ OIDC and OTLP interfaces without copying secrets or coupling applications to one
 provider.
 
 See [the full product goal and capability boundaries](docs/product-goal.md).
+Planned work is tracked separately in the
+[future-features roadmap](docs/future-features.md) so future automation is not
+confused with the current product.
 
 ## What is implemented
 
@@ -72,7 +75,7 @@ This repository's sample topology currently includes:
 - Optional but required for live lifecycle control: `docker`, `pm2`, and `task`
 - WSL + `tasklist.exe` if you want Windows process detection
 
-LocalLink now runs startup diagnostics on boot and through `locallink doctor`. Missing PM2, Docker, Task, PWA assets, or Node runtime packages are surfaced with install guidance instead of failing silently.
+LocalLink now runs startup diagnostics on boot and through `locallink doctor`. Missing PM2, Docker, Task, PWA assets, or Node runtime packages are surfaced with install guidance instead of failing silently. `locallink doctor` also appends the workspace foundation report; use `locallink onboard` when you only want the read-only automatic/manual/blocked/optional capability steps.
 
 ### Setup
 
@@ -129,6 +132,7 @@ locallink web
 locallink mcp
 locallink snapshot --log-level debug
 locallink extensions
+locallink onboard
 locallink extension plan private-edge
 locallink extension apply private-edge
 locallink extension plan private-edge "My API"
@@ -141,7 +145,10 @@ Use `--log-level debug` or `LOCALLINK_LOG_LEVEL=debug` when you want stderr trac
 
 With the repository defaults, open the URL reported at startup or read it from
 `.locallink/runtime.json`. The first workspace normally receives port 4010;
-additional workspaces automatically use the next free port. Typical routes are:
+additional workspaces automatically use the next free port. Normal SIGINT or
+SIGTERM shutdown removes that workspace’s runtime record; the next LocalLink
+command also removes a record whose process is no longer alive. Typical routes
+are:
 
 - `http://127.0.0.1:4010/` - launcher
 - `http://127.0.0.1:4010/dashboard` - dashboard
@@ -151,7 +158,7 @@ additional workspaces automatically use the next free port. Typical routes are:
 - `http://127.0.0.1:4010/template` - dashboard template surface
 - `http://127.0.0.1:4010/docs` - static project documentation
 
-For a deeper implementation and operations guide, open [docs/index.html](docs/index.html) directly or use the dashboard docs route after starting the web server.
+For a deeper implementation and operations guide, open [docs/index.html](docs/index.html) directly or use the dashboard docs route after starting the web server. See [docs/future-features.md](docs/future-features.md) for the prioritized roadmap and its completion criteria.
 
 ### Private Pocket ID application SSO
 
@@ -276,6 +283,7 @@ All dashboard APIs are local-only and served from the same process as the UI.
 | --- | --- | --- |
 | `GET` | `/api/state` | Rebuilds the current dashboard snapshot from external runtime managers: services, ports, PWA status, logs, and constraints. |
 | `GET` | `/api/extensions` | Separates available capabilities, workspace declarations, host installation, manual onboarding, configuration, and runtime health. |
+| `GET` | `/api/onboarding` | Consolidates core readiness plus automatic, manual, blocked, and optional foundation onboarding work. |
 | `GET` | `/api/services/:selector/contract` | Returns the selected service’s secret-free Private Edge, OIDC, and OpenTelemetry integration contract. |
 | `POST` | `/api/extensions/plan` | Preview workspace-owned Private Edge, Identity, or Observability changes and user-owned security checkpoints without writing files. |
 | `POST` | `/api/extensions/apply` | Idempotently apply a Private Edge selection, install/configure Pocket ID, or install/adopt OpenObserve while preserving existing secrets, data, and edge selections. |
@@ -317,6 +325,7 @@ MCP inputs use snake_case:
 | `allocate_system_port` | `preferred_start?` | Scans for the next sequentially free local port. |
 | `verify_blueprint_compliance` | `service_name` | Checks whether a declared local service has a readable Dockerfile blueprint. |
 | `plan_extension_onboarding` | `capability` | Previews workspace changes and manual security checkpoints without writing files. |
+| `read_onboarding_report` | — | Returns the consolidated core and foundation onboarding ownership report without changing state. |
 | `apply_extension_workspace_plan` | `capability` | Applies only the workspace-owned portion of a reviewed extension plan. |
 | `apply_private_edge_routes` | `capability`, `confirmation_token` | Applies the exact current route plan after explicit confirmation, verifies it, records ownership, and rolls back this attempt on failure. |
 | `reconcile_private_edge_routes` | `capability`, `confirmation_token` | Removes stale owned listeners after fresh confirmation, never deletes changed listeners, and restores earlier removals when a later step fails. |

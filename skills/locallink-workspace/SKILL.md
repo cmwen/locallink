@@ -15,6 +15,7 @@ Use LocalLink as the authority for workspace identity, derived endpoints, runtim
    ```bash
    locallink snapshot
    locallink extensions
+   locallink onboard
    ```
 
 3. For an existing application, read its joined, secret-free integration contract:
@@ -23,7 +24,9 @@ Use LocalLink as the authority for workspace identity, derived endpoints, runtim
    locallink service contract <service-id-or-runtime-name>
    ```
 
-4. Run the relevant read-only plan when identity, observability, or private access matters:
+4. Use `locallink onboard` ownership as the default sequence. Run the relevant
+   detailed read-only plan when identity, observability, or private access needs
+   diagnosis:
 
    ```bash
    locallink extension plan identity

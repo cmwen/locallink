@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import path from 'node:path';
 
 import { ConfigRepository } from './config/files';
 import { buildExtensionLifecycles } from './extensions/lifecycle';
@@ -21,6 +22,12 @@ import {
 } from './extensions/planner';
 import { createHttpServer } from './http/server';
 import { LogBroker } from './logs/broker';
+import {
+  buildWorkspaceOnboardingReport,
+  type OnboardingCapability,
+  type OnboardingPlan,
+  type WorkspaceOnboardingReport,
+} from './onboarding/report';
 import { PortAllocator } from './ports/allocator';
 import { verifyBlueprintCompliance } from './runtime/lego';
 import { inspectProcess, reviewProcessTermination, terminateProcess } from './runtime/resources';
@@ -152,6 +159,7 @@ export class AppContext {
     });
     await this.configRepository.hydrateProcessEnv();
     await this.workspaceState.load();
+    await this.clearStaleRuntimeBinding();
     for (const reservation of this.workspaceState.read().portReservations.filter((entry) => entry.status === 'reserved')) {
       try {
         // Reclaim persisted advisory reservations when the control plane restarts.
@@ -232,6 +240,29 @@ export class AppContext {
       observabilityPlan: observabilityResult.plan,
       observabilityPlanError: observabilityResult.error,
       selector,
+    });
+  }
+
+  async readOnboardingReport(): Promise<WorkspaceOnboardingReport> {
+    const [workspace, diagnostics, lifecycles] = await Promise.all([
+      this.getWorkspaceIdentity(),
+      this.getStartupDiagnostics(),
+      this.readExtensionLifecycle(),
+    ]);
+    const capabilities: OnboardingCapability[] = ['private-edge', 'identity', 'observability'];
+    const planResults = await Promise.all(capabilities.map(async (capability) => (
+      captureReadOnlyPlan<OnboardingPlan>(
+        this.planExtension(capability),
+        `The ${capability} onboarding plan could not be evaluated.`,
+      )
+    )));
+    return buildWorkspaceOnboardingReport({
+      workspace,
+      diagnostics,
+      lifecycles,
+      plans: Object.fromEntries(
+        capabilities.map((capability, index) => [capability, planResults[index]]),
+      ) as Record<OnboardingCapability, (typeof planResults)[number]>,
     });
   }
 
@@ -410,6 +441,38 @@ export class AppContext {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
         logDebug('Could not clear the workspace runtime descriptor.', {
+          workspaceRoot: this.paths.root,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  private async clearStaleRuntimeBinding(): Promise<void> {
+    try {
+      const descriptor = JSON.parse(
+        await fs.readFile(this.paths.runtimeStateFile, 'utf8'),
+      ) as Partial<WorkspaceRuntimeDescriptor>;
+      const pid = Number(descriptor.pid);
+      const sameWorkspace = path.resolve(String(descriptor.root || '')) === path.resolve(this.paths.root);
+      let alive = Number.isInteger(pid) && pid > 0;
+      if (alive) {
+        try {
+          process.kill(pid, 0);
+        } catch (error) {
+          alive = (error as NodeJS.ErrnoException).code !== 'ESRCH';
+        }
+      }
+      if (!sameWorkspace || !alive) {
+        await fs.unlink(this.paths.runtimeStateFile);
+        logInfo('Removed a stale workspace runtime descriptor.', {
+          workspaceRoot: this.paths.root,
+          stalePid: Number.isInteger(pid) ? pid : undefined,
+        });
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logDebug('Could not reconcile the workspace runtime descriptor.', {
           workspaceRoot: this.paths.root,
           error: error instanceof Error ? error.message : String(error),
         });

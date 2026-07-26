@@ -134,6 +134,52 @@ test('HTTP server exposes a read-only application integration contract', async (
   await server.close();
 });
 
+test('HTTP server exposes consolidated read-only onboarding ownership', async () => {
+  const root = await createTempProject();
+  const context = new AppContext(root);
+  await context.initialize();
+  context.readOnboardingReport = async () => ({
+    version: 1,
+    workspace: await context.getWorkspaceIdentity(),
+    core: {
+      state: 'ok',
+      summary: 'Core ready.',
+    },
+    summary: 'One manual step remains.',
+    capabilities: [{
+      capability: 'identity',
+      name: 'Identity',
+      declared: true,
+      enabled: true,
+      state: 'action-required',
+      planState: 'waiting-user',
+      summary: 'Create the first administrator.',
+      automaticSteps: [],
+      manualSteps: [{
+        id: 'create-admin',
+        label: 'Create first administrator',
+        owner: 'user',
+        status: 'pending',
+        automatic: false,
+        detail: 'Create a passkey.',
+      }],
+      blockedSteps: [],
+      commands: [],
+    }],
+  });
+  const server = context.createServer();
+
+  const response = await server.inject({
+    method: 'GET',
+    url: '/api/onboarding',
+  });
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().capabilities[0].manualSteps[0].owner, 'user');
+  assert.equal(response.headers['cache-control'], 'no-store');
+  await server.close();
+});
+
 test('HTTP server plans before applying workspace-owned Private Edge changes', async () => {
   const root = await createTempProject();
   const context = new AppContext(root);
@@ -272,6 +318,28 @@ test('AppContext records and clears the workspace runtime URL', async () => {
 
   await context.clearRuntimeBinding();
   await assert.rejects(() => fs.readFile(context.paths.runtimeStateFile, 'utf8'), { code: 'ENOENT' });
+});
+
+test('AppContext removes a dead workspace runtime descriptor during initialization', async () => {
+  const root = await createTempProject();
+  const runtimePath = path.join(root, '.locallink', 'runtime.json');
+  await fs.mkdir(path.dirname(runtimePath), { recursive: true });
+  await fs.writeFile(runtimePath, JSON.stringify({
+    id: 'stale',
+    name: path.basename(root),
+    root,
+    host: '127.0.0.1',
+    port: 4999,
+    automatic: true,
+    pid: 2_147_483_647,
+    url: 'http://127.0.0.1:4999',
+    startedAt: '2026-01-01T00:00:00.000Z',
+  }), 'utf8');
+
+  const context = new AppContext(root);
+  await context.initialize();
+
+  await assert.rejects(() => fs.readFile(runtimePath, 'utf8'), { code: 'ENOENT' });
 });
 
 test('HTTP server exposes static project docs', async () => {
