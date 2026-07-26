@@ -43,12 +43,12 @@
   "license": "ISC",
   "dependencies": {
     "@babel/parser": "^8.0.4",
-    "@fastify/static": "^10.1.0",
+    "@fastify/static": "^10.1.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "fastify": "^5.10.0",
     "locallink": "link:",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "recast": "^0.23.12",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
