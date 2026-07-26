@@ -47,10 +47,22 @@ function commandResult(overrides: Partial<CommandResult> = {}): CommandResult {
 test('TaskExecutor starts PM2 apps through ecosystem.config.js', async () => {
   const root = await createTempProject();
   const calls: Array<{ command: string; args: string[] }> = [];
-  const commandRunner: CommandRunner = async (command, args) => {
+  const pm2Homes: Array<string | undefined> = [];
+  const commandRunner: CommandRunner = async (command, args, options) => {
     calls.push({ command, args });
-    if (command === 'pm2' && args[0] === '--version') {
+    if (command === 'pm2') {
+      pm2Homes.push(options?.env?.PM2_HOME);
+    }
+    if (command === 'pm2' && args[0] === '--help') {
       return commandResult({ stdout: '7.0.1' });
+    }
+    if (command === 'pm2' && args[0] === 'jlist') {
+      const started = calls.some((call) => call.command === 'pm2' && call.args[0] === 'start');
+      return commandResult({
+        stdout: started
+          ? JSON.stringify([{ name: 'Queue Worker', pid: 990001, pm2_env: { status: 'online' } }])
+          : '[]',
+      });
     }
     return commandResult({ stdout: 'started' });
   };
@@ -63,10 +75,12 @@ test('TaskExecutor starts PM2 apps through ecosystem.config.js', async () => {
   });
 
   assert.equal(result.ok, true);
-  assert.deepEqual(calls[1], {
+  assert.deepEqual(calls.find((call) => call.args[0] === 'start'), {
     command: 'pm2',
     args: ['start', path.join(root, 'ecosystem.config.js'), '--only', 'Queue Worker', '--update-env'],
   });
+  assert.ok(pm2Homes.length >= 4);
+  assert.ok(pm2Homes.every((pm2Home) => pm2Home === path.join(root, '.locallink', 'pm2')));
 });
 
 test('TaskExecutor derives a PM2 launch from an app-owned Dockerfile.locallink', async () => {
@@ -89,8 +103,16 @@ test('TaskExecutor derives a PM2 launch from an app-owned Dockerfile.locallink',
   const calls: Array<{ command: string; args: string[] }> = [];
   const commandRunner: CommandRunner = async (command, args) => {
     calls.push({ command, args });
-    if (command === 'pm2' && args[0] === '--version') {
+    if (command === 'pm2' && args[0] === '--help') {
       return commandResult({ stdout: '7.0.1' });
+    }
+    if (command === 'pm2' && args[0] === 'jlist') {
+      const started = calls.some((call) => call.command === 'pm2' && call.args[0] === 'start');
+      return commandResult({
+        stdout: started
+          ? JSON.stringify([{ name: 'direct-worker', pid: 990002, pm2_env: { status: 'online' } }])
+          : '[]',
+      });
     }
     return commandResult({ stdout: 'started' });
   };
@@ -103,25 +125,28 @@ test('TaskExecutor derives a PM2 launch from an app-owned Dockerfile.locallink',
   });
 
   assert.equal(result.ok, true);
-  assert.deepEqual(calls[1], {
+  assert.deepEqual(calls.find((call) => call.args[0] === 'start'), {
     command: 'pm2',
     args: ['start', './worker.js', '--name', 'direct-worker', '--update-env', '--cwd', root],
   });
 });
 
-test('TaskExecutor falls back to ecosystem startup when PM2 restart target is missing', async () => {
+test('TaskExecutor deletes the obsolete PM2 process before a restart replacement', async () => {
   const root = await createTempProject();
   const calls: Array<{ command: string; args: string[] }> = [];
   const commandRunner: CommandRunner = async (command, args) => {
     calls.push({ command, args });
-    if (command === 'pm2' && args[0] === '--version') {
+    if (command === 'pm2' && args[0] === '--help') {
       return commandResult({ stdout: '7.0.1' });
     }
-    if (command === 'pm2' && args[0] === 'restart') {
+    if (command === 'pm2' && args[0] === 'jlist') {
+      const replaced = calls.some((call) => call.command === 'pm2' && call.args[0] === 'start');
       return commandResult({
-        ok: false,
-        code: 1,
-        stderr: 'Process or Namespace Queue Worker not found',
+        stdout: JSON.stringify([{
+          name: 'Queue Worker',
+          pid: replaced ? 990004 : 990003,
+          pm2_env: { status: 'online' },
+        }]),
       });
     }
     return commandResult({ stdout: 'started' });
@@ -135,11 +160,11 @@ test('TaskExecutor falls back to ecosystem startup when PM2 restart target is mi
   });
 
   assert.equal(result.ok, true);
-  assert.deepEqual(calls[1], {
+  assert.deepEqual(calls.find((call) => call.args[0] === 'delete'), {
     command: 'pm2',
-    args: ['restart', 'Queue Worker', '--update-env'],
+    args: ['delete', 'Queue Worker'],
   });
-  assert.deepEqual(calls[2], {
+  assert.deepEqual(calls.find((call) => call.args[0] === 'start'), {
     command: 'pm2',
     args: ['start', path.join(root, 'ecosystem.config.js'), '--only', 'Queue Worker', '--update-env'],
   });
@@ -159,8 +184,16 @@ test('TaskExecutor only warns when a PM2 service blueprint is missing', async ()
   const logs = new LogBroker();
   const commandRunner: CommandRunner = async (command, args) => {
     calls.push({ command, args });
-    if (command === 'pm2' && args[0] === '--version') {
+    if (command === 'pm2' && args[0] === '--help') {
       return commandResult({ stdout: '7.0.1' });
+    }
+    if (command === 'pm2' && args[0] === 'jlist') {
+      const started = calls.some((call) => call.command === 'pm2' && call.args[0] === 'start');
+      return commandResult({
+        stdout: started
+          ? JSON.stringify([{ name: 'Queue Worker', pid: 990005, pm2_env: { status: 'online' } }])
+          : '[]',
+      });
     }
     return commandResult({ stdout: 'started' });
   };
@@ -173,7 +206,7 @@ test('TaskExecutor only warns when a PM2 service blueprint is missing', async ()
   });
 
   assert.equal(result.ok, true);
-  assert.deepEqual(calls[1], {
+  assert.deepEqual(calls.find((call) => call.args[0] === 'start'), {
     command: 'pm2',
     args: ['start', path.join(root, 'ecosystem.config.js'), '--only', 'Queue Worker', '--update-env'],
   });
@@ -181,4 +214,36 @@ test('TaskExecutor only warns when a PM2 service blueprint is missing', async ()
     logs.list().map((entry) => entry.message).join(' '),
     /Dockerfile blueprint/i,
   );
+});
+
+test('TaskExecutor does not report a replacement healthy until PM2 reports it online', async () => {
+  const root = await createTempProject();
+  let started = false;
+  const commandRunner: CommandRunner = async (command, args) => {
+    if (command === 'pm2' && args[0] === '--help') {
+      return commandResult({ stdout: 'PM2 help' });
+    }
+    if (command === 'pm2' && args[0] === 'start') {
+      started = true;
+      return commandResult({ stdout: 'started' });
+    }
+    if (command === 'pm2' && args[0] === 'jlist') {
+      return commandResult({
+        stdout: started
+          ? JSON.stringify([{ name: 'Queue Worker', pid: 990006, pm2_env: { status: 'stopped' } }])
+          : '[]',
+      });
+    }
+    return commandResult();
+  };
+
+  const executor = new TaskExecutor(root, new ConfigRepository(root), new LogBroker(), commandRunner);
+  const result = await executor.execute({
+    runtime: 'pm2',
+    serviceName: 'Queue Worker',
+    action: 'start',
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.stderr, /did not report.*online/i);
 });

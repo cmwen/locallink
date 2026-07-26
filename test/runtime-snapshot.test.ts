@@ -131,7 +131,7 @@ test('RuntimeResolver marks unverifiable services as unknown', async () => {
   const services = new Map(state.services.map((service) => [service.name, service]));
 
   assert.equal(services.get('Postgres Compose')?.status, 'unknown');
-  assert.equal(services.get('Queue Worker')?.status, 'unknown');
+  assert.equal(services.get('Queue Worker')?.status, 'stopped');
   assert.equal(services.get('Windows File Indexer')?.status, 'unknown');
   assert.match(state.snapshot.detail, /rehydrated/i);
   assert.equal(state.extensionLifecycle.find((extension) => extension.id === 'private-edge')?.state, 'available');
@@ -164,9 +164,7 @@ test('RuntimeResolver marks declared Docker and PM2 services down when managers 
   assert.equal(services.get('Postgres Compose')?.statusLabel, 'Down');
   assert.equal(services.get('Queue Worker')?.status, 'stopped');
   assert.equal(services.get('Queue Worker')?.statusLabel, 'Down');
-  assert.ok(pm2Options.length >= 2);
-  assert.ok(pm2Options.every((options) => options?.cwd === root));
-  assert.ok(pm2Options.every((options) => options?.env?.PM2_HOME === path.join(root, '.locallink', 'pm2')));
+  assert.equal(pm2Options.length, 0, 'read-only state collection must not initialize an absent PM2 daemon');
   assert.match(state.app.scope, /locallink-runtime-snapshot-/);
 });
 

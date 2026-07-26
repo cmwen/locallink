@@ -9,6 +9,7 @@ import { PortAllocator } from '../ports/allocator';
 import { buildPhase2Advisor } from './phase2';
 import { discoverServiceEdgeUrls } from './network-edge';
 import { selectPm2Row, type Pm2Row } from './pm2';
+import { withPm2WorkspaceLock } from './pm2-workspace';
 import { buildResourceDashboard } from './resources';
 import { normalizeLoopbackBindHost } from '../shared/network';
 import type {
@@ -214,11 +215,34 @@ async function collectPm2States(
     return stateMap;
   }
 
-  const result = await commandRunner('pm2', ['jlist'], {
-    cwd: root,
-    env: buildWorkspaceProcessEnv(root, env),
-    timeoutMs: 1200,
-  });
+  let result;
+  try {
+    result = await withPm2WorkspaceLock(
+      root,
+      env,
+      { allowSpawn: false },
+      (processEnv) => commandRunner('pm2', ['jlist'], {
+        cwd: root,
+        env: processEnv,
+        timeoutMs: 1200,
+      }),
+    );
+  } catch (error) {
+    logWarn('PM2 workspace isolation check failed; marking PM2 services unknown.', {
+      workspaceRoot: root,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    for (const definition of pm2Definitions) {
+      stateMap.set(definition.id, unknownRuntimeState());
+    }
+    return stateMap;
+  }
+  if (!result) {
+    for (const definition of pm2Definitions) {
+      stateMap.set(definition.id, stoppedRuntimeState(definition.group));
+    }
+    return stateMap;
+  }
   if (!result.ok) {
     logWarn('PM2 state probe failed; marking PM2 services unknown.', {
       stderr: result.stderr || result.error || 'No PM2 output',

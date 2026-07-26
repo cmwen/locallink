@@ -1,5 +1,5 @@
 import type { TaskRuntime } from './contracts';
-import { isCommandMissingResult, runCommand, type CommandRunner } from './utils';
+import { isCommandMissingResult, runCommand, type CommandOptions, type CommandRunner } from './utils';
 
 export type ExternalToolKey = 'docker' | 'pm2' | 'task';
 
@@ -30,7 +30,9 @@ const EXTERNAL_TOOL_SPECS: Record<ExternalToolKey, ExternalToolSpec> = {
     key: 'pm2',
     command: 'pm2',
     label: 'PM2',
-    versionArgs: ['--version'],
+    // PM2's version command connects to (and may initialize) its daemon. Help
+    // verifies the executable without creating a daemon as a side effect.
+    versionArgs: ['--help'],
     installHint:
       'Install PM2 with `pnpm add -g pm2` or `npm install -g pm2`, then retry the PM2-backed service.',
   },
@@ -62,9 +64,13 @@ export function getExternalToolSpecForRuntime(runtime: TaskRuntime): ExternalToo
 export async function probeExternalTool(
   key: ExternalToolKey,
   commandRunner: CommandRunner = runCommand,
+  commandOptions: CommandOptions = {},
 ): Promise<ExternalToolProbe> {
   const spec = getExternalToolSpec(key);
-  const versionResult = await commandRunner(spec.command, spec.versionArgs, { timeoutMs: 2_000 });
+  const versionResult = await commandRunner(spec.command, spec.versionArgs, {
+    ...commandOptions,
+    timeoutMs: commandOptions.timeoutMs ?? 2_000,
+  });
 
   if (isCommandMissingResult(versionResult)) {
     return {

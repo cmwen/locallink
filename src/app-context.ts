@@ -30,6 +30,7 @@ import {
 } from './onboarding/report';
 import { PortAllocator } from './ports/allocator';
 import { verifyBlueprintCompliance } from './runtime/lego';
+import { withPm2WorkspaceLock } from './runtime/pm2-workspace';
 import { inspectProcess, reviewProcessTermination, terminateProcess } from './runtime/resources';
 import { WorkspaceStateRepository } from './state/workspace-state';
 import { RuntimeResolver } from './runtime/snapshot';
@@ -490,39 +491,57 @@ export class AppContext {
 
   async attachLiveLogs(): Promise<void> {
     this.liveLogSubscribers += 1;
-    if (this.liveLogSubscribers > 1) {
+    if (this.liveLogSubscribers > 1 && this.dockerTail && this.pm2Tail) {
       return;
     }
 
     const model = await this.configRepository.loadProjectModel();
     const processEnv = buildWorkspaceProcessEnv(this.paths.root, model.env);
 
-    this.dockerTail = startStreamingCommand('docker', ['compose', 'logs', '--tail', '20', '-f'], {
-      cwd: this.paths.root,
-      env: processEnv,
-      onStdoutLine: (line) => this.logs.append(line, 'Docker'),
-      onStderrLine: (line) => this.logs.append(line, 'Docker', 'warn'),
-    });
-    this.dockerTail.done.then((result) => {
-      if (!result.ok && !result.signal && result.stderr) {
-        this.logs.append('Docker log tail is unavailable in the current environment.', 'Alerts', 'warn');
-      }
-    });
+    if (!this.dockerTail) {
+      this.dockerTail = startStreamingCommand('docker', ['compose', 'logs', '--tail', '20', '-f'], {
+        cwd: this.paths.root,
+        env: processEnv,
+        onStdoutLine: (line) => this.logs.append(line, 'Docker'),
+        onStderrLine: (line) => this.logs.append(line, 'Docker', 'warn'),
+      });
+      this.dockerTail.done.then((result) => {
+        if (!result.ok && !result.signal && result.stderr) {
+          this.logs.append('Docker log tail is unavailable in the current environment.', 'Alerts', 'warn');
+        }
+      });
+    }
 
-    this.pm2Tail = startStreamingCommand('pm2', ['logs', '--lines', '20', '--raw'], {
-      cwd: this.paths.root,
-      env: processEnv,
-      onStdoutLine: (line) => {
-        if (!isPm2LogEcho(line)) {
-          this.logs.append(line, 'PM2');
-        }
-      },
-      onStderrLine: (line) => {
-        if (!isPm2LogEcho(line)) {
-          this.logs.append(line, 'PM2', 'warn');
-        }
-      },
-    });
+    try {
+      this.pm2Tail = await withPm2WorkspaceLock(
+        this.paths.root,
+        model.env,
+        { allowSpawn: false },
+        (pm2Env) => Promise.resolve(startStreamingCommand('pm2', ['logs', '--lines', '20', '--raw'], {
+          cwd: this.paths.root,
+          env: pm2Env,
+          onStdoutLine: (line) => {
+            if (!isPm2LogEcho(line)) {
+              this.logs.append(line, 'PM2');
+            }
+          },
+          onStderrLine: (line) => {
+            if (!isPm2LogEcho(line)) {
+              this.logs.append(line, 'PM2', 'warn');
+            }
+          },
+        })),
+      );
+    } catch (error) {
+      this.logs.append(
+        error instanceof Error ? error.message : 'PM2 workspace isolation check failed.',
+        'Alerts',
+        'warn',
+      );
+    }
+    if (!this.pm2Tail) {
+      return;
+    }
     this.pm2Tail.done.then((result) => {
       if (!result.ok && !result.signal && result.stderr) {
         this.logs.append('PM2 log tail is unavailable in the current environment.', 'Alerts', 'warn');

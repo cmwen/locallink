@@ -5,6 +5,11 @@ import { z } from 'zod/v4';
 import type { AppContext } from '../app-context';
 import { TARGET_FILES } from '../shared/contracts';
 
+export const privateEdgeApplyConfirmationTokenSchema = z.union([
+  z.string().startsWith('private-edge:'),
+  z.string().startsWith('private-edge-caddy:'),
+]);
+
 function textResponse(text: string) {
   return {
     content: [
@@ -185,7 +190,7 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
       description: 'Apply and verify the exact live Tailscale Serve route plan represented by a fresh confirmation token; rolls back routes created by a failed attempt.',
       inputSchema: z.object({
         capability: z.literal('private-edge'),
-        confirmation_token: z.string().startsWith('private-edge:').min(77),
+        confirmation_token: privateEdgeApplyConfirmationTokenSchema,
       }),
     },
     async ({ capability, confirmation_token }) => textResponse(JSON.stringify(

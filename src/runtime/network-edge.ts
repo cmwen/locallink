@@ -552,14 +552,17 @@ export function buildManagedTailscaleServeConfig(
   return `${JSON.stringify(next, null, 2)}\n`;
 }
 
+type PrivateEdgeCaddyTopology = 'shared-sidecar' | 'host-network' | 'unreachable';
+
 function buildPrivateEdgeCaddyfile(
   workspaceId: string,
   services: Array<{ id: string; name: string; port: string }>,
-  upstreamHost = '127.0.0.1',
+  topology: PrivateEdgeCaddyTopology,
   ownership: PrivateEdgeRouteOwnership[] = [],
 ): { content: string; proxyPorts: Map<string, string> } {
   const used = new Set<number>();
   const proxyPorts = new Map<string, string>();
+  const upstreamHost = topology === 'shared-sidecar' ? 'host.docker.internal' : '127.0.0.1';
   const blocks = [...services].sort((left, right) => left.id.localeCompare(right.id)).flatMap((service) => {
     const owned = ownership.find((route) => route.adapter === 'tailscale-caddy' && route.serviceId === service.id);
     const preferredPort = Number(owned?.proxyPort);
@@ -570,9 +573,11 @@ function buildPrivateEdgeCaddyfile(
     used.add(port);
     proxyPorts.set(service.id, String(port));
     if (owned?.adopted) return [];
+    const listener = topology === 'shared-sidecar'
+      ? [`:${port} {`]
+      : [`http://127.0.0.1:${port} {`, '  bind 127.0.0.1'];
     return [[
-      `http://127.0.0.1:${port} {`,
-      '  bind 127.0.0.1',
+      ...listener,
       `  reverse_proxy http://${upstreamHost}:${service.port}`,
       '}',
     ].join('\n')];
@@ -621,10 +626,15 @@ class TailscaleCaddyRouteAdapter implements PrivateEdgeRouteAdapter {
     const hostReachableCaddy = tailscaleRuntime.source === 'host-cli'
       && caddyRuntime.networkMode === 'host';
     const topologyReachable = sharedSidecarNamespace || hostReachableCaddy;
+    const topology: PrivateEdgeCaddyTopology = sharedSidecarNamespace
+      ? 'shared-sidecar'
+      : hostReachableCaddy
+        ? 'host-network'
+        : 'unreachable';
     const { content, proxyPorts } = buildPrivateEdgeCaddyfile(
       workspaceId,
       services,
-      sharedSidecarNamespace ? 'host.docker.internal' : '127.0.0.1',
+      topology,
       ownership,
     );
     const proxyServices = services.map((service) => ({ ...service, port: proxyPorts.get(service.id)! }));

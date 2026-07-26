@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -11,6 +13,38 @@ import type { CommandResult, CommandRunner } from '../src/shared/utils';
 
 function result(overrides: Partial<CommandResult> = {}): CommandResult {
   return { ok: true, code: 0, signal: null, stdout: '', stderr: '', timedOut: false, ...overrides };
+}
+
+async function listen(server: http.Server, host: string, port = 0): Promise<number> {
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, host, resolve);
+  });
+  return (server.address() as AddressInfo).port;
+}
+
+async function close(server: http.Server): Promise<void> {
+  await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+}
+
+function proxyTo(port: number): http.Server {
+  return http.createServer((request, response) => {
+    const upstream = http.request({
+      host: '127.0.0.1',
+      port,
+      method: request.method,
+      path: request.url,
+      headers: request.headers,
+    }, (upstreamResponse) => {
+      response.writeHead(upstreamResponse.statusCode || 502, upstreamResponse.headers);
+      upstreamResponse.pipe(response);
+    });
+    upstream.on('error', (error) => {
+      response.statusCode = 502;
+      response.end(error.message);
+    });
+    request.pipe(upstream);
+  });
 }
 
 async function createWorkspace(): Promise<string> {
@@ -327,7 +361,12 @@ test('Tailscale+Caddy applies a validated managed block and reloads the workspac
   const plan = await planner.plan('private-edge');
   assert.equal(plan.routePlan.state, 'ready');
   assert.equal(plan.routePlan.applySupported, true);
-  assert.match(plan.routePlan.generatedFiles[0]?.content || '', /reverse_proxy http:\/\/127\.0\.0\.1:5050/);
+  const generatedCaddyfile = plan.routePlan.generatedFiles[0]?.content || '';
+  assert.match(generatedCaddyfile, /reverse_proxy http:\/\/127\.0\.0\.1:5050/);
+  assert.match(
+    generatedCaddyfile,
+    new RegExp(`http://127\\.0\\.0\\.1:${plan.routePlan.routes[0]?.proxyPort} \\{\\n  bind 127\\.0\\.0\\.1`),
+  );
 
   const applied = await planner.applyRoutes('private-edge', plan.routePlan.confirmationToken!);
   assert.equal(applied.applied, true);
@@ -504,6 +543,7 @@ test('Tailscale+Caddy manages a Docker Tailscale sidecar and restores both works
       TS_SERVE_CONFIG: /config/serve-config.json
     volumes: ["./edge/tailscale-serve.json:/config/serve-config.json:ro"]
 `, 'utf8');
+  const originalCompose = await fs.readFile(path.join(root, 'docker-compose.yml'), 'utf8');
 
   const liveRoutes = new Map<string, string>([['443', '8080']]);
   const calls: Array<{ command: string; args: string[] }> = [];
@@ -553,6 +593,10 @@ test('Tailscale+Caddy manages a Docker Tailscale sidecar and restores both works
   assert.equal(plan.routePlan.generatedFiles.some((file) => file.kind === 'tailscale-serve-config'), true);
   assert.equal(plan.routePlan.routes[0]?.apply.command, 'docker');
   assert.ok(plan.routePlan.routes[0]?.apply.args.includes('tailscale-edge'));
+  const generatedCaddyfile = plan.routePlan.generatedFiles.find((file) => file.kind === 'caddyfile')?.content || '';
+  assert.match(generatedCaddyfile, new RegExp(`\\n:${plan.routePlan.routes[0]?.proxyPort} \\{\\n`));
+  assert.doesNotMatch(generatedCaddyfile, /bind 127\.0\.0\.1/);
+  assert.match(generatedCaddyfile, /reverse_proxy http:\/\/host\.docker\.internal:5050/);
 
   const applied = await planner.applyRoutes('private-edge', plan.routePlan.confirmationToken!);
   assert.equal(applied.plan.routePlan.state, 'in-sync');
@@ -565,6 +609,18 @@ test('Tailscale+Caddy manages a Docker Tailscale sidecar and restores both works
     `http://127.0.0.1:${plan.routePlan.routes[0]?.proxyPort}`,
   );
   assert.ok(calls.some((call) => call.args.includes('tailscale-edge') && call.args.includes('--bg')));
+  const appliedCaddyfile = await fs.readFile(path.join(root, 'edge', 'Caddyfile'), 'utf8');
+  assert.match(appliedCaddyfile, new RegExp(`\\n:${plan.routePlan.routes[0]?.proxyPort} \\{\\n`));
+  assert.doesNotMatch(appliedCaddyfile, /bind 127\.0\.0\.1/);
+  assert.equal(await fs.readFile(path.join(root, 'docker-compose.yml'), 'utf8'), originalCompose);
+
+  const reapplied = await planner.apply('private-edge', ['api']);
+  assert.equal(reapplied.applied, false);
+  assert.equal(await fs.readFile(path.join(root, 'edge', 'Caddyfile'), 'utf8'), appliedCaddyfile);
+  assert.equal(await fs.readFile(path.join(root, 'docker-compose.yml'), 'utf8'), originalCompose);
+  const reappliedRoutes = await planner.applyRoutes('private-edge', 'already-in-sync');
+  assert.equal(reappliedRoutes.applied, false);
+  assert.equal(await fs.readFile(path.join(root, 'edge', 'Caddyfile'), 'utf8'), appliedCaddyfile);
 
   await planner.apply('private-edge', []);
   const removalPlan = await planner.plan('private-edge');
@@ -574,6 +630,96 @@ test('Tailscale+Caddy manages a Docker Tailscale sidecar and restores both works
   const cleared = JSON.parse(await fs.readFile(path.join(root, '.locallink', 'workspace-state.json'), 'utf8'));
   assert.deepEqual(cleared.privateEdgeRoutes, []);
   assert.equal(cleared.privateEdgeRuntime, undefined);
+});
+
+test('shared-sidecar Serve and Caddy proxy stages preserve application response bodies and assets', async (context) => {
+  const root = await createWorkspace();
+  const application = http.createServer((request, response) => {
+    response.setHeader('content-type', request.url === '/assets/app.js' ? 'text/javascript' : 'text/html');
+    response.end(request.url === '/assets/app.js'
+      ? 'window.__LOCALLINK_TEST__ = "loaded";'
+      : '<!doctype html><div id="root">LocalLink response body</div><script src="/assets/app.js"></script>');
+  });
+  let applicationPort: number;
+  try {
+    applicationPort = await listen(application, '127.0.0.1');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EPERM') {
+      context.skip('This environment does not permit local HTTP listeners.');
+      return;
+    }
+    throw error;
+  }
+  let caddy: http.Server | undefined;
+  let tailscaleServe: http.Server | undefined;
+
+  try {
+    await fs.writeFile(
+      path.join(root, '.env'),
+      `LOCALLINK_PHASE2_PREFERRED_EDGE=auto\nAPI_PORT=${applicationPort}\n`,
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(root, 'locallink.extensions.yml'),
+      'extensions:\n  - id: edge\n    name: Edge\n    kind: network-edge\n    enabled: true\n    command: tailscale\n    adapter: tailscale-caddy\n',
+      'utf8',
+    );
+    await fs.mkdir(path.join(root, 'edge'), { recursive: true });
+    await fs.writeFile(path.join(root, 'edge', 'Caddyfile'), '', 'utf8');
+    await fs.writeFile(path.join(root, 'edge', 'serve.json'), '{}\n', 'utf8');
+    await fs.writeFile(path.join(root, 'docker-compose.yml'), `services:
+  api:
+    image: example/api
+    ports: ["\${API_PORT}:5050"]
+  caddy-edge:
+    image: caddy:2.10-alpine
+    network_mode: service:tailscale-edge
+    volumes: ["./edge/Caddyfile:/etc/caddy/Caddyfile:ro"]
+  tailscale-edge:
+    image: tailscale/tailscale:latest
+    environment:
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_USERSPACE: "true"
+    volumes: ["./edge:/config:ro"]
+`, 'utf8');
+
+    const commandRunner: CommandRunner = async (_command, args) => {
+      if (args.includes('ps')) return result({ stdout: JSON.stringify({ State: 'running' }) });
+      if (args.includes('status') && !args.includes('serve')) {
+        return result({ stdout: JSON.stringify({
+          BackendState: 'Running',
+          Self: { DNSName: 'edge.tailnet.ts.net.' },
+        }) });
+      }
+      return result({ stdout: '{}' });
+    };
+    const planner = new ExtensionPlanner(root, new ConfigRepository(root), commandRunner);
+    await planner.apply('private-edge', ['api']);
+    const plan = await planner.plan('private-edge');
+    const proxyPort = Number(plan.routePlan.routes[0]?.proxyPort);
+    const caddyfile = plan.routePlan.generatedFiles.find((file) => file.kind === 'caddyfile')?.content || '';
+
+    assert.match(caddyfile, new RegExp(`\\n:${proxyPort} \\{\\n`));
+    assert.match(caddyfile, new RegExp(`reverse_proxy http://host\\.docker\\.internal:${applicationPort}`));
+    caddy = proxyTo(applicationPort);
+    await listen(caddy, '0.0.0.0', proxyPort);
+    tailscaleServe = proxyTo(proxyPort);
+    const tailnetPort = await listen(tailscaleServe, '127.0.0.1');
+
+    const html = await fetch(`http://127.0.0.1:${tailnetPort}/`);
+    assert.equal(html.status, 200);
+    assert.equal(
+      await html.text(),
+      '<!doctype html><div id="root">LocalLink response body</div><script src="/assets/app.js"></script>',
+    );
+    const asset = await fetch(`http://127.0.0.1:${tailnetPort}/assets/app.js`);
+    assert.equal(asset.status, 200);
+    assert.equal(await asset.text(), 'window.__LOCALLINK_TEST__ = "loaded";');
+  } finally {
+    if (tailscaleServe) await close(tailscaleServe);
+    if (caddy) await close(caddy);
+    await close(application);
+  }
 });
 
 test('Tailscale+Caddy starts and later stops workspace-owned Caddy and Tailscale sidecars', async () => {

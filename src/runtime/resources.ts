@@ -10,7 +10,7 @@ import type {
 } from '../shared/contracts';
 import { AppError } from '../shared/errors';
 import { formatDurationFromSeconds, parseJsonOutput, runCommand, type CommandRunner } from '../shared/utils';
-import { buildWorkspaceProcessEnv } from '../workspace/identity';
+import { withPm2WorkspaceLock } from './pm2-workspace';
 
 interface ParsedProcessRow {
   pid: number;
@@ -229,13 +229,23 @@ export async function buildResourceDashboard(
         .filter((row): row is ParsedProcessRow => row !== null)
         .filter((row) => row.name !== 'ps' && !row.command.startsWith('ps -eo '))
     : [];
-  const pm2Result = definitions.some((definition) => definition.runtime === 'pm2')
-    ? await commandRunner('pm2', ['jlist'], {
-        cwd: workspace?.root,
-        env: workspace ? buildWorkspaceProcessEnv(workspace.root, workspace.env) : undefined,
-        timeoutMs: 1_200,
-      })
-    : undefined;
+  let pm2Result;
+  if (definitions.some((definition) => definition.runtime === 'pm2') && workspace) {
+    try {
+      pm2Result = await withPm2WorkspaceLock(
+        workspace.root,
+        workspace.env,
+        { allowSpawn: false },
+        (processEnv) => commandRunner('pm2', ['jlist'], {
+          cwd: workspace.root,
+          env: processEnv,
+          timeoutMs: 1_200,
+        }),
+      );
+    } catch {
+      pm2Result = undefined;
+    }
+  }
   const pm2Rows = pm2Result?.ok ? parseJsonOutput<Pm2ResourceRow>(pm2Result.stdout) : [];
   const attributed = allRows.map((row) => {
     const command = row.command.toLowerCase();

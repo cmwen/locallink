@@ -59,12 +59,14 @@ test('terminateProcess protects the LocalLink process itself', async () => {
   await assert.rejects(() => terminateProcess(process.pid, 'SIGTERM'));
 });
 
-test('resource dashboard attributes PM2 processes to workspace services', async () => {
+test('resource dashboard does not initialize PM2 while attributing processes heuristically', async () => {
+  let pm2Calls = 0;
   const commandRunner: CommandRunner = async (command, args) => {
     if (command === 'ps') {
       return commandResult({ stdout: '101 1 12.0 120000 3600 node /workspace/worker.js\n102 1 8.0 100000 2000 node /opt/other.js\n' });
     }
     if (command === 'pm2') {
+      pm2Calls += 1;
       return commandResult({ stdout: JSON.stringify([{ name: 'Queue Worker', pid: 101 }]) });
     }
     return commandResult({ ok: false, code: null });
@@ -79,12 +81,17 @@ test('resource dashboard attributes PM2 processes to workspace services', async 
     notes: 'Worker',
     detail: 'Worker',
     tags: 'pm2',
-  }]);
+    script: '/workspace/worker.js',
+  }], {
+    root: '/workspace',
+    env: { PM2_HOME: '.locallink/pm2' },
+  });
 
   assert.equal(dashboard.workspaceProcesses.length, 1);
   assert.equal(dashboard.workspaceProcesses[0]?.serviceId, 'queue-worker');
-  assert.equal(dashboard.workspaceProcesses[0]?.attributionConfidence, 'exact');
+  assert.equal(dashboard.workspaceProcesses[0]?.attributionConfidence, 'heuristic');
   assert.equal(dashboard.hostProcesses.length, 2);
+  assert.equal(pm2Calls, 0);
 });
 
 test('termination review reports identity, children, and open ports', async () => {

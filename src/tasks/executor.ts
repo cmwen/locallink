@@ -5,8 +5,11 @@ import type { CommandRunner } from '../shared/utils';
 import { LogBroker } from '../logs/broker';
 import { ConfigRepository } from '../config/files';
 import { prepareRuntimeIsolation, readDockerfileBlueprint, verifyBlueprintCompliance } from '../runtime/lego';
+import { selectPm2Row, stopObsoletePm2ProcessTree, type Pm2Row } from '../runtime/pm2';
+import { withPm2WorkspaceLock } from '../runtime/pm2-workspace';
 import { runCommand } from '../shared/utils';
 import { buildWorkspaceProcessEnv } from '../workspace/identity';
+import { parseJsonOutput } from '../shared/utils';
 
 function resolveServiceDefinition(
   definitions: ServiceDefinition[],
@@ -98,9 +101,12 @@ export class TaskExecutor {
     private readonly commandRunner: CommandRunner = runCommand,
   ) {}
 
-  private async ensureRuntimeAvailable(runtime: TaskRuntime): Promise<void> {
+  private async ensureRuntimeAvailable(runtime: TaskRuntime, env?: NodeJS.ProcessEnv): Promise<void> {
     const spec = getExternalToolSpecForRuntime(runtime);
-    const probe = await probeExternalTool(spec.key, this.commandRunner);
+    const probe = await probeExternalTool(spec.key, this.commandRunner, {
+      cwd: this.root,
+      env,
+    });
 
     if (probe.status === 'ok') {
       return;
@@ -216,7 +222,7 @@ export class TaskExecutor {
       : undefined;
     const fallbackStartArgs = definition.definitionSource === 'ecosystem' ? startArgs : directStartArgs;
 
-    if (action === 'start' || action === 'up') {
+    if (action === 'start' || action === 'up' || (action === 'restart' && fallbackStartArgs)) {
       if (!fallbackStartArgs) {
         throw new AppError(
           'PM2_LAUNCH_UNAVAILABLE',
@@ -224,7 +230,35 @@ export class TaskExecutor {
           400,
         );
       }
-      return this.runLifecycleCommand('pm2', 'pm2', fallbackStartArgs, action, definition.name);
+      const current = await this.commandRunner('pm2', ['jlist'], {
+        cwd: this.root,
+        env: this.buildServiceProcessEnv(),
+        timeoutMs: 5_000,
+      });
+      if (!current.ok) {
+        return this.pm2Failure(definition.name, action, 'pm2 jlist', current);
+      }
+      const rows = parseJsonOutput<Pm2Row>(current.stdout);
+      const existing = selectPm2Row(definition, rows);
+      if (existing) {
+        const deleted = await this.runLifecycleCommand(
+          'pm2',
+          'pm2',
+          ['delete', serviceName],
+          action,
+          definition.name,
+        );
+        if (!deleted.ok) {
+          return deleted;
+        }
+        await stopObsoletePm2ProcessTree(existing.pid ? [existing.pid] : []);
+      }
+
+      const started = await this.runLifecycleCommand('pm2', 'pm2', fallbackStartArgs, action, definition.name);
+      if (!started.ok) {
+        return started;
+      }
+      return this.verifyPm2Replacement(definition, action, started);
     }
 
     const args = [action, serviceName];
@@ -239,6 +273,62 @@ export class TaskExecutor {
     }
 
     return result;
+  }
+
+  private pm2Failure(
+    serviceName: string,
+    action: TaskAction,
+    command: string,
+    result: Awaited<ReturnType<CommandRunner>>,
+  ): TaskExecutionResult {
+    return {
+      ok: false,
+      runtime: 'pm2',
+      serviceName,
+      action,
+      command,
+      exitCode: result.code,
+      stdout: result.stdout,
+      stderr: result.stderr || result.error || 'PM2 command failed.',
+    };
+  }
+
+  private async verifyPm2Replacement(
+    definition: ServiceDefinition,
+    action: TaskAction,
+    started: TaskExecutionResult,
+  ): Promise<TaskExecutionResult> {
+    let lastResult: Awaited<ReturnType<CommandRunner>> | undefined;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      lastResult = await this.commandRunner('pm2', ['jlist'], {
+        cwd: this.root,
+        env: this.buildServiceProcessEnv(),
+        timeoutMs: 5_000,
+      });
+      if (lastResult.ok) {
+        const row = selectPm2Row(definition, parseJsonOutput<Pm2Row>(lastResult.stdout));
+        if (row?.pm2_env?.status === 'online' && Number(row.pid) > 0) {
+          return started;
+        }
+        if (row?.pm2_env?.status === 'errored' || row?.pm2_env?.status === 'stopped') {
+          break;
+        }
+      }
+      if (attempt < 9) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+
+    return {
+      ...started,
+      ok: false,
+      exitCode: lastResult?.code ?? started.exitCode,
+      stderr: [
+        started.stderr,
+        lastResult?.stderr,
+        `PM2 did not report "${definition.runtimeName || definition.name}" online after replacement.`,
+      ].filter(Boolean).join('\n'),
+    };
   }
 
   async execute(input: ExecuteTaskInput): Promise<TaskExecutionResult> {
@@ -260,8 +350,26 @@ export class TaskExecutor {
       await this.ensureRuntimeAvailable(input.runtime);
       result = await this.executeTaskfile(definition, input.action);
     } else if (input.runtime === 'pm2') {
-      await this.ensureRuntimeAvailable(input.runtime);
-      result = await this.executePm2(definition, input.action);
+      const guardedResult = await withPm2WorkspaceLock(
+        this.root,
+        model.env,
+        { allowSpawn: input.action !== 'stop' },
+        async (processEnv) => {
+          this.serviceProcessEnv = processEnv;
+          await this.ensureRuntimeAvailable(input.runtime, processEnv);
+          return this.executePm2(definition, input.action);
+        },
+      );
+      result = guardedResult ?? {
+        ok: true,
+        runtime: 'pm2',
+        serviceName: definition.name,
+        action: input.action,
+        command: `pm2 ${input.action} ${definition.runtimeName || definition.name}`,
+        exitCode: 0,
+        stdout: input.action === 'stop' ? 'PM2 daemon is not running; service is already stopped.' : '',
+        stderr: '',
+      };
     } else {
       await this.ensureRuntimeAvailable(input.runtime);
       const command = this.buildDockerCommand(definition, input.action);

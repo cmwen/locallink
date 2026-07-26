@@ -2,9 +2,11 @@ import fs from 'node:fs/promises';
 import syncFs from 'node:fs';
 import path from 'node:path';
 
+import { ConfigRepository } from '../config/files';
 import type { DiagnosticCheck, StartupDiagnostics } from '../shared/contracts';
 import { probeExternalTool, type ExternalToolKey } from '../shared/runtime-tools';
 import { runCommand, type CommandRunner } from '../shared/utils';
+import { buildWorkspaceProcessEnv } from '../workspace/identity';
 
 interface PackageManifest {
   dependencies?: Record<string, string>;
@@ -180,7 +182,19 @@ export class StartupDiagnosticsService {
   }
 
   private async checkExternalTool(key: ExternalToolKey): Promise<DiagnosticCheck> {
-    const probe = await probeExternalTool(key, this.commandRunner);
+    const workspaceEnv = key === 'pm2'
+      ? (await new ConfigRepository(this.options.workspaceRoot, false).loadProjectModel()).env
+      : undefined;
+    const probe = await probeExternalTool(
+      key,
+      this.commandRunner,
+      key === 'pm2'
+        ? {
+            cwd: this.options.workspaceRoot,
+            env: buildWorkspaceProcessEnv(this.options.workspaceRoot, workspaceEnv || {}),
+          }
+        : {},
+    );
 
     if (probe.status === 'missing') {
       return {

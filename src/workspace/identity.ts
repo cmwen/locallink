@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 
 import type { PortAllocator } from '../ports/allocator';
@@ -47,6 +48,28 @@ export function composeProjectName(workspaceId: string): string {
   return `locallink_${normalizeWorkspaceId(workspaceId).replace(/-/g, '_') || 'workspace'}`;
 }
 
+export function canonicalizeWorkspacePath(value: string, base = process.cwd()): string {
+  const absolute = path.resolve(base, value);
+  const missingSegments: string[] = [];
+  let existingPath = absolute;
+
+  while (!fs.existsSync(existingPath)) {
+    const parent = path.dirname(existingPath);
+    if (parent === existingPath) {
+      return path.normalize(absolute);
+    }
+    missingSegments.unshift(path.basename(existingPath));
+    existingPath = parent;
+  }
+
+  const canonicalExistingPath = fs.realpathSync.native(existingPath);
+  return path.normalize(path.join(canonicalExistingPath, ...missingSegments));
+}
+
+export function resolveCanonicalPm2Home(root: string, configuredHome?: string): string {
+  return canonicalizeWorkspacePath(configuredHome?.trim() || '.locallink/pm2', root);
+}
+
 export function buildWorkspaceProcessEnv(
   root: string,
   env: Record<string, string>,
@@ -58,8 +81,7 @@ export function buildWorkspaceProcessEnv(
     LOCALLINK_WORKSPACE_ID: identity.id,
     COMPOSE_PROJECT_NAME: env.COMPOSE_PROJECT_NAME?.trim() || composeProjectName(identity.id),
   };
-  const pm2Home = env.PM2_HOME?.trim() || '.locallink/pm2';
-  merged.PM2_HOME = path.isAbsolute(pm2Home) ? pm2Home : path.resolve(root, pm2Home);
+  merged.PM2_HOME = resolveCanonicalPm2Home(root, env.PM2_HOME);
   return merged;
 }
 
