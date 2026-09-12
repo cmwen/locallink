@@ -429,3 +429,43 @@ test('HTTP server persists workspace workflows', async () => {
 
   await server.close();
 });
+
+test('HTTP server exposes guarded PM2 save and resurrect actions', async () => {
+  const root = await createTempProject();
+  const context = new AppContext(root);
+  let received: string | undefined;
+  context.executePm2WorkspaceAction = async (action) => {
+    received = action;
+    return {
+      result: {
+        ok: true,
+        action,
+        command: `pm2 ${action}`,
+        pm2Home: path.join(root, '.locallink', 'pm2'),
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+      },
+      snapshot: {} as never,
+    };
+  };
+  const server = context.createServer();
+
+  const response = await server.inject({
+    method: 'POST',
+    url: '/api/pm2/workspace',
+    payload: { action: 'save' },
+  });
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(received, 'save');
+  assert.equal(response.json().result.pm2Home, path.join(root, '.locallink', 'pm2'));
+
+  const invalid = await server.inject({
+    method: 'POST',
+    url: '/api/pm2/workspace',
+    payload: { action: 'delete' },
+  });
+  assert.equal(invalid.statusCode, 400);
+  await server.close();
+});

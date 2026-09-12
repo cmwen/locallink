@@ -1,9 +1,14 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 
-import type { PrivateEdgeRouteOwnership, ServiceDefinition, WorkspaceExtension } from '../shared/contracts';
+import type {
+  PrivateEdgeRouteOwnership,
+  ServiceDefinition,
+  ServicePrivateEdgeIntegration,
+  WorkspaceExtension,
+} from '../shared/contracts';
 import { AppError } from '../shared/errors';
-import type { CommandRunner } from '../shared/utils';
+import type { CommandResult, CommandRunner } from '../shared/utils';
 import { WorkspaceStateRepository } from '../state/workspace-state';
 import { caddyValidationCommand, detectCaddyRuntime, readWorkspaceFile } from './caddy-runtime';
 import {
@@ -40,6 +45,11 @@ export interface PrivateEdgeRouteCommand {
   command: string;
   args: string[];
 }
+
+export type PrivateEdgeService = Pick<ServiceDefinition, 'id' | 'name'> & {
+  port: string;
+  integrations?: { privateEdge?: ServicePrivateEdgeIntegration };
+};
 
 export interface PrivateEdgePlannedRoute {
   serviceId: string;
@@ -234,7 +244,7 @@ function routeUrl(hostname: string | undefined, httpsPort: string): string | und
 
 export async function planPrivateEdgeRoutes(
   workspaceId: string,
-  services: Array<{ id: string; name: string; port: string }>,
+  services: PrivateEdgeService[],
   command: string,
   commandRunner: CommandRunner,
   configuredPortStart?: string,
@@ -448,7 +458,7 @@ export interface PrivateEdgeRouteAdapter {
   command: string;
   planRoutes(
     workspaceId: string,
-    services: Array<{ id: string; name: string; port: string }>,
+    services: PrivateEdgeService[],
     commandRunner: CommandRunner,
     configuredPortStart?: string,
     workspaceRoot?: string,
@@ -472,7 +482,7 @@ class TailscaleServeRouteAdapter implements PrivateEdgeRouteAdapter {
 
   async planRoutes(
     workspaceId: string,
-    services: Array<{ id: string; name: string; port: string }>,
+    services: PrivateEdgeService[],
     commandRunner: CommandRunner,
     configuredPortStart?: string,
     _workspaceRoot?: string,
@@ -556,7 +566,7 @@ type PrivateEdgeCaddyTopology = 'shared-sidecar' | 'host-network' | 'unreachable
 
 function buildPrivateEdgeCaddyfile(
   workspaceId: string,
-  services: Array<{ id: string; name: string; port: string }>,
+  services: PrivateEdgeService[],
   topology: PrivateEdgeCaddyTopology,
   ownership: PrivateEdgeRouteOwnership[] = [],
 ): { content: string; proxyPorts: Map<string, string> } {
@@ -576,9 +586,23 @@ function buildPrivateEdgeCaddyfile(
     const listener = topology === 'shared-sidecar'
       ? [`:${port} {`]
       : [`http://127.0.0.1:${port} {`, '  bind 127.0.0.1'];
+    const privateEdge = service.integrations?.privateEdge;
+    const reverseProxy = privateEdge?.localOrigin || privateEdge?.anonymousCors
+      ? [
+          `  reverse_proxy http://${upstreamHost}:${service.port} {`,
+          ...(privateEdge.localOrigin
+            ? [
+                `    header_up Host 127.0.0.1:${service.port}`,
+                `    header_up Origin http://127.0.0.1:${service.port}`,
+              ]
+            : []),
+          ...(privateEdge.anonymousCors ? ['    header_down Access-Control-Allow-Origin *'] : []),
+          '  }',
+        ].join('\n')
+      : `  reverse_proxy http://${upstreamHost}:${service.port}`;
     return [[
       ...listener,
-      `  reverse_proxy http://${upstreamHost}:${service.port}`,
+      reverseProxy,
       '}',
     ].join('\n')];
   });
@@ -605,7 +629,7 @@ class TailscaleCaddyRouteAdapter implements PrivateEdgeRouteAdapter {
 
   async planRoutes(
     workspaceId: string,
-    services: Array<{ id: string; name: string; port: string }>,
+    services: PrivateEdgeService[],
     commandRunner: CommandRunner,
     configuredPortStart?: string,
     workspaceRoot?: string,
@@ -625,7 +649,7 @@ class TailscaleCaddyRouteAdapter implements PrivateEdgeRouteAdapter {
       && caddyRuntime.networkMode === `service:${tailscaleRuntime.serviceName}`;
     const hostReachableCaddy = tailscaleRuntime.source === 'host-cli'
       && caddyRuntime.networkMode === 'host';
-    const topologyReachable = sharedSidecarNamespace || hostReachableCaddy;
+    const topologyReachable = (sharedSidecarNamespace && caddyRuntime.hostReachable !== false) || hostReachableCaddy;
     const topology: PrivateEdgeCaddyTopology = sharedSidecarNamespace
       ? 'shared-sidecar'
       : hostReachableCaddy
@@ -728,7 +752,7 @@ class TailscaleCaddyRouteAdapter implements PrivateEdgeRouteAdapter {
           detail: caddyManageable
             ? `LocalLink can validate, start, reload, and restore ${caddyRuntime.serviceName} using ${caddyRuntime.configPath}.`
             : caddyRuntime.manageable
-              ? 'Caddy must share the Docker Tailscale service network namespace, or use host networking with a host Tailscale runtime.'
+              ? 'Caddy must share the Docker Tailscale service network namespace with guaranteed host reachability, or use host networking with a host Tailscale runtime.'
               : 'The Docker Caddy service must mount its Caddyfile from inside this workspace before LocalLink can manage it.',
         },
         {
@@ -801,13 +825,13 @@ class TailscaleCaddyRouteAdapter implements PrivateEdgeRouteAdapter {
       detectTailscaleRuntime(workspaceRoot, commandRunner, this.command),
     ]);
     const topologyReachable = tailscaleRuntime.source === 'docker-compose'
-      ? runtime.networkMode === `service:${tailscaleRuntime.serviceName}`
+      ? runtime.networkMode === `service:${tailscaleRuntime.serviceName}` && runtime.hostReachable !== false
       : tailscaleRuntime.source === 'host-cli' && runtime.networkMode === 'host';
     if (!runtime.manageable || !topologyReachable || (tailscaleRuntime.source === 'docker-compose' && !tailscaleRuntime.manageable)) {
       return {
         adapter: this.id,
         state: 'blocked-runtime',
-        summary: 'Tailscale+Caddy reconciliation requires a workspace-local Docker Caddyfile mount.',
+        summary: 'Tailscale+Caddy reconciliation requires a workspace-local Docker Caddyfile mount and guaranteed host reachability.',
         requiresConfirmation: true,
         removals: [],
       };
@@ -843,6 +867,25 @@ export function resolvePrivateEdgeRouteAdapter(adapterId: string | undefined, co
   );
 }
 
+async function probeWorkspaceServeStatus(
+  workspaceRoot: string | undefined,
+  networkEdge: WorkspaceExtension,
+  commandRunner: CommandRunner,
+): Promise<CommandResult | undefined> {
+  const runtime = workspaceRoot
+    ? await detectTailscaleRuntime(workspaceRoot, commandRunner, networkEdge.command || 'tailscale')
+    : undefined;
+  const target = runtime
+    ? tailscaleRuntimeCommand(runtime, networkEdge.command || 'tailscale')
+    : { command: networkEdge.command || 'tailscale', argsPrefix: [] };
+  if (!target || runtime?.running === false) return undefined;
+  return commandRunner(
+    target.command,
+    [...target.argsPrefix, 'serve', 'status', '--json'],
+    { cwd: workspaceRoot, timeoutMs: 2_000 },
+  );
+}
+
 export async function discoverServiceEdgeUrls(
   extensions: WorkspaceExtension[],
   services: ServiceDefinition[],
@@ -863,24 +906,19 @@ export async function discoverServiceEdgeUrls(
     if (pocketIdService?.port && selectedPorts.has(pocketIdService.port)) urlsByService.set(pocketIdService.id, [pocketIdUrl]);
   }
 
-  const runtime = workspaceRoot
-    ? await detectTailscaleRuntime(workspaceRoot, commandRunner, networkEdge.command || 'tailscale')
-    : undefined;
-  const target = runtime
-    ? tailscaleRuntimeCommand(runtime, networkEdge.command || 'tailscale')
-    : { command: networkEdge.command || 'tailscale', argsPrefix: [] };
-  if (!target || runtime?.running === false) return urlsByService;
-  const result = await commandRunner(
-    target.command,
-    [...target.argsPrefix, 'serve', 'status', '--json'],
-    { cwd: workspaceRoot, timeoutMs: 2_000 },
-  );
-  if (!result.ok) return urlsByService;
-
-  const routes = parseTailscaleServeRoutes(result.stdout);
   const ownership = workspaceRoot
     ? (await new WorkspaceStateRepository(path.join(workspaceRoot, '.locallink', 'workspace-state.json')).load()).privateEdgeRoutes
     : [];
+  const ownsSelectedRoutes = ownership.some((route) => route.status === 'active' && selectedPorts.has(route.targetPort));
+
+  let result = await probeWorkspaceServeStatus(workspaceRoot, networkEdge, commandRunner);
+  if ((!result || !result.ok) && ownsSelectedRoutes) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    result = await probeWorkspaceServeStatus(workspaceRoot, networkEdge, commandRunner);
+  }
+  if (!result?.ok) return urlsByService;
+
+  const routes = parseTailscaleServeRoutes(result.stdout);
   for (const service of services) {
     const port = service.port?.trim();
     if (!port || port === '—' || !selectedPorts.has(port)) continue;

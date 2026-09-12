@@ -16,6 +16,8 @@ import type {
   TaskAction,
   TaskExecutionResponse,
   TaskRuntime,
+  Pm2WorkspaceAction,
+  Pm2WorkspaceExecutionResponse,
   WorkspaceState,
 } from './types';
 
@@ -382,6 +384,16 @@ export async function executeServiceAction(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ serviceName, runtime, action }),
+  });
+}
+
+export async function executePm2WorkspaceAction(
+  action: Pm2WorkspaceAction,
+): Promise<Pm2WorkspaceExecutionResponse> {
+  return fetchJson<Pm2WorkspaceExecutionResponse>('./api/pm2/workspace', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
   });
 }
 

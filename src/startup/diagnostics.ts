@@ -10,6 +10,7 @@ import { buildWorkspaceProcessEnv } from '../workspace/identity';
 
 interface PackageManifest {
   dependencies?: Record<string, string>;
+  scripts?: Record<string, string>;
 }
 
 interface StartupDiagnosticsOptions {
@@ -225,6 +226,51 @@ export class StartupDiagnosticsService {
     };
   }
 
+  private async checkWorkspaceScriptDrift(): Promise<DiagnosticCheck> {
+    const model = await new ConfigRepository(this.options.workspaceRoot, false).loadProjectModel();
+    const issues: string[] = [];
+    for (const definition of model.definitions.filter((candidate) => candidate.runtime === 'pm2')) {
+      const launcher = path.basename(definition.script || '');
+      if (!['npm', 'pnpm', 'yarn', 'bun'].includes(launcher)) {
+        continue;
+      }
+      const args = Array.isArray(definition.args)
+        ? definition.args.map(String)
+        : String(definition.args || '').split(/\s+/).filter(Boolean);
+      const scriptName = args[0] === 'run' ? args[1] : args[0];
+      if (!scriptName || scriptName.startsWith('-')) {
+        continue;
+      }
+      const cwd = definition.cwd
+        ? path.resolve(this.options.workspaceRoot, definition.cwd)
+        : this.options.workspaceRoot;
+      try {
+        const manifest = JSON.parse(await fs.readFile(path.join(cwd, 'package.json'), 'utf8')) as PackageManifest;
+        if (!manifest.scripts?.[scriptName]) {
+          issues.push(`${definition.name} references "${launcher} ${args.join(' ')}", but package.json has no "${scriptName}" script.`);
+        }
+      } catch {
+        issues.push(`${definition.name} uses ${launcher}, but ${path.join(cwd, 'package.json')} is not readable.`);
+      }
+    }
+
+    return issues.length > 0
+      ? {
+          id: 'workspace-script-drift',
+          label: 'Workspace scripts',
+          status: 'warn',
+          summary: `${issues.length} PM2 launcher definition${issues.length === 1 ? '' : 's'} reference missing package scripts.`,
+          detail: `${issues.join(' ')} LocalLink will not guess or substitute another command.`,
+        }
+      : {
+          id: 'workspace-script-drift',
+          label: 'Workspace scripts',
+          status: 'ok',
+          summary: 'PM2 package-script launchers match their workspace definitions.',
+          detail: 'No missing package script references were detected.',
+        };
+  }
+
   async inspect(): Promise<StartupDiagnostics> {
     const checks = await Promise.all([
       this.checkNodeDependencies(),
@@ -232,6 +278,7 @@ export class StartupDiagnosticsService {
       this.checkExternalTool('pm2'),
       this.checkExternalTool('docker'),
       this.checkExternalTool('task'),
+      this.checkWorkspaceScriptDrift(),
     ]);
 
     return {

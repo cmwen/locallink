@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import { AppError } from '../shared/errors';
 import {
@@ -12,6 +14,7 @@ import {
 const LOCK_WAIT_MS = 50;
 const LOCK_TIMEOUT_MS = 65_000;
 const STALE_LOCK_MS = 120_000;
+const execFileAsync = promisify(execFile);
 
 export interface Pm2WorkspaceInspection {
   pm2Home: string;
@@ -73,14 +76,12 @@ async function readProcEnvironment(pid: number): Promise<Record<string, string>>
 
 async function discoverPm2DaemonPids(pm2Home: string): Promise<number[]> {
   if (process.platform !== 'linux') {
-    return [];
+    return discoverPm2DaemonPidsFromProcessList(pm2Home);
   }
 
-  let entries: string[];
-  try {
-    entries = await fs.readdir('/proc');
-  } catch {
-    return [];
+  const entries = await fs.readdir('/proc').catch(() => []);
+  if (entries.length === 0) {
+    return discoverPm2DaemonPidsFromProcessList(pm2Home);
   }
 
   const matches = await Promise.all(entries.filter((entry) => /^\d+$/.test(entry)).map(async (entry) => {
@@ -112,6 +113,34 @@ async function discoverPm2DaemonPids(pm2Home: string): Promise<number[]> {
   return matches
     .filter((pid): pid is number => pid !== undefined && isAlive(pid))
     .sort((left, right) => left - right);
+}
+
+async function discoverPm2DaemonPidsFromProcessList(pm2Home: string): Promise<number[]> {
+  if (process.platform === 'win32') {
+    // Windows PM2 ownership still falls back to the workspace pm2.pid below.
+    return [];
+  }
+
+  try {
+    const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,command='], {
+      timeout: 1_000,
+      maxBuffer: 2 * 1024 * 1024,
+    });
+    return stdout
+      .split(/\r?\n/)
+      .flatMap((line) => {
+        const match = line.trim().match(/^(\d+)\s+.*PM2.*God Daemon\s+\(([^)]+)\)/i);
+        if (!match) {
+          return [];
+        }
+        const pid = Number(match[1]);
+        const daemonHome = canonicalizeWorkspacePath(match[2], '/');
+        return daemonHome === pm2Home && isAlive(pid) ? [pid] : [];
+      })
+      .sort((left, right) => left - right);
+  } catch {
+    return [];
+  }
 }
 
 async function socketIsAvailable(socketPath: string, timeoutMs = 300): Promise<boolean> {
@@ -261,7 +290,25 @@ export async function withPm2WorkspaceLock<T>(
     if (inspection.daemonPids.length === 0 && !options.allowSpawn) {
       return undefined;
     }
-    return await operation(processEnv, inspection);
+    const result = await operation(processEnv, inspection);
+    const after = await inspectPm2Workspace(root, { ...env, PM2_HOME: pm2Home });
+    if (after.daemonPids.length > 1) {
+      throw new AppError(
+        'PM2_DUPLICATE_DAEMONS',
+        `Multiple PM2 daemons (${after.daemonPids.join(', ')}) resolve to ${pm2Home} after initialization.`,
+        503,
+        after,
+      );
+    }
+    if (after.daemonPids.length === 1 && !after.socketAvailable) {
+      throw new AppError(
+        'PM2_DAEMON_UNREACHABLE',
+        `PM2 daemon ${after.daemonPids[0]} owns ${pm2Home} after initialization, but its socket is unavailable.`,
+        503,
+        after,
+      );
+    }
+    return result;
   } finally {
     await release();
   }

@@ -4,6 +4,7 @@ import { ConfigRepository } from '../config/files';
 import {
   buildManagedTailscaleServeConfig,
   resolvePrivateEdgeRouteAdapter,
+  type PrivateEdgeService,
   type PrivateEdgeRemovalPlan,
   type PrivateEdgeRoutePlan,
 } from '../runtime/network-edge';
@@ -200,7 +201,12 @@ export class ExtensionPlanner {
     const routeAdapter = resolvePrivateEdgeRouteAdapter(privateEdge.adapter, privateEdge.command || 'tailscale');
     const availableServices = model.definitions
       .filter((service) => Boolean(service.port && service.port !== '—'))
-      .map((service) => ({ id: service.id, name: service.name, port: service.port! }));
+      .map((service): PrivateEdgeService => ({
+        id: service.id,
+        name: service.name,
+        port: service.port!,
+        ...(service.integrations ? { integrations: service.integrations } : {}),
+      }));
     const requestedSelection = serviceSelectors !== undefined;
     const selectedServices = requestedSelection
       ? serviceSelectors.map((selector) => {

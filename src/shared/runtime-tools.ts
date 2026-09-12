@@ -30,9 +30,9 @@ const EXTERNAL_TOOL_SPECS: Record<ExternalToolKey, ExternalToolSpec> = {
     key: 'pm2',
     command: 'pm2',
     label: 'PM2',
-    // PM2's version command connects to (and may initialize) its daemon. Help
-    // verifies the executable without creating a daemon as a side effect.
-    versionArgs: ['--help'],
+    // PM2's version and help commands both connect to (and may initialize) its
+    // daemon, so PM2 availability is resolved through PATH instead.
+    versionArgs: [],
     installHint:
       'Install PM2 with `pnpm add -g pm2` or `npm install -g pm2`, then retry the PM2-backed service.',
   },
@@ -67,12 +67,16 @@ export async function probeExternalTool(
   commandOptions: CommandOptions = {},
 ): Promise<ExternalToolProbe> {
   const spec = getExternalToolSpec(key);
-  const versionResult = await commandRunner(spec.command, spec.versionArgs, {
+  const probeCommand = key === 'pm2'
+    ? (process.platform === 'win32' ? 'where' : 'which')
+    : spec.command;
+  const probeArgs = key === 'pm2' ? [spec.command] : spec.versionArgs;
+  const versionResult = await commandRunner(probeCommand, probeArgs, {
     ...commandOptions,
     timeoutMs: commandOptions.timeoutMs ?? 2_000,
   });
 
-  if (isCommandMissingResult(versionResult)) {
+  if (isCommandMissingResult(versionResult) || (key === 'pm2' && !versionResult.ok)) {
     return {
       spec,
       status: 'missing',

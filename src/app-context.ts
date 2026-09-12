@@ -57,6 +57,8 @@ import type {
   ExtensionLifecycleRecord,
   ExecuteTaskInput,
   InfraConfigView,
+  Pm2WorkspaceAction,
+  Pm2WorkspaceExecutionResult,
   ProcessInspection,
   ProcessTerminationResult,
   PortResolution,
@@ -367,6 +369,14 @@ export class AppContext {
 
   async executeTask(input: ExecuteTaskInput): Promise<{ result: TaskExecutionResult; snapshot: DashboardState }> {
     const result = await this.taskExecutor.execute(input);
+    const snapshot = await this.readState();
+    return { result, snapshot };
+  }
+
+  async executePm2WorkspaceAction(
+    action: Pm2WorkspaceAction,
+  ): Promise<{ result: Pm2WorkspaceExecutionResult; snapshot: DashboardState }> {
+    const result = await this.taskExecutor.executePm2WorkspaceAction(action);
     const snapshot = await this.readState();
     return { result, snapshot };
   }

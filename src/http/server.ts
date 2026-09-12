@@ -28,7 +28,11 @@ const portSchema = z.object({
 const taskSchema = z.object({
   runtime: z.enum(['docker', 'pm2', 'taskfile']),
   serviceName: z.string().min(1),
-  action: z.enum(['start', 'stop', 'restart', 'up']),
+  action: z.enum(['start', 'stop', 'restart', 'reload', 'up']),
+});
+
+const pm2WorkspaceSchema = z.object({
+  action: z.enum(['save', 'resurrect']),
 });
 
 const processParamsSchema = z.object({
@@ -273,6 +277,16 @@ export function createHttpServer(context: AppContext) {
 
     reply.header('Cache-Control', 'no-store');
     return context.executeTask(parsed.data);
+  });
+
+  app.post('/api/pm2/workspace', async (request, reply) => {
+    const parsed = pm2WorkspaceSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new AppError('INVALID_BODY', parsed.error.issues[0]?.message || 'Invalid body.', 400);
+    }
+
+    reply.header('Cache-Control', 'no-store');
+    return context.executePm2WorkspaceAction(parsed.data.action);
   });
 
   app.get('/api/processes/:pid', async (request, reply) => {

@@ -1,5 +1,6 @@
 export type TaskRuntime = 'docker' | 'pm2' | 'taskfile';
-export type TaskAction = 'start' | 'stop' | 'restart' | 'up';
+export type TaskAction = 'start' | 'stop' | 'restart' | 'reload' | 'up';
+export type Pm2WorkspaceAction = 'save' | 'resurrect';
 export type StatusTone = 'healthy' | 'warn' | 'off';
 export type LogLevel = 'info' | 'warn' | 'error';
 export type ResourceScope = 'workspace' | 'host';
@@ -480,6 +481,19 @@ export interface TaskExecutionResponse {
     serviceName: string;
     action: TaskAction;
     command: string;
+    exitCode: number | null;
+    stdout: string;
+    stderr: string;
+  };
+  snapshot?: DashboardState;
+}
+
+export interface Pm2WorkspaceExecutionResponse {
+  result?: {
+    ok: boolean;
+    action: Pm2WorkspaceAction;
+    command: string;
+    pm2Home: string;
     exitCode: number | null;
     stdout: string;
     stderr: string;

@@ -98,6 +98,8 @@ cp .env.example .env
 - `POCKET_ID_APP_URL=https://pocket-id.example-tailnet.ts.net` (replace with the private Tailscale Serve issuer)
 - `POCKET_ID_PORT=1411`
 
+LocalLink resolves `PM2_HOME` to one absolute, normalized workspace path before invoking PM2. Lifecycle, status, logs, save, and resurrect operations share that value and the same daemon-initialization lock.
+
 ### Build
 
 ```bash
@@ -142,6 +144,8 @@ locallink extension reconcile-routes private-edge "private-edge-removal:<token-f
 
 When you launch `locallink` from another folder, it reads environment, service, extension, and runtime declarations from that current working directory.
 Use `--log-level debug` or `LOCALLINK_LOG_LEVEL=debug` when you want stderr traces for startup, state discovery, HTTP requests, and runtime probe failures.
+
+Service definitions may declare private-edge compatibility under `integrations.privateEdge`. Set `localOrigin: true` when an upstream validates browser `Host` or `Origin` headers against its loopback origin, and set `anonymousCors: true` when browser `crossorigin` assets need an anonymous `Access-Control-Allow-Origin` response. LocalLink carries those declarations into generated Caddy routes; application-specific proxy workarounds should not be hand-authored in the workspace Caddyfile.
 
 With the repository defaults, open the URL reported at startup or read it from
 `.locallink/runtime.json`. The first workspace normally receives port 4010;
@@ -209,6 +213,8 @@ LocalLink's Dashboard, reverse proxy, Tailscale edge, Pocket ID, and observabili
 Private Edge service exposure is opt-in per workspace. LocalLink records selected service ports in the network-edge declaration and only associates Tailscale routes or dashboard edge URLs with those selected ports.
 The read-only onboarding plan also derives workspace-specific HTTPS listeners, compares them with live Tailscale Serve routes, and returns exact apply and rollback argument arrays. By default the listener range is derived from the stable workspace ID so separate LocalLink workspaces do not intentionally share a machine-wide port. Set `LOCALLINK_PRIVATE_EDGE_PORT_START` to pin the first listener for a workspace; LocalLink blocks a generated route when that listener is already occupied instead of replacing it. The plan itself remains read-only; route mutation requires its fresh confirmation token and uses verified apply or reconciliation endpoints.
 Private Edge declarations name their route adapter explicitly. `adapter: tailscale-serve` supports the complete confirmed apply and reconciliation lifecycle. `adapter: tailscale-caddy` supports Docker Caddy services that mount `/etc/caddy/Caddyfile` from inside the active workspace. When Caddy uses `network_mode: service:<tailscale-service>` and that Tailscale service has a workspace-mounted `TS_SERVE_CONFIG`, LocalLink automatically routes status and mutation commands through `docker compose exec`, persists both original configuration files, and owns their lifecycle as one transaction. In this shared-sidecar topology, generated proxy listeners bind the shared container network namespace and are not published through Docker. A Docker Caddy service using `network_mode: host` can instead pair with a connected host Tailscale CLI and retains loopback-only proxy listeners. Other network layouts are blocked because Tailscale could not safely reach Caddy’s generated listeners. LocalLink can start stopped Caddy and Tailscale services, write the Caddy managed block and Serve JSON, verify live routes, reconcile deselected services, restore both files and running states on failure, and stop only services it started. A directory mount for the Tailscale config is recommended so containerboot can observe atomic file replacement; an existing workspace-local file bind is also supported because LocalLink applies the matching live commands and keeps the file correct for restart. Host-installed Caddy is detection-only and is intentionally never treated as an automated runtime. Adapter identity is recorded in plans, confirmation tokens, configuration backups, and local ownership state; unknown adapters are rejected before command generation.
+
+For native Docker Engine shared-sidecar Caddy, declare `extra_hosts: ["host.docker.internal:host-gateway"]` on the Caddy service; Docker Desktop supplies this alias automatically.
 
 ### Run the MCP server directly
 
@@ -293,6 +299,7 @@ All dashboard APIs are local-only and served from the same process as the UI.
 | `POST` | `/api/configs` | Writes one infra file using full `content` or a structured `patch`. |
 | `POST` | `/api/ports/next` | Returns the next free local port, optionally starting from a supplied number. |
 | `POST` | `/api/tasks` | Executes a lifecycle action for a declared service and returns the result plus a fresh snapshot. |
+| `POST` | `/api/pm2/workspace` | Saves or resurrects the isolated workspace PM2 process list. |
 | `GET` | `/api/processes/:pid` | Inspect one local process with CPU, RAM, uptime, parent PID, and full command. |
 | `GET` | `/api/processes/:pid/termination-review` | Review process identity, parent/child relationships, and open bindings before termination. |
 | `POST` | `/api/processes/:pid/terminate` | Send `SIGTERM` or `SIGKILL` to a selected local process, then refresh the dashboard snapshot. |
@@ -309,7 +316,8 @@ HTTP request bodies use camelCase:
 
 - `/api/configs`: `{ "targetFile": "...", "content"?: "...", "patch"?: { ... } }`
 - `/api/ports/next`: `{ "startFrom"?: 5000, "reserve"?: true, "service"?: "new service" }`
-- `/api/tasks`: `{ "runtime": "docker|pm2|taskfile", "serviceName": "...", "action": "start|stop|restart|up" }`
+- `/api/tasks`: `{ "runtime": "docker|pm2|taskfile", "serviceName": "...", "action": "start|stop|restart|reload|up" }` (`reload` is PM2-only)
+- `/api/pm2/workspace`: `{ "action": "save|resurrect" }`
 - `/api/extensions/plan` and `/api/extensions/apply`: `{ "capability": "private-edge|identity", "services"?: ["service-id"] }`
 - `/api/extensions/routes/apply`: `{ "capability": "private-edge", "confirmationToken": "private-edge:<token-from-fresh-plan>" }`
 - `/api/extensions/routes/reconcile`: `{ "capability": "private-edge", "confirmationToken": "private-edge-removal:<token-from-fresh-plan>" }`
@@ -330,6 +338,7 @@ MCP inputs use snake_case:
 | `apply_private_edge_routes` | `capability`, `confirmation_token` | Applies the exact current route plan after explicit confirmation, verifies it, records ownership, and rolls back this attempt on failure. |
 | `reconcile_private_edge_routes` | `capability`, `confirmation_token` | Removes stale owned listeners after fresh confirmation, never deletes changed listeners, and restores earlier removals when a later step fails. |
 | `orchestrate_service` | `runtime`, `service_name`, `action` | Runs Docker, PM2, or Taskfile lifecycle commands for a declared service. |
+| `orchestrate_pm2_workspace` | `action` (`save` or `resurrect`) | Persists or restores the canonical workspace PM2 process list. |
 
 ## Configuration model and patch expectations
 

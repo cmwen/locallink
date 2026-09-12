@@ -223,7 +223,7 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
   }: {
     runtime: 'docker' | 'pm2' | 'taskfile';
     service_name: string;
-    action: 'start' | 'stop' | 'restart' | 'up';
+    action: 'start' | 'stop' | 'restart' | 'reload' | 'up';
   }) =>
     textResponse(
       JSON.stringify(
@@ -244,7 +244,7 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
       inputSchema: z.object({
         runtime: z.enum(['docker', 'pm2', 'taskfile']),
         service_name: z.string().min(1),
-        action: z.enum(['start', 'stop', 'restart', 'up']),
+        action: z.enum(['start', 'stop', 'restart', 'reload', 'up']),
       }),
     },
     orchestrateService,
@@ -256,10 +256,25 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
       inputSchema: z.object({
         runtime: z.enum(['docker', 'pm2', 'taskfile']),
         service_name: z.string().min(1),
-        action: z.enum(['start', 'stop', 'restart', 'up']),
+        action: z.enum(['start', 'stop', 'restart', 'reload', 'up']),
       }),
     },
     orchestrateService,
+  );
+
+  server.registerTool(
+    'orchestrate_pm2_workspace',
+    {
+      description: 'Save the current workspace PM2 process list or resurrect its saved process list using the isolated canonical PM2 home.',
+      inputSchema: z.object({
+        action: z.enum(['save', 'resurrect']),
+      }),
+    },
+    async ({ action }) => textResponse(JSON.stringify(
+      await context.executePm2WorkspaceAction(action),
+      null,
+      2,
+    )),
   );
 
   const verifyBlueprintCompliance = async ({ service_name }: { service_name: string }) =>

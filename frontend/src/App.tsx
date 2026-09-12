@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   executeServiceAction,
+  executePm2WorkspaceAction,
   applyPrivateEdge,
   applyPrivateEdgeRoutes,
   applyIdentity,
@@ -30,6 +31,7 @@ import type {
   LogEntry,
   ProcessInspection,
   ProcessTerminationReview,
+  Pm2WorkspaceAction,
   ResourceProcess,
   ResourceScope,
   ServiceRecord,
@@ -39,6 +41,7 @@ import {
   filterServices,
   matchesWorkspaceQuery,
   selectVisibleService,
+  serviceIsBookmarked,
   serviceMatchReason,
   serviceNeedsAttention,
   type ServiceHealthFilter,
@@ -77,7 +80,7 @@ function toneClass(tone: string | undefined): string {
 }
 
 function actionLevel(action: TaskAction): LogEntry['level'] {
-  return action === 'stop' || action === 'restart' ? 'warn' : 'info';
+  return action === 'stop' || action === 'restart' || action === 'reload' ? 'warn' : 'info';
 }
 
 function formatPort(port: string | undefined): string {
@@ -334,6 +337,29 @@ export function App() {
         next.delete(service.name);
         return next;
       });
+    }
+  }
+
+  async function runPm2WorkspaceAction(action: Pm2WorkspaceAction) {
+    if (source !== 'api') {
+      setStatus(`PM2 ${action} requires the live LocalLink API.`);
+      return;
+    }
+    setLoading(true);
+    pushLocalLog(`PM2 workspace ${action} requested.`, 'Lifecycle', action === 'resurrect' ? 'warn' : 'info');
+    try {
+      const response = await executePm2WorkspaceAction(action);
+      if (response.snapshot) {
+        setState(normalizeState(response.snapshot));
+      } else {
+        await refreshState();
+      }
+      setStatus(response.result?.ok ? `PM2 workspace ${action} completed.` : `PM2 workspace ${action} failed.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : `PM2 workspace ${action} failed.`);
+      pushLocalLog(`PM2 workspace ${action} failed.`, 'Alerts', 'error');
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -623,6 +649,9 @@ export function App() {
         refreshState={refreshState}
         openTemp={() => setAddTempOpen(true)}
         copyLogs={copyVisibleLogs}
+        hasPm2Services={services.some((service) => service.runtime === 'pm2')}
+        pm2Pending={loading}
+        runPm2WorkspaceAction={runPm2WorkspaceAction}
       />
 
       {status ? (
@@ -729,9 +758,25 @@ interface TopbarProps {
   refreshState: () => Promise<void>;
   openTemp: () => void;
   copyLogs: () => Promise<void>;
+  hasPm2Services: boolean;
+  pm2Pending: boolean;
+  runPm2WorkspaceAction: (action: Pm2WorkspaceAction) => Promise<void>;
 }
 
-function Topbar({ view, theme, query, setQuery, setView, setTheme, refreshState, openTemp, copyLogs }: TopbarProps) {
+function Topbar({
+  view,
+  theme,
+  query,
+  setQuery,
+  setView,
+  setTheme,
+  refreshState,
+  openTemp,
+  copyLogs,
+  hasPm2Services,
+  pm2Pending,
+  runPm2WorkspaceAction,
+}: TopbarProps) {
   const placeholder =
     view === 'current'
       ? 'Search services, docs, ports...'
@@ -753,9 +798,21 @@ function Topbar({ view, theme, query, setQuery, setView, setTheme, refreshState,
       <div className="search">
         <input className="input" type="search" enterKeyHint="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={placeholder} aria-label={placeholder} />
         {view === 'current' ? (
-          <button className="btn primary" type="button" onClick={openTemp}>
-            Create runtime plan
-          </button>
+          <>
+            <button className="btn primary" type="button" onClick={openTemp}>
+              Create runtime plan
+            </button>
+            {hasPm2Services ? (
+              <>
+                <button className="btn" type="button" disabled={pm2Pending} onClick={() => void runPm2WorkspaceAction('save')}>
+                  Save PM2
+                </button>
+                <button className="btn" type="button" disabled={pm2Pending} onClick={() => void runPm2WorkspaceAction('resurrect')}>
+                  Resurrect PM2
+                </button>
+              </>
+            ) : null}
+          </>
         ) : null}
         {view === 'extensions' ? (
           <button className="btn primary" type="button" onClick={() => setView('current')}>
@@ -834,7 +891,7 @@ function CurrentWorkspace({
           <h1>Service health</h1>
         </div>
         <div className="actions" aria-label="Filter services by health">
-          {(['all', 'attention', 'running', 'stopped'] as const).map((filter) => (
+          {(['all', 'bookmarks', 'attention', 'running', 'stopped'] as const).map((filter) => (
             <button key={filter} className={`btn ${healthFilter === filter ? 'active' : ''}`} type="button" aria-pressed={healthFilter === filter} onClick={() => setHealthFilter(filter)}>
               {filter === 'attention' ? 'needs attention' : filter}
             </button>
@@ -846,6 +903,7 @@ function CurrentWorkspace({
           <Metric value={loading && services.length === 0 ? '...' : String(services.length)} label="services" tone="ok" />
           <Metric value={loading && services.length === 0 ? '...' : String(attentionCount)} label="need attention" tone={attentionCount > 0 ? 'warn' : 'ok'} />
           <Metric value={loading && services.length === 0 ? '...' : String(services.filter((service) => service.status === 'running').length)} label="running" tone="ok" />
+          <Metric value={loading && services.length === 0 ? '...' : String(services.filter(serviceIsBookmarked).length)} label="bookmarks" tone="info" />
           <Metric value={loading && services.length === 0 ? '...' : String(portsHeld)} label="ports held" tone="info" />
         </section>
 
@@ -873,6 +931,7 @@ function CurrentWorkspace({
                     {service.kind} / {formatPort(service.port)}
                   </span>
                   <span className={`pill ${toneClass(service.statusTone)}`}>{service.statusLabel.toLowerCase()}</span>
+                  {serviceIsBookmarked(service) ? <span className="pill mono">edge</span> : null}
                   {serviceNeedsAttention(service) ? <span className="service-reason">{service.reviewReasons?.[0] || 'Operational state needs attention'}</span> : null}
                   {matchReason && matchReason !== 'name' ? <span className="match-reason">Matched in {matchReason}</span> : null}
                 </button>
@@ -975,6 +1034,11 @@ function ServiceDetail({
         <button className="btn" type="button" disabled={pending || plannedRuntime} onClick={() => void runServiceAction(service, 'restart')}>
           Restart
         </button>
+        {service.runtime === 'pm2' ? (
+          <button className="btn" type="button" disabled={pending || plannedRuntime} onClick={() => void runServiceAction(service, 'reload')}>
+            Reload
+          </button>
+        ) : null}
         <button className="btn" type="button" onClick={() => { setResourceQuery(service.name); setView('resources'); }}>
           Logs
         </button>

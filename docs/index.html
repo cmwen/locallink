@@ -466,7 +466,8 @@ POCKET_ID_PORT=1411</code></pre>
               <tr><td><code>GET</code></td><td><code>/api/configs</code></td><td>Raw workspace blueprint files plus derived services.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/configs</code></td><td>Update a supported blueprint file with raw content or a structured patch.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/ports/next</code></td><td>Allocate the next free local port.</td></tr>
-              <tr><td><code>POST</code></td><td><code>/api/tasks</code></td><td>Start, stop, restart, or bring up Docker / PM2 / taskfile services.</td></tr>
+              <tr><td><code>POST</code></td><td><code>/api/tasks</code></td><td>Start, stop, restart, reload, or bring up services. Reload is PM2-only.</td></tr>
+              <tr><td><code>POST</code></td><td><code>/api/pm2/workspace</code></td><td>Save or resurrect the isolated workspace PM2 process list.</td></tr>
               <tr><td><code>GET</code></td><td><code>/api/processes/:pid</code></td><td>Inspect a local process.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/processes/:pid/terminate</code></td><td>Terminate a selected process.</td></tr>
               <tr><td><code>GET</code></td><td><code>/api/logs/stream</code></td><td>Stream server-side logs through Server-Sent Events.</td></tr>
@@ -512,6 +513,11 @@ POCKET_ID_PORT=1411</code></pre>
                 <td><code>orchestrate_service</code></td>
                 <td><code>execute_task</code></td>
                 <td>Runs lifecycle actions for Docker, PM2, or taskfile services.</td>
+              </tr>
+              <tr>
+                <td><code>orchestrate_pm2_workspace</code></td>
+                <td>n/a</td>
+                <td>Saves or resurrects the canonical workspace PM2 process list.</td>
               </tr>
             </tbody>
           </table>

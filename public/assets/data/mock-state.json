@@ -85,6 +85,7 @@
       "tags": "stdio · ai · config",
       "envVars": ["LOCALLINK_BIND_HOST", "LOCALLINK_WEB_PORT"],
       "downstream": ["Vite PWA UI"],
+      "edgeUrls": ["https://locallink-mcp.example-tailnet.ts.net/"],
       "docsUrl": "https://modelcontextprotocol.io"
     },
     {
@@ -127,6 +128,7 @@
       "tags": "pwa · hot reload · ui",
       "dependsOn": ["LocalLink MCP Core", "Queue Worker"],
       "envVars": ["LOCALLINK_WEB_PORT"],
+      "edgeUrls": ["https://dash.example-tailnet.ts.net/"],
       "docsUrl": "https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps"
     },
     {

@@ -11,7 +11,8 @@ export const TARGET_FILES = [
 export type TargetFile = (typeof TARGET_FILES)[number];
 export type ServiceGroup = 'docker' | 'pm2' | 'windows' | 'pwa';
 export type TaskRuntime = 'docker' | 'pm2' | 'taskfile';
-export type TaskAction = 'start' | 'stop' | 'restart' | 'up';
+export type TaskAction = 'start' | 'stop' | 'restart' | 'reload' | 'up';
+export type Pm2WorkspaceAction = 'save' | 'resurrect';
 export type StatusTone = 'healthy' | 'warn' | 'off';
 export type LogLevel = 'info' | 'warn' | 'error';
 export type DiagnosticStatus = 'ok' | 'warn' | 'error';
@@ -132,9 +133,15 @@ export interface ServiceObservabilityIntegration {
   serviceName: string;
 }
 
+export interface ServicePrivateEdgeIntegration {
+  localOrigin?: boolean;
+  anonymousCors?: boolean;
+}
+
 export interface ServiceIntegrations {
   identity?: ServiceIdentityIntegration;
   observability?: ServiceObservabilityIntegration;
+  privateEdge?: ServicePrivateEdgeIntegration;
 }
 
 export interface ServiceRecord extends ServiceDefinition {
@@ -523,6 +530,16 @@ export interface TaskExecutionResult {
   serviceName: string;
   action: TaskAction;
   command: string;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+export interface Pm2WorkspaceExecutionResult {
+  ok: boolean;
+  action: Pm2WorkspaceAction;
+  command: string;
+  pm2Home: string;
   exitCode: number | null;
   stdout: string;
   stderr: string;

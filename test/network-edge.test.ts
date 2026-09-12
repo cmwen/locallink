@@ -10,7 +10,9 @@ import {
   parseTailscaleServeRoutes,
   planPrivateEdgeRouteRemovals,
   planPrivateEdgeRoutes,
+  resolvePrivateEdgeRouteAdapter,
 } from '../src/runtime/network-edge';
+import { detectCaddyRuntime } from '../src/runtime/caddy-runtime';
 import type { PrivateEdgeRouteOwnership, ServiceDefinition, WorkspaceExtension } from '../src/shared/contracts';
 import type { CommandRunner } from '../src/shared/utils';
 
@@ -155,6 +157,60 @@ test('discoverServiceEdgeUrls includes the configured Pocket ID issuer owned by 
   );
 
   assert.deepEqual(routes.get('pocket-id'), ['https://pocket-id.example.ts.net:7452']);
+});
+
+test('Tailscale+Caddy blocks native Docker Engine sidecars without a host gateway', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'locallink-native-edge-'));
+  await fs.writeFile(path.join(root, 'edge.Caddyfile'), ':8080 { respond "ok" }\n', 'utf8');
+  await fs.writeFile(path.join(root, 'serve.json'), '{}\n', 'utf8');
+  await fs.writeFile(path.join(root, 'docker-compose.yml'), `services:
+  tailscale-edge:
+    image: tailscale/tailscale:latest
+    environment: { TS_SERVE_CONFIG: /config/serve.json }
+    volumes: ["./serve.json:/config/serve.json"]
+  caddy-edge:
+    image: caddy:2.10-alpine
+    network_mode: service:tailscale-edge
+    volumes: ["./edge.Caddyfile:/etc/caddy/Caddyfile:ro"]
+`, 'utf8');
+  const commandRunner: CommandRunner = async (command, args) => {
+    if (command === 'docker' && args[0] === 'info') return { ok: true, code: 0, signal: null, stdout: 'Ubuntu 24.04.2 LTS', stderr: '', timedOut: false };
+    if (command === 'docker') return { ok: true, code: 0, signal: null, stdout: JSON.stringify({ State: 'running' }), stderr: '', timedOut: false };
+    if (args[0] === 'status') return { ok: true, code: 0, signal: null, stdout: JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'edge.ts.net.' } }), stderr: '', timedOut: false };
+    return { ok: true, code: 0, signal: null, stdout: '{}', stderr: '', timedOut: false };
+  };
+  const plan = await resolvePrivateEdgeRouteAdapter('tailscale-caddy').planRoutes(
+    'native-workspace', [{ id: 'api', name: 'API', port: '5050' }], commandRunner, undefined, root,
+  );
+  assert.equal(plan.state, 'blocked-runtime');
+  assert.equal(plan.applySupported, false);
+  assert.match(plan.summary, /supported reachable network namespace|guaranteed host reachability/i);
+});
+
+test('Caddy host reachability requires an explicit gateway on native Linux, while Desktop is supported', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'locallink-caddy-host-'));
+  await fs.writeFile(path.join(root, 'Caddyfile'), ':8080 { respond "ok" }\n', 'utf8');
+  await fs.writeFile(path.join(root, 'docker-compose.yml'), `services:
+  caddy:
+    image: caddy:2
+    network_mode: service:tailscale
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro"]
+`, 'utf8');
+  const detect = (info: string) => detectCaddyRuntime(root, async (_command, args) => ({
+    ok: true, code: 0, signal: null,
+    stdout: args[0] === 'info' ? info : JSON.stringify({ State: 'running' }),
+    stderr: '', timedOut: false,
+  }));
+  assert.equal((await detect('Ubuntu 24.04.2 LTS')).hostReachable, false);
+  assert.equal((await detect('Docker Desktop 4.40.0 (Linux)')).hostReachable, true);
+  await fs.writeFile(path.join(root, 'docker-compose.yml'), `services:
+  caddy:
+    image: caddy:2
+    network_mode: service:tailscale
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro"]
+`, 'utf8');
+  assert.equal((await detect('Ubuntu 24.04.2 LTS')).hostReachable, true);
 });
 
 test('discoverServiceEdgeUrls resolves Docker sidecar routes through saved Caddy ownership', async () => {

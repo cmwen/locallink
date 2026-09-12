@@ -10,6 +10,7 @@ type ComposeService = {
   labels?: unknown;
   volumes?: unknown;
   network_mode?: unknown;
+  extra_hosts?: unknown;
 };
 
 type ComposeDocument = {
@@ -32,6 +33,28 @@ export interface CaddyRuntimeDetection {
   configPath?: string;
   configTarget?: string;
   networkMode?: string;
+  hostReachable?: boolean;
+}
+
+function hasHostGatewayMapping(value: unknown): boolean {
+  const entries = Array.isArray(value)
+    ? value.map(String)
+    : value && typeof value === 'object'
+      ? Object.entries(value as Record<string, unknown>).map(([key, entry]) => `${key}:${String(entry ?? '')}`)
+      : [];
+  return entries.some((entry) => {
+    const [hostname, target] = entry.split(':', 2).map((part) => part.trim().toLowerCase());
+    return hostname === 'host.docker.internal' && target === 'host-gateway';
+  });
+}
+
+async function dockerHostReachable(workspaceRoot: string, service: ComposeService, commandRunner: CommandRunner): Promise<boolean> {
+  if (hasHostGatewayMapping(service.extra_hosts)) return true;
+  const info = await commandRunner('docker', ['info', '--format', '{{.OperatingSystem}}'], { cwd: workspaceRoot, timeoutMs: 2_000 });
+  const platform = `${info.stdout}\n${info.stderr}`.toLowerCase();
+  if (/docker desktop|wsl/.test(platform)) return true;
+  if (/docker engine|community engine/.test(platform)) return false;
+  return false;
 }
 
 const COMPOSE_FILES = ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'];
@@ -123,6 +146,9 @@ export async function detectCaddyRuntime(
       const image = typeof service.image === 'string' ? service.image : undefined;
       const networkMode = typeof service.network_mode === 'string' ? service.network_mode.trim() : undefined;
       const configMount = caddyConfigMount(workspaceRoot, service);
+      const hostReachable = networkMode?.startsWith('service:')
+        ? await dockerHostReachable(workspaceRoot, service, commandRunner)
+        : undefined;
       const psResult = await commandRunner(
         'docker',
         ['compose', '--profile', '*', 'ps', '--all', '--format', 'json', serviceName],
@@ -137,6 +163,7 @@ export async function detectCaddyRuntime(
         serviceName,
         image,
         networkMode,
+        hostReachable,
         configPath: configMount?.path,
         configTarget: configMount?.target,
         detail: running

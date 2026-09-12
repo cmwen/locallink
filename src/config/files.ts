@@ -22,6 +22,7 @@ import {
   type ServiceIdentityIntegration,
   type ServiceIntegrations,
   type ServiceObservabilityIntegration,
+  type ServicePrivateEdgeIntegration,
   type TargetFile,
   type WorkspaceExtension,
   type WriteInfraConfigInput,
@@ -337,6 +338,14 @@ function normalizeObservabilityIntegration(
   return { serviceName };
 }
 
+function normalizePrivateEdgeIntegration(input: unknown): ServicePrivateEdgeIntegration | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const value = input as Record<string, unknown>;
+  const localOrigin = value.localOrigin === true;
+  const anonymousCors = value.anonymousCors === true;
+  return localOrigin || anonymousCors ? { localOrigin, anonymousCors } : undefined;
+}
+
 function normalizeIntegrations(
   input: unknown,
   serviceId: string,
@@ -345,7 +354,8 @@ function normalizeIntegrations(
   const value = input as Record<string, unknown>;
   const identity = normalizeIdentityIntegration(value.identity, normalizeEnvPrefix(serviceId, 'SERVICE'));
   const observability = normalizeObservabilityIntegration(value.observability, serviceId);
-  return identity || observability ? { identity, observability } : undefined;
+  const privateEdge = normalizePrivateEdgeIntegration(value.privateEdge);
+  return identity || observability || privateEdge ? { identity, observability, privateEdge } : undefined;
 }
 
 function integrationsFromLabels(

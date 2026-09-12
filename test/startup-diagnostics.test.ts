@@ -44,6 +44,7 @@ function successResult(stdout = 'ok'): CommandResult {
 
 test('StartupDiagnosticsService reports install guidance for missing dependencies and tools', async () => {
   const appRoot = await createTempAppRoot();
+  let pm2Invocations = 0;
   const commandRunner: CommandRunner = async (command, args) => {
     if (command === 'docker' && args[0] === '--version') {
       return successResult('Docker version 29.0.0');
@@ -51,7 +52,7 @@ test('StartupDiagnosticsService reports install guidance for missing dependencie
     if (command === 'docker' && args[0] === 'info') {
       return successResult('"29.0.0"');
     }
-    if (command === 'pm2') {
+    if (command === 'which' && args[0] === 'pm2') {
       return {
         ok: false,
         code: null,
@@ -61,6 +62,9 @@ test('StartupDiagnosticsService reports install guidance for missing dependencie
         timedOut: false,
         error: 'spawn pm2 ENOENT',
       };
+    }
+    if (command === 'pm2') {
+      pm2Invocations += 1;
     }
     if (command === 'task') {
       return {
@@ -102,4 +106,35 @@ test('StartupDiagnosticsService reports install guidance for missing dependencie
   assert.ok(pm2Check);
   assert.equal(pm2Check.status, 'warn');
   assert.match(pm2Check.detail, /pnpm add -g pm2/i);
+  assert.equal(pm2Invocations, 0, 'PM2 diagnostics must not initialize or connect to a daemon');
+});
+
+test('StartupDiagnosticsService flags missing PM2 package scripts without guessing a replacement', async () => {
+  const appRoot = await createTempAppRoot();
+  const manifest = JSON.parse(await fs.readFile(path.join(appRoot, 'package.json'), 'utf8'));
+  manifest.scripts = { 'dev:lan': 'vite --host 0.0.0.0' };
+  await fs.writeFile(path.join(appRoot, 'package.json'), JSON.stringify(manifest, null, 2), 'utf8');
+  await fs.writeFile(
+    path.join(appRoot, 'ecosystem.config.js'),
+    "module.exports = { apps: [{ name: 'web', script: 'pnpm', args: 'dev:web', locallink: { runtime: 'pm2', group: 'pm2' } }] };\n",
+    'utf8',
+  );
+  const diagnostics = await new StartupDiagnosticsService({
+    workspaceRoot: appRoot,
+    appRoot,
+    publicDir: path.join(appRoot, 'public'),
+    commandRunner: async (command, args) => {
+      if (command === 'docker' && args[0] === 'info') {
+        return successResult('"29.0.0"');
+      }
+      return successResult(command === 'which' ? '/usr/bin/pm2' : 'ok');
+    },
+    moduleResolver: (specifier) => `/virtual/${specifier}/index.js`,
+  }).inspect();
+
+  const drift = diagnostics.checks.find((check) => check.id === 'workspace-script-drift');
+  assert.equal(drift?.status, 'warn');
+  assert.match(drift?.detail || '', /dev:web/);
+  assert.match(drift?.detail || '', /will not guess or substitute/i);
+  assert.doesNotMatch(drift?.detail || '', /dev:lan/);
 });

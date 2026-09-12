@@ -391,6 +391,56 @@ test('Tailscale+Caddy applies a validated managed block and reloads the workspac
   assert.equal(clearedState.privateEdgeRuntime, undefined);
 });
 
+test('Tailscale+Caddy applies declared local-origin and anonymous-CORS compatibility for private-edge assets', async () => {
+  const root = await createWorkspace();
+  await fs.writeFile(
+    path.join(root, 'locallink.extensions.yml'),
+    'extensions:\n  - id: edge\n    name: Edge\n    kind: network-edge\n    enabled: true\n    command: tailscale\n    adapter: tailscale-caddy\n',
+    'utf8',
+  );
+  await fs.mkdir(path.join(root, 'edge'), { recursive: true });
+  await fs.writeFile(path.join(root, 'edge', 'Caddyfile'), ':8080 {\n  file_server\n}\n', 'utf8');
+  await fs.writeFile(path.join(root, 'docker-compose.yml'), `services:
+  codeburn-web:
+    image: example/codeburn
+    ports:
+      - "\${CODEBURN_PORT}:5000"
+    labels:
+      locallink.name: codeburn-web
+      locallink.portEnv: CODEBURN_PORT
+  pwa-edge-proxy:
+    image: caddy:2.10-alpine
+    profiles: [edge]
+    network_mode: host
+    volumes:
+      - ./edge/Caddyfile:/etc/caddy/Caddyfile:ro
+`, 'utf8');
+  await fs.writeFile(path.join(root, 'locallink.services.yml'), `services:
+  - name: codeburn-web
+    group: pwa
+    portEnv: CODEBURN_PORT
+    integrations:
+      privateEdge:
+        localOrigin: true
+        anonymousCors: true
+`, 'utf8');
+  await fs.writeFile(path.join(root, '.env'), 'CODEBURN_PORT=5000\n', 'utf8');
+
+  const commandRunner: CommandRunner = async (command, args) => {
+    if (command === 'docker' && args.includes('ps')) return result({ stdout: JSON.stringify({ State: 'running', Status: 'Up 2 days' }) });
+    if (args[0] === 'status') return result({ stdout: JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'minipc.tailnet.ts.net.' } }) });
+    if (args[0] === 'serve' && args[1] === 'status') return result({ stdout: JSON.stringify({ TCP: {}, Web: {} }) });
+    return result();
+  };
+
+  const planner = new ExtensionPlanner(root, new ConfigRepository(root), commandRunner);
+  const plan = await planner.plan('private-edge', ['codeburn-web']);
+  const generatedCaddyfile = plan.routePlan.generatedFiles.find((file) => file.kind === 'caddyfile')?.content || '';
+  assert.match(generatedCaddyfile, /header_up Host 127\.0\.0\.1:5000/);
+  assert.match(generatedCaddyfile, /header_up Origin http:\/\/127\.0\.0\.1:5000/);
+  assert.match(generatedCaddyfile, /header_down Access-Control-Allow-Origin \*/);
+});
+
 test('Tailscale+Caddy starts and later stops a workspace service owned by LocalLink', async () => {
   const root = await createWorkspace();
   await fs.writeFile(
@@ -536,6 +586,7 @@ test('Tailscale+Caddy manages a Docker Tailscale sidecar and restores both works
   edge-proxy:
     image: caddy:2.10-alpine
     network_mode: service:tailscale-edge
+    extra_hosts: ["host.docker.internal:host-gateway"]
     volumes: ["./edge/Caddyfile:/etc/caddy/Caddyfile:ro"]
   tailscale-edge:
     image: tailscale/tailscale:latest
@@ -674,6 +725,7 @@ test('shared-sidecar Serve and Caddy proxy stages preserve application response 
   caddy-edge:
     image: caddy:2.10-alpine
     network_mode: service:tailscale-edge
+    extra_hosts: ["host.docker.internal:host-gateway"]
     volumes: ["./edge/Caddyfile:/etc/caddy/Caddyfile:ro"]
   tailscale-edge:
     image: tailscale/tailscale:latest
@@ -739,6 +791,7 @@ test('Tailscale+Caddy starts and later stops workspace-owned Caddy and Tailscale
   caddy-edge:
     image: caddy:2.10-alpine
     network_mode: service:tailscale-edge
+    extra_hosts: ["host.docker.internal:host-gateway"]
     volumes: ["./edge/Caddyfile:/etc/caddy/Caddyfile:ro"]
   tailscale-edge:
     image: tailscale/tailscale:latest

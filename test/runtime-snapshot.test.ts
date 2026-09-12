@@ -168,6 +168,110 @@ test('RuntimeResolver marks declared Docker and PM2 services down when managers 
   assert.match(state.app.scope, /locallink-runtime-snapshot-/);
 });
 
+test('RuntimeResolver surfaces edge URLs for a service installed while the web server is running', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'locallink-edge-install-'));
+  await fs.mkdir(path.join(root, 'public'), { recursive: true });
+  await fs.writeFile(path.join(root, 'public', 'manifest.webmanifest'), '{}', 'utf8');
+  await fs.writeFile(path.join(root, 'public', 'sw.js'), '// sw', 'utf8');
+  await fs.writeFile(path.join(root, '.env'), 'LOCALLINK_DEFAULT_PORT_START=5000\nPM2_HOME=.locallink/pm2\nAPI_PORT=5050\n', 'utf8');
+  await fs.writeFile(
+    path.join(root, 'docker-compose.yml'),
+    [
+      'services:',
+      '  api:',
+      '    image: example/api',
+      '    ports: ["${API_PORT}:5050"]',
+      '    labels:',
+      '      locallink.name: Api',
+      '      locallink.group: docker',
+      '      locallink.runtime: docker',
+      '      locallink.portEnv: API_PORT',
+      '  tailscale-edge:',
+      '    image: tailscale/tailscale:latest',
+      '    environment:',
+      '      TS_SERVE_CONFIG: /config/serve.json',
+      '    volumes: ["./edge:/config:ro"]',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  await fs.writeFile(
+    path.join(root, 'locallink.extensions.yml'),
+    'extensions:\n  - id: private-edge\n    name: Private Edge\n    kind: network-edge\n    enabled: true\n    command: tailscale\n    adapter: tailscale-caddy\n    exposedPorts: []\n',
+    'utf8',
+  );
+  let installed = false;
+  let serveProbes = 0;
+  const commandRunner: CommandRunner = async (command, args) => {
+    if (command === 'ps') return commandResult();
+    if (command === 'pm2') return commandResult({ stdout: '[]' });
+    if (command === 'docker' && args.includes('stats')) return commandResult({ stdout: '' });
+    if (command === 'docker' && args.includes('exec')) {
+      if (installed && serveProbes === 0) {
+        serveProbes += 1;
+        return commandResult({ ok: false, code: 1, stderr: 'sidecar is booting' });
+      }
+      return commandResult({
+        stdout: JSON.stringify({
+          TCP: { 7443: { HTTPS: true } },
+          Web: {
+            'edge.tailnet.ts.net:7443': {
+              Handlers: { '/': { Proxy: 'http://127.0.0.1:22001' } },
+            },
+          },
+        }),
+      });
+    }
+    if (command === 'docker' && args.includes('ps')) {
+      return commandResult({ stdout: JSON.stringify({ State: installed ? 'running' : 'created' }) });
+    }
+    return commandResult();
+  };
+  const configRepository = new ConfigRepository(root, false);
+  const resolver = new RuntimeResolver(
+    root,
+    path.join(root, 'public'),
+    configRepository,
+    new PortAllocator(),
+    new LogBroker(),
+    commandRunner,
+  );
+
+  const before = await resolver.buildDashboardState(DIAGNOSTICS);
+  assert.equal(before.services.find((service) => service.id === 'api')?.edgeUrls, undefined);
+
+  await fs.writeFile(
+    path.join(root, 'locallink.extensions.yml'),
+    'extensions:\n  - id: private-edge\n    name: Private Edge\n    kind: network-edge\n    enabled: true\n    command: tailscale\n    adapter: tailscale-caddy\n    exposedPorts:\n      - "5050"\n',
+    'utf8',
+  );
+  await fs.mkdir(path.join(root, '.locallink'), { recursive: true });
+  await fs.writeFile(
+    path.join(root, '.locallink', 'workspace-state.json'),
+    `${JSON.stringify({
+      privateEdgeRoutes: [{
+        adapter: 'tailscale-caddy',
+        serviceId: 'api',
+        serviceName: 'API',
+        targetPort: '5050',
+        proxyPort: '22001',
+        httpsPort: '7443',
+        url: 'https://edge.tailnet.ts.net:7443',
+        command: 'docker',
+        applyArgs: [],
+        rollbackArgs: [],
+        appliedAt: '2026-09-12T00:00:00.000Z',
+        status: 'active',
+      }],
+    }, null, 2)}\n`,
+    'utf8',
+  );
+  installed = true;
+
+  const after = await resolver.buildDashboardState(DIAGNOSTICS);
+  assert.deepEqual(after.services.find((service) => service.id === 'api')?.edgeUrls, ['https://edge.tailnet.ts.net:7443/']);
+});
+
 test('RuntimeResolver keeps building state when port scanning is unavailable', async () => {
   const root = await createTempProject();
   const commandRunner: CommandRunner = async (command, args) => {
