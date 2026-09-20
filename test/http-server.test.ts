@@ -33,6 +33,14 @@ async function createTempProject(): Promise<string> {
   return root;
 }
 
+async function waitFor(condition: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const startedAt = Date.now();
+  while (!condition()) {
+    if (Date.now() - startedAt >= timeoutMs) throw new Error('Timed out waiting for the condition.');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 test('HTTP server exposes the dashboard state endpoint', async () => {
   const root = await createTempProject();
   const context = new AppContext(root);
@@ -75,6 +83,33 @@ test('HTTP server exposes the per-workspace extension lifecycle', async () => {
   ]);
   assert.ok(response.json().every((record: { state: string }) => record.state === 'available'));
   await server.close();
+});
+
+test('AppContext automatically reloads enabled Private Edge after a workspace declaration changes', async () => {
+  const root = await createTempProject();
+  await fs.writeFile(
+    path.join(root, 'locallink.extensions.yml'),
+    'extensions:\n  - id: private-edge\n    name: Private Edge\n    kind: network-edge\n    enabled: true\n    exposedPorts: ["5432"]\n',
+    'utf8',
+  );
+  const context = new AppContext(root);
+  await context.initialize();
+  const reloads: Array<{ capability: string; services?: string[] }> = [];
+  context.reloadExtension = async (capability, services) => {
+    reloads.push({ capability, services });
+    return { reloaded: true } as any;
+  };
+
+  context.startAutomaticExtensionReload();
+  await fs.writeFile(
+    path.join(root, 'docker-compose.yml'),
+    'services:\n  postgres:\n    image: postgres:16-alpine\n    ports:\n      - "${POSTGRES_PORT}:5432"\n  api:\n    image: example/api:latest\n    ports:\n      - "5050:5050"\n',
+    'utf8',
+  );
+  await waitFor(() => reloads.length === 1);
+  context.stopAutomaticExtensionReload();
+
+  assert.deepEqual(reloads, [{ capability: 'private-edge', services: undefined }]);
 });
 
 test('HTTP server exposes a read-only application integration contract', async () => {

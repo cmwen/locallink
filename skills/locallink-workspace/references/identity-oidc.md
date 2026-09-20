@@ -12,6 +12,7 @@ Run:
 
 ```bash
 locallink service contract <service-id-or-runtime-name>
+locallink oidc check <service-id-or-runtime-name>
 locallink extension plan identity
 locallink extensions
 ```
@@ -20,6 +21,10 @@ Use the application contract’s issuer, callback, logout, scopes, and environme
 key names. Use `service.issuer` from the shared identity plan only when diagnosing
 the provider. If route publication is pending, report that dependency rather
 than inventing a hostname.
+The OIDC check additionally compares the internal loopback callback with the
+canonical public callback. When they differ behind a reverse proxy, configure
+`openid-client` with the public callback URI for both the authorization request
+and token exchange.
 
 ## Application contract
 

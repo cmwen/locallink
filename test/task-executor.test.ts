@@ -83,6 +83,83 @@ test('TaskExecutor starts PM2 apps through ecosystem.config.js', async () => {
   assert.ok(pm2Homes.every((pm2Home) => pm2Home === path.join(root, '.locallink', 'pm2')));
 });
 
+test('TaskExecutor starts declared dependencies before the requested Docker service', async () => {
+  const root = await createTempProject();
+  await fs.writeFile(
+    path.join(root, 'docker-compose.yml'),
+    `services:
+  database:
+    image: postgres:16-alpine
+  api:
+    image: example/api:latest
+    depends_on:
+      database:
+        condition: service_healthy
+    labels:
+      locallink.name: API Service
+`,
+    'utf8',
+  );
+
+  const lifecycleCalls: string[][] = [];
+  const commandRunner: CommandRunner = async (command, args) => {
+    if (command === 'docker' && args[0] === 'compose') {
+      lifecycleCalls.push(args);
+    }
+    return commandResult();
+  };
+
+  const result = await new TaskExecutor(root, new ConfigRepository(root), new LogBroker(), commandRunner).execute({
+    runtime: 'docker',
+    serviceName: 'API Service',
+    action: 'up',
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(lifecycleCalls, [
+    ['compose', 'up', '-d', 'database'],
+    ['compose', 'up', '-d', 'api'],
+  ]);
+});
+
+test('TaskExecutor does not start a service when a dependency fails', async () => {
+  const root = await createTempProject();
+  await fs.writeFile(
+    path.join(root, 'docker-compose.yml'),
+    `services:
+  database:
+    image: postgres:16-alpine
+  api:
+    image: example/api:latest
+    depends_on: [database]
+    labels:
+      locallink.name: API Service
+`,
+    'utf8',
+  );
+
+  const lifecycleCalls: string[][] = [];
+  const commandRunner: CommandRunner = async (command, args) => {
+    if (command === 'docker' && args[0] === 'compose') {
+      lifecycleCalls.push(args);
+      if (args.at(-1) === 'database') return commandResult({ ok: false, code: 1, stderr: 'database failed' });
+    }
+    return commandResult();
+  };
+
+  const result = await new TaskExecutor(root, new ConfigRepository(root), new LogBroker(), commandRunner).execute({
+    runtime: 'docker',
+    serviceName: 'API Service',
+    action: 'start',
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.stderr, /database.*failed/i);
+  assert.deepEqual(lifecycleCalls, [
+    ['compose', 'up', '-d', 'database'],
+  ]);
+});
+
 test('TaskExecutor derives a PM2 launch from an app-owned Dockerfile.locallink', async () => {
   const root = await createTempProject();
   await fs.writeFile(path.join(root, 'ecosystem.config.js'), 'module.exports = { apps: [] };\n', 'utf8');

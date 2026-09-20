@@ -141,10 +141,13 @@ locallink extension plan private-edge "My API"
 locallink extension apply-routes private-edge "private-edge:<token-from-fresh-plan>"
 locallink extension reconcile-routes private-edge "private-edge-removal:<token-from-fresh-plan>"
 locallink extension reload private-edge "My API"
+locallink oidc check "My API"
 ```
 
 When you launch `locallink` from another folder, it reads environment, service, extension, and runtime declarations from that current working directory.
 Use `--log-level debug` or `LOCALLINK_LOG_LEVEL=debug` when you want stderr traces for startup, state discovery, HTTP requests, and runtime probe failures.
+
+While `locallink web` is running, LocalLink watches the workspace service and extension declarations. If Private Edge is already enabled, a change to a watched declaration automatically refreshes the selected routes and reloads managed Caddy/Tailscale configuration. New services remain private until their ports are explicitly added to the extension's `exposedPorts` selection.
 
 Service definitions may declare private-edge compatibility under `integrations.privateEdge`. Set `localOrigin: true` when an upstream validates browser `Host` or `Origin` headers against its loopback origin, and set `anonymousCors: true` when browser `crossorigin` assets need an anonymous `Access-Control-Allow-Origin` response. LocalLink carries those declarations into generated Caddy routes; application-specific proxy workarounds should not be hand-authored in the workspace Caddyfile.
 
@@ -297,6 +300,7 @@ All dashboard APIs are local-only and served from the same process as the UI.
 | `GET` | `/api/extensions` | Separates available capabilities, workspace declarations, host installation, manual onboarding, configuration, and runtime health. |
 | `GET` | `/api/onboarding` | Consolidates core readiness plus automatic, manual, blocked, and optional foundation onboarding work. |
 | `GET` | `/api/services/:selector/contract` | Returns the selected service’s secret-free Private Edge, OIDC, and OpenTelemetry integration contract. |
+| `GET` | `/api/services/:selector/oidc-check` | Returns the canonical OIDC issuer, public callback, proxy-boundary check, environment key names, and coding-agent instructions without secrets. |
 | `POST` | `/api/extensions/plan` | Preview workspace-owned Private Edge, Identity, or Observability changes and user-owned security checkpoints without writing files. |
 | `POST` | `/api/extensions/apply` | Idempotently apply a Private Edge selection, install/configure Pocket ID, or install/adopt OpenObserve while preserving existing secrets, data, and edge selections. |
 | `POST` | `/api/extensions/reload` | Refresh the selected Private Edge services, regenerate managed Caddy/Tailscale configuration, and apply routes when runtime prerequisites are ready. |
@@ -420,6 +424,7 @@ Practical MVP rules:
 - If you need a shape the patcher does not support, send full `content` instead of a structured patch.
 - Supported patch flows aim to preserve existing comments/formatting where practical.
 - Task execution targets the LocalLink service `name` exposed by the config model.
+- Starting or bringing up a service automatically resolves its declared `dependsOn` entries (including Docker Compose `depends_on`) and starts each dependency first. Missing dependencies, cycles, or a failed dependency prevent the requested service from starting.
 
 ## Assumptions and limitations
 

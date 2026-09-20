@@ -412,6 +412,10 @@ POCKET_ID_PORT=1411</code></pre>
                 <td>Join Private Edge, generic OIDC, and topology-correct OTLP settings without exposing credentials.</td>
               </tr>
               <tr>
+                <td><code>locallink oidc check SERVICE</code></td>
+                <td>Print canonical OIDC issuer/callback values and detect internal versus public callback differences for coding-agent setup.</td>
+              </tr>
+              <tr>
                 <td><code>locallink snapshot</code></td>
                 <td>Print the current dashboard state payload as JSON.</td>
               </tr>
@@ -430,6 +434,10 @@ POCKET_ID_PORT=1411</code></pre>
               <tr>
                 <td><code>locallink extension reload private-edge [SERVICE...]</code></td>
                 <td>Refresh the selected services, regenerate managed Caddy/Tailscale configuration, and apply ready routes without copying a confirmation token.</td>
+              </tr>
+              <tr>
+                <td><code>locallink web</code></td>
+                <td>Automatically watches service and extension declarations and refreshes an already-enabled Private Edge selection after changes.</td>
               </tr>
               <tr>
                 <td><code>locallink extension plan|apply identity</code></td>
@@ -465,6 +473,7 @@ POCKET_ID_PORT=1411</code></pre>
             </thead>
             <tbody>
               <tr><td><code>GET</code></td><td><code>/api/state</code></td><td>Full dashboard snapshot including services, diagnostics, phase2 advisor, logs, ports, and resources.</td></tr>
+              <tr><td><code>GET</code></td><td><code>/api/services/:selector/oidc-check</code></td><td>Returns canonical OIDC setup values and reverse-proxy callback guidance.</td></tr>
               <tr><td><code>GET</code></td><td><code>/api/extensions</code></td><td>Per-workspace extension catalog, declaration state, runtime checks, and next onboarding step.</td></tr>
               <tr><td><code>GET</code></td><td><code>/api/onboarding</code></td><td>Core readiness plus optional, automatic, manual, and blocked foundation onboarding work.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/extensions/plan</code></td><td>Read-only Private Edge onboarding plan.</td></tr>

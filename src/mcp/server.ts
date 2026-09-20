@@ -165,6 +165,17 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
   );
 
   server.registerTool(
+    'check_service_oidc',
+    {
+      description: 'Return a secret-free OIDC readiness check with the canonical issuer, public callback URI, reverse-proxy mismatch guidance, and openid-client redirect rules for one service.',
+      inputSchema: z.object({
+        service: z.string().min(1),
+      }),
+    },
+    async ({ service }) => textResponse(JSON.stringify(await context.readOidcCheck(service), null, 2)),
+  );
+
+  server.registerTool(
     'read_onboarding_report',
     {
       description: 'Return the workspace core readiness and every automatic, manual, blocked, or optional foundation onboarding step without changing state.',

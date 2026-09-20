@@ -50,6 +50,7 @@ async function runServe(context: AppContext): Promise<FastifyInstance> {
   const handleSigterm = () => shutdown('SIGTERM');
   server.addHook('onClose', async () => {
     removeSignalHandlers();
+    context.stopAutomaticExtensionReload();
     if (runtime) await context.clearRuntimeBinding(runtime.pid);
   });
   try {
@@ -81,6 +82,7 @@ async function runServe(context: AppContext): Promise<FastifyInstance> {
     url: runtime.url,
     automaticPort: runtime.automatic,
   });
+  context.startAutomaticExtensionReload();
   return server;
 }
 
@@ -96,6 +98,7 @@ function normalizeCommand(rawCommand: string | undefined): string {
     case 'snapshot':
     case 'extensions':
     case 'extension':
+    case 'oidc':
     case 'doctor':
     case 'onboard':
     case 'init':
@@ -125,6 +128,7 @@ function printHelp(): void {
       '  locallink [--log-level LEVEL] extensions Print declared, installed, manual, and healthy extension states',
       '  locallink [--log-level LEVEL] extensions reload [SERVICE...] Alias for reloading the selected Private Edge services',
       '  locallink [--log-level LEVEL] service contract SERVICE Print a secret-free application integration contract',
+      '  locallink [--log-level LEVEL] oidc check SERVICE Print canonical OIDC issuer, public callback, and proxy guidance',
       '  locallink [--log-level LEVEL] extension plan private-edge [SERVICE...]  Preview changes and select services',
       '  locallink [--log-level LEVEL] extension apply private-edge [SERVICE...] Apply workspace declarations and selection',
       '  locallink [--log-level LEVEL] extension plan identity  Preview Pocket ID installation and manual checkpoints',
@@ -308,6 +312,17 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
 
+  if (command === 'oidc') {
+    const action = options.positionals[1];
+    const selector = options.positionals[2];
+    if (action !== 'check' || !selector || options.positionals.length > 3) {
+      throw new AppError('INVALID_OIDC_COMMAND', 'Use "locallink oidc check SERVICE".', 400);
+    }
+    const check = await context.readOidcCheck(selector);
+    process.stdout.write(`${JSON.stringify(check, null, 2)}\n`);
+    return;
+  }
+
   if (command === 'extension') {
     const action = options.positionals[1];
     const capability = options.positionals[2];
@@ -355,7 +370,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   throw new AppError(
     'UNKNOWN_COMMAND',
-    `Unsupported command "${command}". Use "web", "mcp", "doctor", "onboard", "snapshot", "extensions", "extension", "service", "skill", or "init".`,
+    `Unsupported command "${command}". Use "web", "mcp", "doctor", "onboard", "snapshot", "extensions", "extension", "service", "oidc", "skill", or "init".`,
     400,
   );
 }

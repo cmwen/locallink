@@ -36,6 +36,17 @@ Use LocalLink as the authority for workspace identity, derived endpoints, runtim
 
 5. Treat the returned workspace ID and root as a boundary. Never reuse endpoints, ports, routes, credentials, generated files, Docker resources, or PM2 state from another LocalLink workspace.
 
+6. When a service uses OIDC, run the canonical integration check before editing application code:
+
+   ```bash
+   locallink oidc check <service-id-or-runtime-name>
+   ```
+
+   Treat its `canonical.callbackUrl`, `canonical.issuerUrl`, and
+   `openidClient.redirectUri` values as authoritative. Do not infer callback
+   URLs from the incoming request when the service is behind Caddy or another
+   reverse proxy.
+
 Do not shell-source `.env`; workspace values can contain spaces or other non-shell text. Do not print `.env`, secret files, encoded authorization values, client secrets, or container environments. Read only the named non-secret keys needed for a change.
 
 ## Choose the workflow
@@ -58,6 +69,7 @@ Use more than one reference when a service needs multiple capabilities.
 ## Keep application interfaces generic
 
 - Put OIDC behind an application-owned identity adapter. Accept issuer, client ID, client secret, callback, logout URL, and scopes from environment variables.
+- For `openid-client`, pass the canonical public callback URI as `redirect_uri` in both the authorization request and token exchange. The internal loopback callback may be useful for diagnostics, but it must not replace the public callback URI.
 - Put telemetry behind OpenTelemetry SDKs and standard `OTEL_*` variables. Do not import OpenObserve-specific code or send its authorization header from an application.
 - Give every application a stable, unique `OTEL_SERVICE_NAME`.
 - Resolve URLs and ports from environment variables. Do not hardcode the current tailnet name, HTTPS listener, loopback port, Pocket ID hostname, or OpenObserve address.

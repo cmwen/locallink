@@ -1,3 +1,4 @@
+import fsSync, { type FSWatcher } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -39,9 +40,10 @@ import {
   buildApplicationServiceContract,
   type ApplicationServiceContract,
 } from './services/application-contract';
+import { buildOidcCheck, type OidcCheckResult } from './services/oidc-check';
 import { StartupDiagnosticsService } from './startup/diagnostics';
 import { resolvePaths } from './shared/paths';
-import { logDebug, logInfo, mirrorBrokerEntry } from './shared/logger';
+import { logDebug, logInfo, logWarn, mirrorBrokerEntry } from './shared/logger';
 import { normalizeLoopbackBindHost } from './shared/network';
 import { startStreamingCommand, type StreamingCommandHandle } from './shared/utils';
 import { TaskExecutor } from './tasks/executor';
@@ -85,6 +87,17 @@ async function captureReadOnlyPlan<T>(
   }
 }
 
+const AUTOMATIC_EXTENSION_RELOAD_FILES = new Set([
+  '.env',
+  'compose.yaml',
+  'compose.yml',
+  'docker-compose.yaml',
+  'docker-compose.yml',
+  'ecosystem.config.js',
+  'locallink.services.yml',
+  'locallink.extensions.yml',
+]);
+
 export class AppContext {
   readonly paths;
 
@@ -115,6 +128,16 @@ export class AppContext {
   private pm2Tail?: StreamingCommandHandle;
 
   private startupDiagnostics?: StartupDiagnostics;
+
+  private automaticExtensionReloadWatcher?: FSWatcher;
+
+  private automaticExtensionReloadTimer?: NodeJS.Timeout;
+
+  private automaticExtensionReloadPending = false;
+
+  private automaticExtensionReloadInFlight?: Promise<void>;
+
+  private automaticExtensionReloadEnabled = false;
 
   constructor(root = process.cwd()) {
     this.paths = resolvePaths(root);
@@ -200,6 +223,102 @@ export class AppContext {
     ]);
   }
 
+  startAutomaticExtensionReload(): void {
+    if (this.automaticExtensionReloadWatcher) return;
+
+    this.automaticExtensionReloadEnabled = true;
+    try {
+      this.automaticExtensionReloadWatcher = fsSync.watch(
+        this.paths.root,
+        { persistent: false },
+        (_eventType, filename) => {
+          const name = filename ? path.basename(String(filename)) : '';
+          if (!AUTOMATIC_EXTENSION_RELOAD_FILES.has(name)) return;
+          this.automaticExtensionReloadPending = true;
+          if (this.automaticExtensionReloadTimer) clearTimeout(this.automaticExtensionReloadTimer);
+          this.automaticExtensionReloadTimer = setTimeout(() => {
+            this.automaticExtensionReloadTimer = undefined;
+            void this.flushAutomaticExtensionReload();
+          }, 400);
+        },
+      );
+      this.automaticExtensionReloadWatcher.on('error', (error) => {
+        logWarn('Automatic extension reload watcher stopped.', {
+          workspaceRoot: this.paths.root,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.logs.append('Automatic extension reload is unavailable because workspace configuration watching failed.', 'Alerts', 'warn');
+        this.stopAutomaticExtensionReload();
+      });
+      this.automaticExtensionReloadWatcher.unref();
+      logInfo('Automatic extension reload watcher started.', {
+        workspaceRoot: this.paths.root,
+        files: [...AUTOMATIC_EXTENSION_RELOAD_FILES],
+      });
+    } catch (error) {
+      this.automaticExtensionReloadEnabled = false;
+      logWarn('Could not start the automatic extension reload watcher.', {
+        workspaceRoot: this.paths.root,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  stopAutomaticExtensionReload(): void {
+    this.automaticExtensionReloadEnabled = false;
+    this.automaticExtensionReloadPending = false;
+    if (this.automaticExtensionReloadTimer) clearTimeout(this.automaticExtensionReloadTimer);
+    this.automaticExtensionReloadTimer = undefined;
+    this.automaticExtensionReloadWatcher?.close();
+    this.automaticExtensionReloadWatcher = undefined;
+  }
+
+  private async flushAutomaticExtensionReload(): Promise<void> {
+    if (!this.automaticExtensionReloadEnabled || this.automaticExtensionReloadInFlight) return;
+
+    this.automaticExtensionReloadInFlight = (async () => {
+      while (this.automaticExtensionReloadEnabled && this.automaticExtensionReloadPending) {
+        this.automaticExtensionReloadPending = false;
+        await this.reloadChangedPrivateEdge();
+      }
+    })();
+    try {
+      await this.automaticExtensionReloadInFlight;
+    } finally {
+      this.automaticExtensionReloadInFlight = undefined;
+      if (this.automaticExtensionReloadEnabled && this.automaticExtensionReloadPending) {
+        void this.flushAutomaticExtensionReload();
+      }
+    }
+  }
+
+  private async reloadChangedPrivateEdge(): Promise<void> {
+    try {
+      await this.configRepository.hydrateProcessEnv();
+      const model = await this.configRepository.loadProjectModel();
+      const privateEdge = model.extensions.find((extension) => (
+        extension.kind === 'network-edge' && extension.enabled && extension.status !== 'disabled'
+      ));
+      if (!privateEdge) return;
+
+      const result = await this.reloadExtension('private-edge');
+      this.logs.append(
+        result.reloaded
+          ? `Workspace configuration changed; ${result.appliedRoutes.length} Private Edge route${result.appliedRoutes.length === 1 ? '' : 's'} refreshed automatically.`
+          : `Workspace configuration changed; Private Edge remains pending: ${result.plan.summary}`,
+        'Lifecycle',
+        result.reloaded ? 'info' : 'warn',
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logs.append(`Automatic Private Edge reload failed: ${message}`, 'Alerts', 'error');
+      logWarn('Automatic Private Edge reload failed.', {
+        workspaceRoot: this.paths.root,
+        error: message,
+      });
+    }
+  }
+
   async readState(): Promise<DashboardState> {
     logDebug('Reading dashboard state.', { workspaceRoot: this.paths.root });
     const state = await this.runtimeResolver.buildDashboardState(await this.getStartupDiagnostics());
@@ -245,6 +364,10 @@ export class AppContext {
       observabilityPlanError: observabilityResult.error,
       selector,
     });
+  }
+
+  async readOidcCheck(selector: string): Promise<OidcCheckResult> {
+    return buildOidcCheck(await this.readApplicationContract(selector));
   }
 
   async readOnboardingReport(): Promise<WorkspaceOnboardingReport> {

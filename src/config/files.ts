@@ -293,6 +293,18 @@ function normalizeMetadataList(input: unknown): string[] {
   return [];
 }
 
+function normalizeComposeDependencies(input: unknown): string[] {
+  const node = input as { toJSON?: () => unknown } | undefined;
+  const plain = typeof node?.toJSON === 'function' ? node.toJSON() : input;
+  if (Array.isArray(plain)) {
+    return plain.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (plain && typeof plain === 'object') {
+    return Object.keys(plain).map((item) => item.trim()).filter(Boolean);
+  }
+  return [];
+}
+
 function normalizePath(value: unknown, fallback: string): string {
   if (typeof value !== 'string') return fallback;
   const trimmed = value.trim();
@@ -468,7 +480,12 @@ function buildComposeDefinitions(raw: string, env: Record<string, string>): Serv
       notes: labels['locallink.notes'] || defaults.notes,
       detail: labels['locallink.detail'] || defaults.detail,
       tags: normalizeTags(labels['locallink.tags'] || ['docker']).join(' · ') || 'docker',
-      dependsOn: normalizeMetadataList(labels['locallink.dependsOn']),
+      dependsOn: [
+        ...new Set([
+          ...normalizeComposeDependencies(serviceConfig?.depends_on),
+          ...normalizeMetadataList(labels['locallink.dependsOn']),
+        ]),
+      ],
       downstream: normalizeMetadataList(labels['locallink.downstream']),
       envVars: normalizeMetadataList(labels['locallink.envVars']),
       docsUrl: typeof labels['locallink.docsUrl'] === 'string' ? labels['locallink.docsUrl'] : undefined,

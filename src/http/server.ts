@@ -168,6 +168,13 @@ export function createHttpServer(context: AppContext) {
     return context.readApplicationContract(parsed.data.selector);
   });
 
+  app.get('/api/services/:selector/oidc-check', async (request, reply) => {
+    const parsed = serviceContractParamsSchema.safeParse(request.params);
+    if (!parsed.success) throw new AppError('INVALID_PARAMS', parsed.error.issues[0]?.message || 'Invalid service selector.', 400);
+    reply.header('Cache-Control', 'no-store');
+    return context.readOidcCheck(parsed.data.selector);
+  });
+
   app.post('/api/extensions/plan', async (request, reply) => {
     const parsed = extensionCapabilitySchema.safeParse(request.body);
     if (!parsed.success) throw new AppError('INVALID_BODY', parsed.error.issues[0]?.message || 'Invalid body.', 400);

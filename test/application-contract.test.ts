@@ -8,6 +8,7 @@ import {
   buildApplicationServiceContract,
   type BuildApplicationContractInput,
 } from '../src/services/application-contract';
+import { buildOidcCheck } from '../src/services/oidc-check';
 import type { ProjectModel } from '../src/shared/contracts';
 
 function input(overrides: Partial<BuildApplicationContractInput> = {}): BuildApplicationContractInput {
@@ -206,6 +207,16 @@ test('application contract joins active edge, generic OIDC, and Docker OTLP sett
   assert.equal(contract.observability.serviceName, 'workspace-one.example-api');
   assert.doesNotMatch(JSON.stringify(contract), /do-not-return-this-secret/);
   assert.doesNotMatch(JSON.stringify(contract), /OPENOBSERVE_ACCESS_KEY/i);
+
+  const oidcCheck = buildOidcCheck(contract);
+  assert.equal(oidcCheck.status, 'ready');
+  assert.equal(oidcCheck.canonical.publicServiceUrl, contract.privateEdge.url);
+  assert.equal(oidcCheck.canonical.issuerUrl, contract.identity.issuerUrl);
+  assert.equal(oidcCheck.openidClient.redirectUri, contract.identity.callbackUrl);
+  assert.equal(oidcCheck.openidClient.usePublicRedirectUriForTokenExchange, true);
+  assert.equal(oidcCheck.proxy.callbackDiffers, true);
+  assert.ok(oidcCheck.nextSteps.some((step) => /both authorization redirect_uri and token exchange/i.test(step)));
+  assert.doesNotMatch(JSON.stringify(oidcCheck), /do-not-return-this-secret/);
 });
 
 test('application contract distinguishes undeclared app integrations from healthy shared infrastructure', () => {

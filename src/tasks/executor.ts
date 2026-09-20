@@ -30,7 +30,9 @@ function resolveServiceDefinition(
   definitions: ServiceDefinition[],
   input: ExecuteTaskInput,
 ): ServiceDefinition {
-  const definition = definitions.find((candidate) => candidate.name === input.serviceName);
+  const definition = definitions.find((candidate) => candidate.name === input.serviceName)
+    || definitions.find((candidate) => [candidate.id, candidate.runtimeName]
+      .some((alias) => alias === input.serviceName));
   if (!definition) {
     throw new AppError(
       'UNKNOWN_SERVICE',
@@ -406,6 +408,119 @@ export class TaskExecutor {
     const model = await this.configRepository.loadProjectModel();
     this.setServiceProcessEnv(model.env);
     const definition = resolveServiceDefinition(model.definitions, input);
+    return this.executeResolved(input, model.definitions, definition, model.env, new Set(), new Set());
+  }
+
+  private async executeResolved(
+    input: ExecuteTaskInput,
+    definitions: ServiceDefinition[],
+    definition: ServiceDefinition,
+    modelEnv: Record<string, string>,
+    visiting: Set<string>,
+    started: Set<string>,
+  ): Promise<TaskExecutionResult> {
+    const definitionKey = this.definitionKey(definition);
+    if (visiting.has(definitionKey)) {
+      const cycle = [...visiting, definitionKey].join(' -> ');
+      throw new AppError(
+        'SERVICE_DEPENDENCY_CYCLE',
+        `Service dependency cycle detected: ${cycle}.`,
+        400,
+      );
+    }
+
+    if (started.has(definitionKey)) {
+      return {
+        ok: true,
+        runtime: definition.runtime || input.runtime,
+        serviceName: definition.name,
+        action: input.action,
+        command: 'dependency already started',
+        exitCode: 0,
+        stdout: `Service "${definition.name}" was already started as a dependency.`,
+        stderr: '',
+      };
+    }
+
+    visiting.add(definitionKey);
+    try {
+      if (this.startsService(input.action)) {
+        const dependencyAction: TaskAction = input.action === 'up' ? 'up' : 'start';
+        for (const dependencyReference of definition.dependsOn || []) {
+          const dependency = this.resolveDependency(definitions, dependencyReference, definition);
+          const dependencyResult = await this.executeResolved(
+            {
+              runtime: dependency.runtime || input.runtime,
+              serviceName: dependency.name,
+              action: dependencyAction,
+            },
+            definitions,
+            dependency,
+            modelEnv,
+            visiting,
+            started,
+          );
+          if (!dependencyResult.ok) {
+            return {
+              ok: false,
+              runtime: input.runtime,
+              serviceName: definition.name,
+              action: input.action,
+              command: `dependency ${dependency.name}`,
+              exitCode: dependencyResult.exitCode,
+              stdout: dependencyResult.stdout,
+              stderr: [
+                `Dependency "${dependency.name}" failed; "${definition.name}" was not started.`,
+                dependencyResult.stderr,
+              ].filter(Boolean).join('\n'),
+            };
+          }
+        }
+      }
+
+      const result = await this.executeSingle(input, definition, modelEnv);
+      if (result.ok && this.startsService(input.action)) {
+        started.add(definitionKey);
+      }
+      return result;
+    } finally {
+      visiting.delete(definitionKey);
+    }
+  }
+
+  private startsService(action: TaskAction): boolean {
+    return action === 'start' || action === 'up';
+  }
+
+  private definitionKey(definition: ServiceDefinition): string {
+    return `${definition.runtime || 'unknown'}:${definition.runtimeName || definition.name}`;
+  }
+
+  private resolveDependency(
+    definitions: ServiceDefinition[],
+    reference: string,
+    owner: ServiceDefinition,
+  ): ServiceDefinition {
+    const normalizedReference = reference.trim().toLowerCase();
+    const dependency = definitions.find((candidate) => [candidate.name, candidate.id, candidate.runtimeName]
+      .filter((alias): alias is string => Boolean(alias))
+      .some((alias) => alias.toLowerCase() === normalizedReference));
+    if (!dependency) {
+      throw new AppError(
+        'UNKNOWN_SERVICE_DEPENDENCY',
+        `Service "${owner.name}" depends on "${reference}", but that service is not declared in the current workspace.`,
+        400,
+        { serviceName: owner.name, dependency: reference },
+      );
+    }
+    return dependency;
+  }
+
+  private async executeSingle(
+    input: ExecuteTaskInput,
+    definition: ServiceDefinition,
+    modelEnv: Record<string, string>,
+  ): Promise<TaskExecutionResult> {
     if (input.action === 'reload' && input.runtime !== 'pm2') {
       throw new AppError(
         'UNSUPPORTED_RUNTIME_ACTION',
@@ -433,7 +548,7 @@ export class TaskExecutor {
       try {
         guardedResult = await withPm2WorkspaceLock(
           this.root,
-          model.env,
+          modelEnv,
           { allowSpawn: input.action !== 'stop' },
           async (processEnv) => {
             this.serviceProcessEnv = processEnv;
