@@ -159,6 +159,45 @@ test('Private Edge selection validates and persists only explicitly selected wor
   assert.match(await fs.readFile(path.join(root, 'locallink.extensions.yml'), 'utf8'), /exposedPorts: \[\]/);
 });
 
+test('Private Edge reload applies the workspace selection and current Tailscale routes', async () => {
+  const root = await createWorkspace();
+  const liveRoutes = new Map<string, string>();
+  const calls: Array<{ command: string; args: string[] }> = [];
+  const commandRunner: CommandRunner = async (command, args) => {
+    calls.push({ command, args });
+    if (command !== 'tailscale') return result({ ok: false, code: null, error: `unexpected ${command}` });
+    if (args[0] === 'status') {
+      return result({ stdout: JSON.stringify({
+        BackendState: 'Running',
+        Self: { DNSName: 'reload.tailnet.ts.net.' },
+      }) });
+    }
+    if (args[0] === 'serve' && args[1] === 'status') {
+      const tcp: Record<string, { HTTPS: boolean }> = {};
+      const web: Record<string, { Handlers: { '/': { Proxy: string } } }> = {};
+      for (const [httpsPort, targetPort] of liveRoutes) {
+        tcp[httpsPort] = { HTTPS: true };
+        web[`reload.tailnet.ts.net:${httpsPort}`] = { Handlers: { '/': { Proxy: `http://127.0.0.1:${targetPort}` } } };
+      }
+      return result({ stdout: JSON.stringify({ TCP: tcp, Web: web }) });
+    }
+    const httpsPort = args.find((arg) => arg.startsWith('--https='))?.split('=')[1];
+    const targetPort = args.at(-1)?.match(/:(\d+)$/)?.[1];
+    if (httpsPort && targetPort) liveRoutes.set(httpsPort, targetPort);
+    return result();
+  };
+  const planner = new ExtensionPlanner(root, new ConfigRepository(root), commandRunner);
+
+  const reloaded = await planner.reload('private-edge', ['api']);
+
+  assert.equal(reloaded.reloaded, true);
+  assert.deepEqual(reloaded.changedFiles, ['locallink.extensions.yml', '.env']);
+  assert.equal(reloaded.appliedRoutes.length, 1);
+  assert.equal(reloaded.plan.routePlan.state, 'in-sync');
+  assert.ok(calls.some((call) => call.args.includes('--bg')));
+  assert.match(await fs.readFile(path.join(root, 'locallink.extensions.yml'), 'utf8'), /exposedPorts:\n\s+- "?5050"?/);
+});
+
 test('extension planner rejects capabilities without an installer contract', async () => {
   const root = await createWorkspace();
   const planner = new ExtensionPlanner(root);

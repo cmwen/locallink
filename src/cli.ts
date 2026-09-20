@@ -123,6 +123,7 @@ function printHelp(): void {
       '  locallink [--log-level LEVEL] onboard   Print automatic and manual foundation onboarding steps',
       '  locallink [--log-level LEVEL] snapshot  Print the current dashboard state as JSON',
       '  locallink [--log-level LEVEL] extensions Print declared, installed, manual, and healthy extension states',
+      '  locallink [--log-level LEVEL] extensions reload [SERVICE...] Alias for reloading the selected Private Edge services',
       '  locallink [--log-level LEVEL] service contract SERVICE Print a secret-free application integration contract',
       '  locallink [--log-level LEVEL] extension plan private-edge [SERVICE...]  Preview changes and select services',
       '  locallink [--log-level LEVEL] extension apply private-edge [SERVICE...] Apply workspace declarations and selection',
@@ -130,6 +131,7 @@ function printHelp(): void {
       '  locallink [--log-level LEVEL] extension apply identity Install/configure Pocket ID and select its Private Edge route',
       '  locallink [--log-level LEVEL] extension plan observability Preview OpenObserve, collector, credentials, storage, and edge publishing',
       '  locallink [--log-level LEVEL] extension apply observability Install/adopt OpenObserve and its workspace OTLP collector safely',
+      '  locallink [--log-level LEVEL] extension reload private-edge [SERVICE...] Refresh the selected edge services and reload Caddy/Tailscale',
       '  locallink [--log-level LEVEL] extension apply-routes private-edge TOKEN Apply a freshly confirmed host route plan',
       '  locallink [--log-level LEVEL] extension reconcile-routes private-edge TOKEN Remove stale owned routes safely',
       '  locallink skill inject [--force] Inject the LocalLink agent skill into this workspace',
@@ -279,6 +281,12 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }
 
   if (command === 'extensions') {
+    if (options.positionals[1] === 'reload') {
+      const services = options.positionals.slice(2);
+      const result = await context.reloadExtension('private-edge', services.length > 0 ? services : undefined);
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return;
+    }
     const workspace = await context.getWorkspaceIdentity();
     const extensions = await context.readExtensionLifecycle();
     process.stdout.write(`${JSON.stringify({ workspace, extensions }, null, 2)}\n`);
@@ -305,12 +313,20 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     const capability = options.positionals[2];
     const serviceArgs = options.positionals.slice(3);
     const services = serviceArgs.length > 0 ? serviceArgs : undefined;
-    if (!capability || (action !== 'plan' && action !== 'apply' && action !== 'apply-routes' && action !== 'reconcile-routes')) {
+    if (!capability || (action !== 'plan' && action !== 'apply' && action !== 'reload' && action !== 'apply-routes' && action !== 'reconcile-routes')) {
       throw new AppError(
         'INVALID_EXTENSION_COMMAND',
-        'Use "locallink extension plan|apply private-edge [SERVICE...]", "locallink extension plan|apply identity", "locallink extension plan|apply observability", "locallink extension apply-routes private-edge TOKEN", or "locallink extension reconcile-routes private-edge TOKEN".',
+        'Use "locallink extension plan|apply|reload private-edge [SERVICE...]", "locallink extension plan|apply identity", "locallink extension plan|apply observability", "locallink extension apply-routes private-edge TOKEN", or "locallink extension reconcile-routes private-edge TOKEN".',
         400,
       );
+    }
+    if (action === 'reload') {
+      if (capability !== 'private-edge') {
+        throw new AppError('INVALID_EXTENSION_COMMAND', 'Extension reload currently supports only private-edge.', 400);
+      }
+      const result = await context.reloadExtension(capability, services);
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return;
     }
     if (action === 'apply-routes') {
       const confirmationToken = options.positionals[3];

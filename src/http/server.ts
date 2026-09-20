@@ -182,6 +182,13 @@ export function createHttpServer(context: AppContext) {
     return context.applyExtension(parsed.data.capability, parsed.data.services);
   });
 
+  app.post('/api/extensions/reload', async (request, reply) => {
+    const parsed = extensionCapabilitySchema.safeParse(request.body);
+    if (!parsed.success) throw new AppError('INVALID_BODY', parsed.error.issues[0]?.message || 'Invalid body.', 400);
+    reply.header('Cache-Control', 'no-store');
+    return context.reloadExtension(parsed.data.capability, parsed.data.services);
+  });
+
   app.post('/api/extensions/routes/apply', async (request, reply) => {
     const parsed = extensionRouteApplySchema.safeParse(request.body);
     if (!parsed.success) throw new AppError('INVALID_BODY', parsed.error.issues[0]?.message || 'Invalid body.', 400);

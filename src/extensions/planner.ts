@@ -88,6 +88,14 @@ export interface ExtensionRouteReconcileResult {
   plan: ExtensionInstallPlan;
 }
 
+export interface ExtensionReloadResult {
+  capability: InstallableCapabilityId;
+  reloaded: boolean;
+  changedFiles: string[];
+  appliedRoutes: ExtensionRouteApplyResult['appliedRoutes'];
+  plan: ExtensionInstallPlan;
+}
+
 function envValue(content: string, key: string): string | undefined {
   const match = content.match(new RegExp(`^\\s*${key}\\s*=\\s*(.*?)\\s*$`, 'm'));
   return match?.[1]?.replace(/^['"]|['"]$/g, '');
@@ -395,6 +403,48 @@ export class ExtensionPlanner {
       applied: changedFiles.length > 0,
       changedFiles,
       plan: await this.plan('private-edge'),
+    };
+  }
+
+  async reload(capability: string, serviceSelectors?: string[]): Promise<ExtensionReloadResult> {
+    if (capability !== 'private-edge') {
+      throw new AppError(
+        'UNSUPPORTED_EXTENSION_CAPABILITY',
+        `Extension reload currently supports "private-edge"; received "${capability}".`,
+        400,
+      );
+    }
+
+    const workspaceResult = await this.apply(capability, serviceSelectors);
+    let plan = workspaceResult.plan;
+    if (plan.reconciliation.state === 'ready') {
+      return {
+        capability: 'private-edge',
+        reloaded: false,
+        changedFiles: workspaceResult.changedFiles,
+        appliedRoutes: [],
+        plan,
+      };
+    }
+
+    if (plan.routePlan.state !== 'ready' || !plan.routePlan.confirmationToken) {
+      return {
+        capability: 'private-edge',
+        reloaded: false,
+        changedFiles: workspaceResult.changedFiles,
+        appliedRoutes: [],
+        plan,
+      };
+    }
+
+    const routeResult = await this.applyRoutes(capability, plan.routePlan.confirmationToken);
+    plan = routeResult.plan;
+    return {
+      capability: 'private-edge',
+      reloaded: workspaceResult.applied || routeResult.applied,
+      changedFiles: workspaceResult.changedFiles,
+      appliedRoutes: routeResult.appliedRoutes,
+      plan,
     };
   }
 

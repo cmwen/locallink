@@ -185,6 +185,17 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
   );
 
   server.registerTool(
+    'reload_private_edge',
+    {
+      description: 'Refresh the selected Private Edge services, regenerate workspace Caddy/Tailscale configuration, and apply the current route plan when the runtime is ready.',
+      inputSchema: z.object({
+        services: z.array(z.string()).optional(),
+      }),
+    },
+    async ({ services }) => textResponse(JSON.stringify(await context.reloadExtension('private-edge', services), null, 2)),
+  );
+
+  server.registerTool(
     'apply_private_edge_routes',
     {
       description: 'Apply and verify the exact live Tailscale Serve route plan represented by a fresh confirmation token; rolls back routes created by a failed attempt.',

@@ -428,6 +428,10 @@ POCKET_ID_PORT=1411</code></pre>
                 <td>Preview or apply only workspace-owned Private Edge declaration changes while preserving explicit user security checkpoints.</td>
               </tr>
               <tr>
+                <td><code>locallink extension reload private-edge [SERVICE...]</code></td>
+                <td>Refresh the selected services, regenerate managed Caddy/Tailscale configuration, and apply ready routes without copying a confirmation token.</td>
+              </tr>
+              <tr>
                 <td><code>locallink extension plan|apply identity</code></td>
                 <td>Preview or install Pocket ID with persistent state, a protected generated secret, a derived private issuer, health verification, and explicit manual administrator/OIDC checkpoints.</td>
               </tr>
@@ -465,6 +469,7 @@ POCKET_ID_PORT=1411</code></pre>
               <tr><td><code>GET</code></td><td><code>/api/onboarding</code></td><td>Core readiness plus optional, automatic, manual, and blocked foundation onboarding work.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/extensions/plan</code></td><td>Read-only Private Edge onboarding plan.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/extensions/apply</code></td><td>Apply workspace declaration and environment changes without performing external security actions.</td></tr>
+              <tr><td><code>POST</code></td><td><code>/api/extensions/reload</code></td><td>Refresh selected Private Edge services and apply the current Caddy/Tailscale route plan when prerequisites are ready.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/extensions/routes/apply</code></td><td>Apply a fresh token-bound route plan with verification, ownership recording, and scoped rollback.</td></tr>
               <tr><td><code>POST</code></td><td><code>/api/extensions/routes/reconcile</code></td><td>Reconcile deselected LocalLink-owned listeners with verification and safe restoration.</td></tr>
               <tr><td><code>GET</code></td><td><code>/api/configs</code></td><td>Raw workspace blueprint files plus derived services.</td></tr>

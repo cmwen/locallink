@@ -140,6 +140,7 @@ locallink extension apply private-edge
 locallink extension plan private-edge "My API"
 locallink extension apply-routes private-edge "private-edge:<token-from-fresh-plan>"
 locallink extension reconcile-routes private-edge "private-edge-removal:<token-from-fresh-plan>"
+locallink extension reload private-edge "My API"
 ```
 
 When you launch `locallink` from another folder, it reads environment, service, extension, and runtime declarations from that current working directory.
@@ -298,6 +299,7 @@ All dashboard APIs are local-only and served from the same process as the UI.
 | `GET` | `/api/services/:selector/contract` | Returns the selected service’s secret-free Private Edge, OIDC, and OpenTelemetry integration contract. |
 | `POST` | `/api/extensions/plan` | Preview workspace-owned Private Edge, Identity, or Observability changes and user-owned security checkpoints without writing files. |
 | `POST` | `/api/extensions/apply` | Idempotently apply a Private Edge selection, install/configure Pocket ID, or install/adopt OpenObserve while preserving existing secrets, data, and edge selections. |
+| `POST` | `/api/extensions/reload` | Refresh the selected Private Edge services, regenerate managed Caddy/Tailscale configuration, and apply routes when runtime prerequisites are ready. |
 | `POST` | `/api/extensions/routes/apply` | Apply a freshly confirmed Tailscale Serve route plan, verify every selected route, record workspace ownership, and roll back newly created routes on failure. |
 | `POST` | `/api/extensions/routes/reconcile` | Remove only deselected listeners that still match LocalLink ownership, forget stale ownership safely, verify the result, and restore earlier removals if the attempt fails. |
 | `GET` | `/api/configs` | Returns the raw infra files plus the derived service list. |

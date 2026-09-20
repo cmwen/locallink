@@ -17,6 +17,7 @@ import {
   ExtensionPlanner,
   type ExtensionApplyResult,
   type ExtensionInstallPlan,
+  type ExtensionReloadResult,
   type ExtensionRouteApplyResult,
   type ExtensionRouteReconcileResult,
 } from './extensions/planner';
@@ -294,6 +295,18 @@ export class AppContext {
         ? `${capability} workspace plan applied to ${result.changedFiles.join(', ')}.`
         : `${capability} workspace plan required no file changes.`,
       'Lifecycle',
+    );
+    return result;
+  }
+
+  async reloadExtension(capability: string, services?: string[]): Promise<ExtensionReloadResult> {
+    const result = await this.extensionPlanner.reload(capability, services);
+    this.logs.append(
+      result.reloaded
+        ? `${capability} extension reloaded; ${result.appliedRoutes.length} route${result.appliedRoutes.length === 1 ? '' : 's'} applied.`
+        : `${capability} extension reload is waiting for the next required step: ${result.plan.summary}`,
+      'Lifecycle',
+      result.reloaded ? 'info' : 'warn',
     );
     return result;
   }
