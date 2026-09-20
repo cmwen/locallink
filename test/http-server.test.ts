@@ -376,7 +376,7 @@ test('HTTP server exposes direct workspace shell routes', async () => {
   await context.initialize();
   const server = context.createServer();
 
-  for (const url of ['/dashboard', '/current', '/extensions', '/external', '/resources']) {
+  for (const url of ['/dashboard', '/current', '/launchpad', '/extensions', '/external', '/resources']) {
     const response = await server.inject({
       method: 'GET',
       url,

@@ -208,6 +208,29 @@ export function parseTailscaleServeRoutes(raw: string): NetworkEdgeRoute[] {
   }
 }
 
+function resolveCaddyEnvironmentVariables(raw: string, env: Record<string, string>): string {
+  return raw.replace(/\{\$([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, key: string) => env[key] || '');
+}
+
+export function parseCaddyReverseProxyPorts(raw: string, env: Record<string, string> = {}): Map<string, string[]> {
+  const content = resolveCaddyEnvironmentVariables(raw, env);
+  const listeners = [...content.matchAll(/^\s*:([1-9][0-9]{0,4})\s*\{/gm)];
+  const ports = new Map<string, string[]>();
+
+  for (const [index, listener] of listeners.entries()) {
+    const listenerPort = listener[1];
+    const blockStart = (listener.index ?? 0) + listener[0].length;
+    const blockEnd = listeners[index + 1]?.index ?? content.length;
+    const block = content.slice(blockStart, blockEnd);
+    const upstreamPorts = [...block.matchAll(/^\s*reverse_proxy\s+(?:https?:\/\/)?(?:\[[^\]]+\]|[^\s:/]+):(\d+)\b/gm)]
+      .map((match) => match[1])
+      .filter((port, upstreamIndex, values) => values.indexOf(port) === upstreamIndex);
+    if (upstreamPorts.length > 0) ports.set(listenerPort, upstreamPorts);
+  }
+
+  return ports;
+}
+
 function parseTailscaleStatus(raw: string): TailscaleStatus | undefined {
   try {
     return JSON.parse(raw) as TailscaleStatus;
@@ -590,6 +613,7 @@ function buildPrivateEdgeCaddyfile(
     const reverseProxy = privateEdge?.localOrigin || privateEdge?.anonymousCors
       ? [
           `  reverse_proxy http://${upstreamHost}:${service.port} {`,
+          '    header_up X-Forwarded-Proto https',
           ...(privateEdge.localOrigin
             ? [
                 `    header_up Host 127.0.0.1:${service.port}`,
@@ -599,7 +623,11 @@ function buildPrivateEdgeCaddyfile(
           ...(privateEdge.anonymousCors ? ['    header_down Access-Control-Allow-Origin *'] : []),
           '  }',
         ].join('\n')
-      : `  reverse_proxy http://${upstreamHost}:${service.port}`;
+      : [
+          `  reverse_proxy http://${upstreamHost}:${service.port} {`,
+          '    header_up X-Forwarded-Proto https',
+          '  }',
+        ].join('\n');
     return [[
       ...listener,
       reverseProxy,
@@ -919,12 +947,23 @@ export async function discoverServiceEdgeUrls(
   if (!result?.ok) return urlsByService;
 
   const routes = parseTailscaleServeRoutes(result.stdout);
+  const caddyRuntime = workspaceRoot
+    ? await detectCaddyRuntime(workspaceRoot, commandRunner)
+    : undefined;
+  const caddyContent = caddyRuntime?.configPath
+    ? await readWorkspaceFile(caddyRuntime.configPath)
+    : undefined;
+  const caddyProxyPorts = caddyContent
+    ? parseCaddyReverseProxyPorts(caddyContent, env)
+    : new Map<string, string[]>();
+
   for (const service of services) {
     const port = service.port?.trim();
     if (!port || port === '—' || !selectedPorts.has(port)) continue;
     const owned = ownership.filter((route) => route.serviceId === service.id && route.status === 'active');
     const urls = [
       ...routes.filter((route) => route.targetPort === port).map((route) => route.url),
+      ...routes.filter((route) => caddyProxyPorts.get(route.targetPort)?.includes(port)).map((route) => route.url),
       ...owned.flatMap((entry) => routes
         .filter((route) => route.targetPort === (entry.proxyPort || entry.targetPort))
         .map((route) => route.url)),

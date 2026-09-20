@@ -132,7 +132,8 @@ function printHelp(): void {
       '  locallink [--log-level LEVEL] extension apply observability Install/adopt OpenObserve and its workspace OTLP collector safely',
       '  locallink [--log-level LEVEL] extension apply-routes private-edge TOKEN Apply a freshly confirmed host route plan',
       '  locallink [--log-level LEVEL] extension reconcile-routes private-edge TOKEN Remove stale owned routes safely',
-      '  locallink skill install [--target codex|agents|workspace] [--force] Install or update the LocalLink agent skill',
+      '  locallink skill inject [--force] Inject the LocalLink agent skill into this workspace',
+      '  locallink skill install [--target codex|agents|workspace] [--force] Install or update the skill at an explicit target',
       '  locallink [--log-level LEVEL] init      Scaffold a starter LocalLink workspace here',
       '  locallink [--log-level LEVEL] init NAME Scaffold a starter LocalLink workspace in ./NAME',
       '',
@@ -143,7 +144,8 @@ function printHelp(): void {
       'Options:',
       '  -l, --log-level LEVEL  One of: silent, error, warn, info, debug',
       '                          Defaults to info. Can also be set via LOCALLINK_LOG_LEVEL.',
-      '  --target TARGET        Agent skill destination: codex (default), agents, or workspace',
+      '  --target TARGET        skill install destination: codex (default), agents, or workspace',
+      '                          skill inject always uses the current workspace',
       '  --force                Back up and replace an unowned skill at the selected destination',
       '',
     ].join('\n'),
@@ -201,10 +203,18 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }
 
   if (command === 'skill') {
-    if (options.positionals[1] !== 'install' || options.positionals.length > 2) {
+    const action = options.positionals[1];
+    if ((action !== 'inject' && action !== 'install') || options.positionals.length > 2) {
       throw new AppError(
         'INVALID_SKILL_COMMAND',
-        'Use "locallink skill install [--target codex|agents|workspace] [--force]".',
+        'Use "locallink skill inject [--force]" or "locallink skill install [--target codex|agents|workspace] [--force]".',
+        400,
+      );
+    }
+    if (action === 'inject' && options.target && options.target !== 'workspace') {
+      throw new AppError(
+        'INVALID_SKILL_TARGET',
+        '"locallink skill inject" always targets the current workspace. Remove --target or use --target workspace.',
         400,
       );
     }
@@ -212,7 +222,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     const result = await installBundledAgentSkill({
       appRoot: paths.appRoot,
       workspaceRoot,
-      target: parseAgentSkillTarget(options.target),
+      target: action === 'inject' ? 'workspace' : parseAgentSkillTarget(options.target),
       force: options.force,
     });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -222,7 +232,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (options.target || options.force) {
     throw new AppError(
       'MISPLACED_SKILL_OPTION',
-      '--target and --force are supported only by "locallink skill install".',
+      '--target and --force are supported only by "locallink skill inject" and "locallink skill install".',
       400,
     );
   }

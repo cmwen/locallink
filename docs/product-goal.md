@@ -135,8 +135,9 @@ installable `locallink-workspace` skill, which teaches an agent how to:
 - Validate health, login redirects, telemetry delivery, and edge URLs after a
   change.
 
-The CLI installs or updates the bundled skill with `locallink skill install`.
-Codex, generic agent-home, and workspace-local targets are explicit. Managed
+The CLI injects or updates the bundled skill in the current workspace with
+`locallink skill inject`. `locallink skill install` retains explicit Codex,
+generic agent-home, and workspace-local targets. Managed
 copies update by digest; an unowned collision is preserved unless `--force`
 moves it to a timestamped backup. The skill is guidance and an interface
 contract; LocalLink remains the authority for workspace state, generated values,

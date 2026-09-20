@@ -41,13 +41,13 @@ import {
   filterServices,
   matchesWorkspaceQuery,
   selectVisibleService,
-  serviceIsBookmarked,
+  serviceLaunchUrl,
   serviceMatchReason,
   serviceNeedsAttention,
   type ServiceHealthFilter,
 } from './view-model';
 
-type View = 'current' | 'extensions' | 'resources';
+type View = 'current' | 'launchpad' | 'extensions' | 'resources';
 type Theme = 'dark' | 'light';
 type Source = 'api' | 'mock';
 type KillTarget = { type: 'service'; service: ServiceRecord } | { type: 'process'; process: ResourceProcess | ProcessInspection };
@@ -55,16 +55,19 @@ type KillTarget = { type: 'service'; service: ServiceRecord } | { type: 'process
 const THEME_KEY = 'locallink-theme';
 const VIEW_LABELS: Record<View, string> = {
   current: 'Services',
+  launchpad: 'Launchpad',
   extensions: 'Connections',
   resources: 'System',
 };
 const VIEW_PATHS: Record<View, string> = {
   current: '/current',
+  launchpad: '/launchpad',
   extensions: '/extensions',
   resources: '/resources',
 };
 const PATH_VIEWS: Record<string, View> = {
   '/current': 'current',
+  '/launchpad': 'launchpad',
   '/external': 'extensions',
   '/extensions': 'extensions',
   '/resources': 'resources',
@@ -114,7 +117,7 @@ function documentationHost(url: string): string {
 
 function viewFromPath(): View {
   const hash = window.location.hash.replace('#', '');
-  if (hash === 'extensions' || hash === 'resources' || hash === 'current') return hash;
+  if (hash === 'extensions' || hash === 'resources' || hash === 'current' || hash === 'launchpad') return hash;
   const pathView = PATH_VIEWS[window.location.pathname.replace(/\/$/, '') || '/'];
   if (pathView) return pathView;
   return 'current';
@@ -132,7 +135,8 @@ export function App() {
   const [source, setSource] = useState<Source>('mock');
   const [view, setView] = useState<View>(() => viewFromPath());
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark'));
-  const [queries, setQueries] = useState<Record<View, string>>({ current: '', extensions: '', resources: '' });
+  const [queries, setQueries] = useState<Record<View, string>>({ current: '', launchpad: '', extensions: '', resources: '' });
+  const networkEdgeEnabled = state.extensions.some((extension) => extension.kind === 'network-edge' && extension.enabled && extension.status !== 'disabled');
   const [healthFilter, setHealthFilter] = useState<ServiceHealthFilter>('all');
   const [selectedServiceId, setSelectedServiceId] = useState('');
   const [mobileServiceDetail, setMobileServiceDetail] = useState(false);
@@ -169,6 +173,13 @@ export function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (!loading && view === 'launchpad' && !networkEdgeEnabled) {
+      setView('current');
+      syncWorkspacePath('current', 'replace');
+    }
+  }, [loading, networkEdgeEnabled, view]);
 
   useEffect(() => {
     void refreshState();
@@ -652,6 +663,7 @@ export function App() {
         hasPm2Services={services.some((service) => service.runtime === 'pm2')}
         pm2Pending={loading}
         runPm2WorkspaceAction={runPm2WorkspaceAction}
+        networkEdgeEnabled={networkEdgeEnabled}
       />
 
       {status ? (
@@ -677,7 +689,7 @@ export function App() {
           attentionCount={attentionItems.length}
           portsHeld={state.ports.recent.length || state.ports.busy.length}
           pendingServices={pendingServices}
-          networkEdgeEnabled={state.extensions.some((extension) => extension.kind === 'network-edge' && extension.enabled)}
+          networkEdgeEnabled={networkEdgeEnabled}
           setHealthFilter={setHealthFilter}
           selectService={(id) => {
             setSelectedServiceId(id);
@@ -691,6 +703,8 @@ export function App() {
           setView={changeView}
         />
       ) : null}
+
+      {view === 'launchpad' && networkEdgeEnabled ? <LaunchpadWorkspace services={services} query={queries.launchpad} /> : null}
 
       {view === 'extensions' ? (
         <ExtensionsWorkspace
@@ -730,7 +744,7 @@ export function App() {
         />
       ) : null}
 
-      <MobileNav view={view} setView={changeView} />
+      <MobileNav view={view} setView={changeView} networkEdgeEnabled={networkEdgeEnabled} />
 
       {addTempOpen ? <TempRuntimeModal close={() => setAddTempOpen(false)} submit={addTemporaryRuntime} /> : null}
 
@@ -761,6 +775,7 @@ interface TopbarProps {
   hasPm2Services: boolean;
   pm2Pending: boolean;
   runPm2WorkspaceAction: (action: Pm2WorkspaceAction) => Promise<void>;
+  networkEdgeEnabled: boolean;
 }
 
 function Topbar({
@@ -776,11 +791,14 @@ function Topbar({
   hasPm2Services,
   pm2Pending,
   runPm2WorkspaceAction,
+  networkEdgeEnabled,
 }: TopbarProps) {
   const placeholder =
     view === 'current'
       ? 'Search services, docs, ports...'
-      : view === 'extensions'
+      : view === 'launchpad'
+        ? 'Filter exported apps and links...'
+        : view === 'extensions'
         ? 'Filter connections, config, ports...'
         : 'Filter activity logs...';
 
@@ -819,6 +837,9 @@ function Topbar({
             Back to services
           </button>
         ) : null}
+        {view === 'launchpad' ? (
+          <button className="btn" type="button" onClick={() => setView('current')}>Back to services</button>
+        ) : null}
         {view === 'resources' ? (
           <button className="btn" type="button" onClick={() => void copyLogs()}>
             Copy logs
@@ -826,7 +847,7 @@ function Topbar({
         ) : null}
       </div>
       <nav className="actions" aria-label="Workspace navigation">
-        {(['current', 'extensions', 'resources'] as View[]).map((item) => (
+        {(['current', ...(networkEdgeEnabled ? ['launchpad' as View] : []), 'extensions', 'resources'] as View[]).map((item) => (
           <button key={item} className={`btn ${view === item ? 'active' : ''}`} type="button" aria-current={view === item ? 'page' : undefined} onClick={() => setView(item)}>
             {VIEW_LABELS[item]}
           </button>
@@ -891,7 +912,7 @@ function CurrentWorkspace({
           <h1>Service health</h1>
         </div>
         <div className="actions" aria-label="Filter services by health">
-          {(['all', 'bookmarks', 'attention', 'running', 'stopped'] as const).map((filter) => (
+          {(['all', 'attention', 'running', 'stopped'] as const).map((filter) => (
             <button key={filter} className={`btn ${healthFilter === filter ? 'active' : ''}`} type="button" aria-pressed={healthFilter === filter} onClick={() => setHealthFilter(filter)}>
               {filter === 'attention' ? 'needs attention' : filter}
             </button>
@@ -903,7 +924,6 @@ function CurrentWorkspace({
           <Metric value={loading && services.length === 0 ? '...' : String(services.length)} label="services" tone="ok" />
           <Metric value={loading && services.length === 0 ? '...' : String(attentionCount)} label="need attention" tone={attentionCount > 0 ? 'warn' : 'ok'} />
           <Metric value={loading && services.length === 0 ? '...' : String(services.filter((service) => service.status === 'running').length)} label="running" tone="ok" />
-          <Metric value={loading && services.length === 0 ? '...' : String(services.filter(serviceIsBookmarked).length)} label="bookmarks" tone="info" />
           <Metric value={loading && services.length === 0 ? '...' : String(portsHeld)} label="ports held" tone="info" />
         </section>
 
@@ -931,7 +951,7 @@ function CurrentWorkspace({
                     {service.kind} / {formatPort(service.port)}
                   </span>
                   <span className={`pill ${toneClass(service.statusTone)}`}>{service.statusLabel.toLowerCase()}</span>
-                  {serviceIsBookmarked(service) ? <span className="pill mono">edge</span> : null}
+                  {service.edgeUrls?.length ? <span className="pill mono">edge</span> : null}
                   {serviceNeedsAttention(service) ? <span className="service-reason">{service.reviewReasons?.[0] || 'Operational state needs attention'}</span> : null}
                   {matchReason && matchReason !== 'name' ? <span className="match-reason">Matched in {matchReason}</span> : null}
                 </button>
@@ -967,6 +987,58 @@ function CurrentWorkspace({
   );
 }
 
+function LaunchpadWorkspace({ services, query }: { services: ServiceRecord[]; query: string }) {
+  return (
+    <main className="pane">
+      <div className="pane-body">
+        <TailscaleLaunchpad services={services} query={query} />
+      </div>
+    </main>
+  );
+}
+
+function TailscaleLaunchpad({ services, query }: { services: ServiceRecord[]; query: string }) {
+  const exported = Array.from(
+    new Map(
+      services.flatMap((service) => (service.edgeUrls || []).map((url) => {
+        const launchUrl = serviceLaunchUrl(service, url);
+        return [`${service.id}\u0000${launchUrl}`, { service, url, launchUrl }] as const;
+      })),
+    ).values(),
+  ).filter(({ service, url }) => matchesWorkspaceQuery(query, service.name, service.detail, service.tags, url));
+
+  return (
+    <section className="launchpad" aria-labelledby="tailscale-launchpad-title">
+      <div className="launchpad-head">
+        <div>
+          <div className="label">Tailscale private edge</div>
+          <h1 id="tailscale-launchpad-title">Quick launchpad</h1>
+          <p>Open apps exported to your tailnet.</p>
+        </div>
+        <span className="pill info mono">{exported.length} {exported.length === 1 ? 'link' : 'links'}</span>
+      </div>
+      {exported.length > 0 ? (
+        <div className="launchpad-grid">
+          {exported.map(({ service, launchUrl }, index) => {
+            return (
+              <a className="launchpad-item" href={launchUrl} target="_blank" rel="noreferrer" key={`${service.id}-${launchUrl}-${index}`}>
+                <span className="launchpad-icon" aria-hidden="true">↗</span>
+                <span className="launchpad-copy">
+                  <strong>{service.name}</strong>
+                  <span className="mono">{documentationHost(launchUrl)}</span>
+                </span>
+                <span className="launchpad-open">Open</span>
+              </a>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="launchpad-empty">No apps are currently exported. Apply a Private Edge route to add one here.</div>
+      )}
+    </section>
+  );
+}
+
 function ServiceDetail({
   service,
   services,
@@ -995,7 +1067,9 @@ function ServiceDetail({
   const runtimeLabel = service.runtime ? `${service.runtime.toUpperCase()} / ${runtimeIdentity}` : runtimeIdentity;
   const compliance = service.compliance?.summary || (service.blueprint ? 'Blueprint parsed' : 'No blueprint check');
   const attentionReasons = (service.reviewReasons || []).filter((reason) => !/^No service documentation/i.test(reason));
-  const mainPageUrl = networkEdgeEnabled ? service.edgeUrls?.[0] : undefined;
+  const mainPageUrl = networkEdgeEnabled && service.edgeUrls?.[0]
+    ? serviceLaunchUrl(service, service.edgeUrls[0])
+    : undefined;
 
   function serviceLink(name: string) {
     const target = services.find((candidate) => candidate.name === name);
@@ -1871,10 +1945,10 @@ function ConfigLine({ label, value }: { label: string; value: string }) {
   );
 }
 
-function MobileNav({ view, setView }: { view: View; setView: (view: View) => void }) {
+function MobileNav({ view, setView, networkEdgeEnabled }: { view: View; setView: (view: View) => void; networkEdgeEnabled: boolean }) {
   return (
     <nav className="mobile-nav" aria-label="Mobile screen navigation">
-      {(['current', 'extensions', 'resources'] as View[]).map((item) => (
+      {(['current', ...(networkEdgeEnabled ? ['launchpad' as View] : []), 'extensions', 'resources'] as View[]).map((item) => (
         <button key={item} className={view === item ? 'active' : ''} type="button" aria-current={view === item ? 'page' : undefined} onClick={() => setView(item)}>
           {VIEW_LABELS[item]}
         </button>

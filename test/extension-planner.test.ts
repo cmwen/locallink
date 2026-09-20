@@ -363,6 +363,7 @@ test('Tailscale+Caddy applies a validated managed block and reloads the workspac
   assert.equal(plan.routePlan.applySupported, true);
   const generatedCaddyfile = plan.routePlan.generatedFiles[0]?.content || '';
   assert.match(generatedCaddyfile, /reverse_proxy http:\/\/127\.0\.0\.1:5050/);
+  assert.match(generatedCaddyfile, /header_up X-Forwarded-Proto https/);
   assert.match(
     generatedCaddyfile,
     new RegExp(`http://127\\.0\\.0\\.1:${plan.routePlan.routes[0]?.proxyPort} \\{\\n  bind 127\\.0\\.0\\.1`),
@@ -438,6 +439,7 @@ test('Tailscale+Caddy applies declared local-origin and anonymous-CORS compatibi
   const generatedCaddyfile = plan.routePlan.generatedFiles.find((file) => file.kind === 'caddyfile')?.content || '';
   assert.match(generatedCaddyfile, /header_up Host 127\.0\.0\.1:5000/);
   assert.match(generatedCaddyfile, /header_up Origin http:\/\/127\.0\.0\.1:5000/);
+  assert.match(generatedCaddyfile, /header_up X-Forwarded-Proto https/);
   assert.match(generatedCaddyfile, /header_down Access-Control-Allow-Origin \*/);
 });
 

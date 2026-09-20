@@ -38,6 +38,12 @@ test('agent skill installer installs, detects unchanged content, and updates man
   assert.equal(unchanged.status, 'unchanged');
   assert.equal(unchanged.contentDigest, installed.contentDigest);
 
+  await fs.appendFile(path.join(installed.path, 'SKILL.md'), '\nLocal drift.\n', 'utf8');
+  const repaired = await installBundledAgentSkill(options);
+  assert.equal(repaired.status, 'updated');
+  assert.equal(repaired.contentDigest, installed.contentDigest);
+  assert.doesNotMatch(await fs.readFile(path.join(repaired.path, 'SKILL.md'), 'utf8'), /Local drift/);
+
   await fs.appendFile(path.join(source, 'SKILL.md'), '\nUpdated instructions.\n', 'utf8');
   const updated = await installBundledAgentSkill(options);
   assert.equal(updated.status, 'updated');

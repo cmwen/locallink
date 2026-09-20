@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   buildManagedTailscaleServeConfig,
   discoverServiceEdgeUrls,
+  parseCaddyReverseProxyPorts,
   parseTailscaleServeRoutes,
   planPrivateEdgeRouteRemovals,
   planPrivateEdgeRoutes,
@@ -102,6 +103,25 @@ test('discoverServiceEdgeUrls associates active routes with declared service por
   assert.deepEqual(routes.get('dashboard'), ['https://workstation.example-tailnet.ts.net/']);
   assert.deepEqual(routes.get('queue'), ['https://workstation.example-tailnet.ts.net/queue']);
   assert.equal(routes.has('local-only'), false);
+});
+
+test('parseCaddyReverseProxyPorts resolves static Caddy listeners and environment-backed ports', () => {
+  const ports = parseCaddyReverseProxyPorts(`
+:2010 {
+  reverse_proxy host.docker.internal:4011
+}
+
+:{$LITELLM_EDGE_PORT} {
+  reverse_proxy {$PWA_EDGE_UPSTREAM_HOST}:{$LITELLM_PORT}
+}
+`, {
+    LITELLM_EDGE_PORT: '2020',
+    PWA_EDGE_UPSTREAM_HOST: 'host.docker.internal',
+    LITELLM_PORT: '4000',
+  });
+
+  assert.deepEqual(ports.get('2010'), ['4011']);
+  assert.deepEqual(ports.get('2020'), ['4000']);
 });
 
 test('discoverServiceEdgeUrls skips probing when Network Edge is disabled', async () => {

@@ -246,9 +246,12 @@ locallink init my-local-infra
 
 The generated starter is extension-free: it includes the dashboard declaration, isolated Docker/PM2 namespaces, automatic dashboard port selection, the Dockerfile blueprint convention, optional service metadata fields, the Phase 2 advisor toggle, and the agent guardrails file. Private Edge, identity, and observability capabilities can be added later per workspace.
 
-### Install the coding-agent skill
+### Inject or install the coding-agent skill
 
 ```bash
+# Inject the skill into this workspace (recommended for project collaborators)
+locallink skill inject
+
 # Default Codex home: ${CODEX_HOME:-~/.codex}/skills
 locallink skill install
 
@@ -258,6 +261,8 @@ locallink skill install --target agents
 # Keep the skill inside this workspace
 locallink skill install --target workspace
 ```
+
+`locallink skill inject` writes the bundled skill to `.agents/skills/locallink-workspace` in the current workspace so compatible coding agents can discover the project-specific instructions. It is the workspace-first equivalent of `locallink skill install --target workspace`.
 
 LocalLink-managed copies update idempotently by content digest. If an unowned `locallink-workspace` skill already exists, installation stops without changing it. `--force` explicitly moves that directory to a timestamped backup before installing the bundled version.
 

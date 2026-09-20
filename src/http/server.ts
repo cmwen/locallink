@@ -356,6 +356,7 @@ export function createHttpServer(context: AppContext) {
   app.get('/', async (_request, reply) => reply.sendFile('index.html'));
   app.get('/dashboard', async (_request, reply) => reply.sendFile('dashboard.html'));
   app.get('/current', async (_request, reply) => reply.sendFile('dashboard.html'));
+  app.get('/launchpad', async (_request, reply) => reply.sendFile('dashboard.html'));
   app.get('/external', async (_request, reply) => reply.sendFile('dashboard.html'));
   app.get('/extensions', async (_request, reply) => reply.sendFile('dashboard.html'));
   app.get('/resources', async (_request, reply) => reply.sendFile('dashboard.html'));

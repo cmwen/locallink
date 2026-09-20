@@ -6,7 +6,7 @@ import {
   filterServices,
   matchesWorkspaceQuery,
   selectVisibleService,
-  serviceIsBookmarked,
+  serviceLaunchUrl,
   serviceMatchReason,
   serviceNeedsAttention,
 } from '../frontend/src/view-model';
@@ -70,26 +70,9 @@ test('workspace query matching can scope extension and port content', () => {
   assert.equal(matchesWorkspaceQuery('no match', 'Dashboard', 'Stable proxy URLs'), false);
 });
 
-test('bookmarked services are detected through edge urls', () => {
-  assert.equal(serviceIsBookmarked(service()), false);
-  assert.equal(serviceIsBookmarked(service({ edgeUrls: [] })), false);
-  assert.equal(serviceIsBookmarked(service({ edgeUrls: ['https://dash.example-tailnet.ts.net/'] })), true);
-});
-
-test('bookmarks filter keeps only services with edge urls', () => {
-  const queue = service();
-  const dashboard = service({ id: 'dashboard', name: 'Vite PWA UI', port: '5173', dependsOn: [], edgeUrls: ['https://dash.example-tailnet.ts.net/'] });
-  const visible = filterServices([queue, dashboard], 'bookmarks', '');
-
-  assert.equal(visible.length, 1, 'only edge-published services remain visible');
-  assert.equal(visible[0].id, 'dashboard');
-});
-
-test('bookmarks filter still respects the search query', () => {
-  const dashboard = service({ id: 'dashboard', name: 'Vite PWA UI', port: '5173', dependsOn: [], edgeUrls: ['https://dash.example-tailnet.ts.net/'] });
-  const gateway = service({ id: 'gateway', name: 'AgentGateway Proxy', port: '443', dependsOn: [], edgeUrls: ['https://gateway.example-tailnet.ts.net/'] });
-  const visible = filterServices([dashboard, gateway], 'bookmarks', 'gateway');
-
-  assert.equal(visible.length, 1);
-  assert.equal(visible[0].id, 'gateway');
+test('LiteLLM launch links target its admin UI path', () => {
+  const litellm = service({ id: 'litellm', name: 'LiteLLM Proxy', edgeUrls: ['https://llm.example-tailnet.ts.net/'] });
+  assert.equal(serviceLaunchUrl(litellm, litellm.edgeUrls![0]), 'https://llm.example-tailnet.ts.net/ui/');
+  assert.equal(serviceLaunchUrl(litellm, 'https://llm.example-tailnet.ts.net/api'), 'https://llm.example-tailnet.ts.net/api');
+  assert.equal(serviceLaunchUrl(service(), 'https://queue.example-tailnet.ts.net/'), 'https://queue.example-tailnet.ts.net/');
 });

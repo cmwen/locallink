@@ -1,6 +1,6 @@
 import type { ServiceRecord } from './types';
 
-export type ServiceHealthFilter = 'all' | 'bookmarks' | 'attention' | 'running' | 'stopped';
+export type ServiceHealthFilter = 'all' | 'attention' | 'running' | 'stopped';
 
 const DOCUMENTATION_ONLY_REASON = /^No service documentation/i;
 
@@ -8,8 +8,21 @@ function includesQuery(value: string | undefined, query: string): boolean {
   return Boolean(value?.toLowerCase().includes(query));
 }
 
-export function serviceIsBookmarked(service: ServiceRecord): boolean {
-  return Boolean(service.edgeUrls?.length);
+/**
+ * Some services expose their browser UI below the root of their API listener.
+ * LiteLLM's proxy is one such service: the admin UI lives at /ui/.
+ */
+export function serviceLaunchUrl(service: ServiceRecord, url: string): string {
+  const identity = `${service.id} ${service.name} ${service.runtimeName || ''}`;
+  if (!/lite[\s_-]?llm/i.test(identity)) return url;
+
+  try {
+    const parsed = new URL(url);
+    if (parsed.pathname === '/' || parsed.pathname === '') parsed.pathname = '/ui/';
+    return parsed.toString();
+  } catch {
+    return url;
+  }
 }
 
 export function serviceNeedsAttention(service: ServiceRecord): boolean {
@@ -53,7 +66,6 @@ export function filterServices(
   return services.filter((service) => {
     const healthMatches =
       filter === 'all' ||
-      (filter === 'bookmarks' && serviceIsBookmarked(service)) ||
       (filter === 'attention' && serviceNeedsAttention(service)) ||
       (filter === 'running' && service.status === 'running') ||
       (filter === 'stopped' && service.status === 'stopped');

@@ -167,7 +167,8 @@ export async function installBundledAgentSkill(
       { targetPath },
     );
   }
-  if (manifest?.contentDigest === digest) {
+  const installedDigest = manifest ? await contentDigest(targetPath) : undefined;
+  if (manifest?.contentDigest === digest && installedDigest === digest) {
     return {
       skill: LOCALLINK_AGENT_SKILL_NAME,
       target,
