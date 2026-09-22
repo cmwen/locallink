@@ -404,7 +404,7 @@ export class RuntimeResolver {
       return {
         ...definition,
         port: definition.port || '—',
-        edgeUrls: edgeUrlsByService.get(definition.id),
+        edgeUrls: runtimeState.status === 'running' ? edgeUrlsByService.get(definition.id) : undefined,
         ...runtimeState,
         reviewReasons,
       };

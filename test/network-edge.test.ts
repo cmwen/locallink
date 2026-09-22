@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import {
   buildManagedTailscaleServeConfig,
+  configuredPrivateEdgePort,
   discoverServiceEdgeUrls,
   parseCaddyReverseProxyPorts,
   parseTailscaleServeRoutes,
@@ -136,10 +137,8 @@ test('discoverServiceEdgeUrls skips probing when Network Edge is disabled', asyn
   assert.equal(routes.size, 0);
 });
 
-test('discoverServiceEdgeUrls does not infer exposure without an explicit workspace selection', async () => {
-  let probed = false;
+test('discoverServiceEdgeUrls follows a live route even when workspace selection is stale', async () => {
   const commandRunner: CommandRunner = async () => {
-    probed = true;
     return { ok: true, code: 0, signal: null, stdout: SERVE_STATUS, stderr: '', timedOut: false };
   };
   const unselected = extension();
@@ -147,17 +146,16 @@ test('discoverServiceEdgeUrls does not infer exposure without an explicit worksp
 
   const routes = await discoverServiceEdgeUrls([unselected], [service('dashboard', '4010')], commandRunner);
 
-  assert.equal(probed, false);
-  assert.equal(routes.size, 0);
+  assert.deepEqual(routes.get('dashboard'), ['https://workstation.example-tailnet.ts.net/']);
 });
 
-test('discoverServiceEdgeUrls includes the configured Pocket ID issuer owned by the edge sidecar', async () => {
+test('discoverServiceEdgeUrls includes the live Pocket ID issuer owned by the edge sidecar', async () => {
   const commandRunner: CommandRunner = async () => ({
-    ok: false,
-    code: 1,
+    ok: true,
+    code: 0,
     signal: null,
-    stdout: '',
-    stderr: 'host daemon does not own the sidecar route',
+    stdout: SERVE_STATUS,
+    stderr: '',
     timedOut: false,
   });
   const pocketIdExtension: WorkspaceExtension = {
@@ -176,7 +174,7 @@ test('discoverServiceEdgeUrls includes the configured Pocket ID issuer owned by 
     { POCKET_ID_APP_URL: 'https://pocket-id.example.ts.net:7452' },
   );
 
-  assert.deepEqual(routes.get('pocket-id'), ['https://pocket-id.example.ts.net:7452']);
+  assert.deepEqual(routes.get('pocket-id'), ['https://pocket-id.example-tailnet.ts.net:8443/']);
 });
 
 test('Tailscale+Caddy blocks native Docker Engine sidecars without a host gateway', async () => {
@@ -412,6 +410,76 @@ test('planPrivateEdgeRoutes preserves an owned listener instead of reallocating 
   assert.equal(plan.state, 'in-sync');
   assert.equal(plan.routes[0]?.httpsPort, '7452');
   assert.equal(plan.routes[0]?.url, 'https://workspace.tailnet.ts.net:7452');
+});
+
+test('workspace-configured Tailscale ports take precedence over owned and generated ports', async () => {
+  const commandRunner: CommandRunner = async (_command, args) => ({
+    ok: true,
+    code: 0,
+    signal: null,
+    stdout: args[0] === 'status'
+      ? JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'workspace.tailnet.ts.net.' } })
+      : '{}',
+    stderr: '',
+    timedOut: false,
+  });
+
+  const plan = await planPrivateEdgeRoutes(
+    'workspace-a',
+    [{ id: 'open-connector', name: 'OpenConnector', port: '3000', configuredHttpsPort: '7456' }],
+    'tailscale',
+    commandRunner,
+    '31000',
+    [],
+    undefined,
+    new Map([['open-connector', '7452']]),
+  );
+
+  assert.equal(plan.routes[0]?.httpsPort, '7456');
+  assert.deepEqual(plan.routes[0]?.apply.args, [
+    'serve', '--bg', '--yes', '--https=7456', 'http://127.0.0.1:3000',
+  ]);
+});
+
+test('configured workspace environment resolves service Tailscale ports and HTTPS URL ports', () => {
+  assert.equal(
+    configuredPrivateEdgePort(
+      { id: 'openconnector', name: 'OpenConnector', runtimeName: 'open-connector' },
+      { OPEN_CONNECTOR_TAILSCALE_PORT: '7456' },
+    ),
+    '7456',
+  );
+  assert.equal(
+    configuredPrivateEdgePort(
+      { id: 'litellm', name: 'LiteLLM', runtimeName: 'litellm' },
+      { LITELLM_SSO_BASE_URL: 'https://edge.example.ts.net:7453' },
+    ),
+    '7453',
+  );
+  assert.equal(
+    configuredPrivateEdgePort(
+      {
+        id: 'litellm-model-gateway',
+        name: 'LiteLLM Model Gateway',
+        runtimeName: 'litellm',
+        integrations: { privateEdge: { publicOriginEnv: 'LITELLM_SSO_BASE_URL' } },
+      },
+      { LITELLM_SSO_BASE_URL: 'https://edge.example.ts.net:7453' },
+    ),
+    '7453',
+  );
+  assert.equal(
+    configuredPrivateEdgePort(
+      {
+        id: 'dashboard',
+        name: 'Dashboard',
+        runtimeName: 'dashboard',
+        integrations: { identity: { callbackPath: '/auth/oidc/callback', postLogoutPath: '/', scopes: [], envPrefix: 'LOCALLINK_DASHBOARD' } },
+      },
+      { LOCALLINK_DASHBOARD_OIDC_REDIRECT_URI: 'https://edge.example.ts.net:47624/auth/oidc/callback' },
+    ),
+    '47624',
+  );
 });
 
 test('planPrivateEdgeRoutes detects active listeners and conflicts instead of replacing them', async () => {

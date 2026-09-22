@@ -136,6 +136,10 @@ export interface ServiceObservabilityIntegration {
 export interface ServicePrivateEdgeIntegration {
   localOrigin?: boolean;
   anonymousCors?: boolean;
+  /** Environment variable containing the configured public HTTPS listener port. */
+  publicPortEnv?: string;
+  /** Environment variable containing the configured public HTTPS origin. */
+  publicOriginEnv?: string;
 }
 
 export interface ServiceIntegrations {

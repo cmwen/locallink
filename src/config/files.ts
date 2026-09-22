@@ -355,7 +355,15 @@ function normalizePrivateEdgeIntegration(input: unknown): ServicePrivateEdgeInte
   const value = input as Record<string, unknown>;
   const localOrigin = value.localOrigin === true;
   const anonymousCors = value.anonymousCors === true;
-  return localOrigin || anonymousCors ? { localOrigin, anonymousCors } : undefined;
+  const publicPortEnv = typeof value.publicPortEnv === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.publicPortEnv)
+    ? value.publicPortEnv
+    : undefined;
+  const publicOriginEnv = typeof value.publicOriginEnv === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.publicOriginEnv)
+    ? value.publicOriginEnv
+    : undefined;
+  return localOrigin || anonymousCors || publicPortEnv || publicOriginEnv
+    ? { localOrigin, anonymousCors, publicPortEnv, publicOriginEnv }
+    : undefined;
 }
 
 function normalizeIntegrations(
@@ -381,7 +389,13 @@ function integrationsFromLabels(
     'locallink.oidcEnvPrefix',
   ].some((key) => key in labels);
   const observabilityDeclared = 'locallink.otelServiceName' in labels;
-  if (!identityDeclared && !observabilityDeclared) return undefined;
+  const privateEdgeDeclared = [
+    'locallink.privateEdgePortEnv',
+    'locallink.privateEdgeOriginEnv',
+    'locallink.privateEdgeLocalOrigin',
+    'locallink.privateEdgeAnonymousCors',
+  ].some((key) => key in labels);
+  if (!identityDeclared && !observabilityDeclared && !privateEdgeDeclared) return undefined;
   return {
     identity: identityDeclared
       ? normalizeIdentityIntegration({
@@ -395,6 +409,14 @@ function integrationsFromLabels(
       ? normalizeObservabilityIntegration({
           serviceName: labels['locallink.otelServiceName'],
         }, serviceId)
+      : undefined,
+    privateEdge: privateEdgeDeclared
+      ? normalizePrivateEdgeIntegration({
+          publicPortEnv: labels['locallink.privateEdgePortEnv'],
+          publicOriginEnv: labels['locallink.privateEdgeOriginEnv'],
+          localOrigin: labels['locallink.privateEdgeLocalOrigin'] === 'true',
+          anonymousCors: labels['locallink.privateEdgeAnonymousCors'] === 'true',
+        })
       : undefined,
   };
 }

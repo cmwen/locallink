@@ -4,6 +4,7 @@ import path from 'node:path';
 import type {
   PrivateEdgeRouteOwnership,
   ServiceDefinition,
+  ServiceIntegrations,
   ServicePrivateEdgeIntegration,
   WorkspaceExtension,
 } from '../shared/contracts';
@@ -47,8 +48,11 @@ export interface PrivateEdgeRouteCommand {
 }
 
 export type PrivateEdgeService = Pick<ServiceDefinition, 'id' | 'name'> & {
+  runtimeName?: string;
+  envVars?: string[];
   port: string;
-  integrations?: { privateEdge?: ServicePrivateEdgeIntegration };
+  configuredHttpsPort?: string;
+  integrations?: Pick<ServiceIntegrations, 'identity' | 'privateEdge'>;
 };
 
 export interface PrivateEdgePlannedRoute {
@@ -123,19 +127,6 @@ export interface PrivateEdgeRemovalPlan {
 interface TailscaleStatus {
   BackendState?: string;
   Self?: { DNSName?: string };
-}
-
-function normalizeConfiguredEdgeUrl(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-
-  try {
-    const url = new URL(value);
-    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) return undefined;
-    if (url.hostname === 'localhost' || url.hostname.endsWith('.example') || url.hostname.endsWith('.example.com') || url.hostname.includes('example-tailnet')) return undefined;
-    return url.toString().replace(/\/$/, '');
-  } catch {
-    return undefined;
-  }
 }
 
 function proxyTargetPort(proxy: string | undefined): string | undefined {
@@ -255,6 +246,80 @@ function configuredHttpsPortStart(configuredStart?: string): number | undefined 
   return undefined;
 }
 
+function validHttpsPort(value: unknown): string | undefined {
+  const port = Number(String(value ?? '').trim());
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? String(port) : undefined;
+}
+
+function environmentPrefix(value: string | undefined): string | undefined {
+  const prefix = value
+    ?.trim()
+    .replace(/[^A-Za-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toUpperCase();
+  return prefix || undefined;
+}
+
+function httpsPortFromUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:') return undefined;
+    return validHttpsPort(url.port || '443');
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Resolve a workspace-owned public HTTPS port for a service. Explicit service
+ * configuration is intentionally separate from LocalLink's generated-port
+ * policy so integrations can keep stable URLs across workspaces.
+ */
+export function configuredPrivateEdgePort(
+  service: Pick<PrivateEdgeService, 'id' | 'name' | 'runtimeName' | 'envVars' | 'configuredHttpsPort' | 'integrations'>,
+  env: Record<string, string> = {},
+): string | undefined {
+  const configured = validHttpsPort(service.configuredHttpsPort);
+  if (configured) return configured;
+
+  const privateEdge = service.integrations?.privateEdge;
+  const explicitKeys = [
+    privateEdge?.publicPortEnv,
+    privateEdge?.publicOriginEnv,
+    service.integrations?.identity?.envPrefix
+      ? `${service.integrations.identity.envPrefix}_OIDC_REDIRECT_URI`
+      : undefined,
+  ].filter((key): key is string => Boolean(key));
+
+  for (const key of [...new Set(explicitKeys)]) {
+    const port = key.endsWith('_PORT')
+      ? validHttpsPort(env[key])
+      : httpsPortFromUrl(env[key]);
+    if (port) return port;
+  }
+
+  const prefixes = [...new Set([
+    environmentPrefix(service.runtimeName),
+    environmentPrefix(service.id),
+    environmentPrefix(service.name),
+  ].filter((value): value is string => Boolean(value)))];
+  const suffixes = ['_TAILSCALE_PORT', '_SSO_BASE_URL', '_ORIGIN', '_BASE_URL'];
+  const keys = [
+    ...prefixes.flatMap((prefix) => suffixes.map((suffix) => `${prefix}${suffix}`)),
+    ...(service.envVars || []).filter((key) => prefixes.some((prefix) => suffixes.some((suffix) => key === `${prefix}${suffix}`))),
+  ];
+
+  for (const key of [...new Set(keys)]) {
+    const value = env[key];
+    const port = key.endsWith('_TAILSCALE_PORT')
+      ? validHttpsPort(value)
+      : httpsPortFromUrl(value);
+    if (port) return port;
+  }
+  return undefined;
+}
+
 function generatedHttpsPort(workspaceId: string, serviceId: string): number {
   const hash = createHash('sha256').update(`${workspaceId}\0${serviceId}`).digest().readUInt32BE(0);
   return 10000 + (hash % 50000);
@@ -326,22 +391,43 @@ export async function planPrivateEdgeRoutes(
     }).find(Boolean);
   const configuredStart = configuredHttpsPortStart(configuredPortStart);
   const ordered = [...services].sort((left, right) => left.id.localeCompare(right.id));
+  const configuredPorts = new Map(
+    ordered
+      .map((service) => [service.id, validHttpsPort(service.configuredHttpsPort)] as const)
+      .filter((entry): entry is [string, string] => Boolean(entry[1])),
+  );
+  const configuredPortCounts = new Map<number, number>();
+  for (const port of configuredPorts.values()) {
+    const numericPort = Number(port);
+    configuredPortCounts.set(numericPort, (configuredPortCounts.get(numericPort) || 0) + 1);
+  }
+  const reservedConfiguredPorts = new Set([...configuredPortCounts.keys()]);
   const generatedPorts = new Set<number>();
   const routes = ordered.map((service, index): PrivateEdgePlannedRoute => {
+    const configuredPort = configuredPorts.get(service.id);
     const preferredPort = Number(routePreferences.get(service.id));
-    let numericPort = Number.isInteger(preferredPort) && preferredPort >= 1 && preferredPort <= 65535
+    const ownedPort = Number.isInteger(preferredPort) && preferredPort >= 1 && preferredPort <= 65535
       ? preferredPort
-      : configuredStart === undefined
-        ? generatedHttpsPort(workspaceId, service.id)
-        : configuredStart + index;
+      : undefined;
+    const hasExplicitPort = configuredPort !== undefined;
+    let numericPort = hasExplicitPort
+      ? Number(configuredPort)
+      : ownedPort !== undefined && !reservedConfiguredPorts.has(ownedPort)
+        ? ownedPort
+        : configuredStart === undefined
+          ? generatedHttpsPort(workspaceId, service.id)
+          : configuredStart + index;
     if (numericPort > 65535) numericPort = 1024 + (numericPort - 65536);
-    while (generatedPorts.has(numericPort)) numericPort = numericPort === 65535 ? 1024 : numericPort + 1;
+    while (!hasExplicitPort && (generatedPorts.has(numericPort) || reservedConfiguredPorts.has(numericPort))) {
+      numericPort = numericPort === 65535 ? 1024 : numericPort + 1;
+    }
     generatedPorts.add(numericPort);
     const httpsPort = String(numericPort);
     const occupants = routesByListener.get(httpsPort) || [];
     const configured = occupants.some((route) => route.targetPort === service.port);
-    const active = connected && configured;
-    const conflict = !configured && occupants.length > 0;
+    const duplicateConfiguredPort = hasExplicitPort && configuredPortCounts.get(numericPort)! > 1;
+    const active = connected && configured && !duplicateConfiguredPort;
+    const conflict = duplicateConfiguredPort || (!configured && occupants.length > 0);
     const apply = { command, args: [...commandArgsPrefix, 'serve', '--bg', '--yes', `--https=${httpsPort}`, `http://127.0.0.1:${service.port}`] };
     const rollback = { command, args: [...commandArgsPrefix, 'serve', '--yes', `--https=${httpsPort}`, 'off'] };
     return {
@@ -352,10 +438,16 @@ export async function planPrivateEdgeRoutes(
       url: routeUrl(hostname, httpsPort),
       status: active ? 'active' : conflict ? 'conflict' : 'missing',
       detail: active
-        ? 'The generated listener already targets this workspace service.'
+        ? hasExplicitPort
+          ? 'The workspace-configured listener already targets this workspace service.'
+          : 'The generated listener already targets this workspace service.'
         : conflict
-          ? `HTTPS port ${httpsPort} is already owned by another Tailscale Serve route.`
-          : 'This listener can be added without replacing an observed root Serve route.',
+          ? duplicateConfiguredPort
+            ? `HTTPS port ${httpsPort} is configured for more than one workspace service.`
+            : `HTTPS port ${httpsPort} is already owned by another Tailscale Serve route.`
+          : hasExplicitPort
+            ? 'This workspace-configured listener can be added without replacing an observed root Serve route.'
+            : 'This listener can be added without replacing an observed root Serve route.',
       apply,
       rollback,
     };
@@ -545,8 +637,9 @@ function generatedCaddyPort(workspaceId: string, serviceId: string): number {
 }
 
 function generatedCaddyAdminPort(workspaceId: string): number {
-  const hash = createHash('sha256').update(`${workspaceId}\0caddy-admin`).digest().readUInt32BE(0);
-  return 61000 + (hash % 4000);
+  // caddy reload targets its deterministic local admin endpoint by default.
+  // Keep this internal control port stable and separate from public listeners.
+  return 2019;
 }
 
 function pathRelative(workspaceRoot: string | undefined, candidate: string): string {
@@ -923,24 +1016,16 @@ export async function discoverServiceEdgeUrls(
 ): Promise<Map<string, string[]>> {
   const networkEdge = extensions.find((extension) => extension.kind === 'network-edge' && extension.enabled && extension.status !== 'disabled');
   if (!networkEdge) return new Map();
-  const selectedPorts = new Set(networkEdge.exposedPorts.filter((port) => Boolean(port && port !== '—')));
-  if (selectedPorts.size === 0) return new Map();
 
   const urlsByService = new Map<string, string[]>();
-  const pocketIdExtension = extensions.find((extension) => extension.kind === 'identity-provider' && extension.enabled && extension.status !== 'disabled');
-  const pocketIdUrl = pocketIdExtension ? normalizeConfiguredEdgeUrl(env.POCKET_ID_APP_URL) : undefined;
-  if (pocketIdExtension && pocketIdUrl) {
-    const pocketIdService = services.find((service) => service.id === pocketIdExtension.id || service.runtimeName === pocketIdExtension.id);
-    if (pocketIdService?.port && selectedPorts.has(pocketIdService.port)) urlsByService.set(pocketIdService.id, [pocketIdUrl]);
-  }
 
   const ownership = workspaceRoot
     ? (await new WorkspaceStateRepository(path.join(workspaceRoot, '.locallink', 'workspace-state.json')).load()).privateEdgeRoutes
     : [];
-  const ownsSelectedRoutes = ownership.some((route) => route.status === 'active' && selectedPorts.has(route.targetPort));
+  const ownsActiveRoutes = ownership.some((route) => route.status === 'active');
 
   let result = await probeWorkspaceServeStatus(workspaceRoot, networkEdge, commandRunner);
-  if ((!result || !result.ok) && ownsSelectedRoutes) {
+  if ((!result || !result.ok) && ownsActiveRoutes) {
     await new Promise((resolve) => setTimeout(resolve, 400));
     result = await probeWorkspaceServeStatus(workspaceRoot, networkEdge, commandRunner);
   }
@@ -959,7 +1044,7 @@ export async function discoverServiceEdgeUrls(
 
   for (const service of services) {
     const port = service.port?.trim();
-    if (!port || port === '—' || !selectedPorts.has(port)) continue;
+    if (!port || port === '—') continue;
     const owned = ownership.filter((route) => route.serviceId === service.id && route.status === 'active');
     const urls = [
       ...routes.filter((route) => route.targetPort === port).map((route) => route.url),

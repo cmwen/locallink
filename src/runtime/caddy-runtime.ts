@@ -102,10 +102,13 @@ function caddyConfigMount(workspaceRoot: string, service: ComposeService): { pat
       source = typeof value.source === 'string' ? value.source : undefined;
       target = typeof value.target === 'string' ? value.target : undefined;
     }
-    if (!source || target !== '/etc/caddy/Caddyfile') continue;
+    if (!source || (target !== '/etc/caddy/Caddyfile' && target !== '/etc/caddy')) continue;
     if (!source.startsWith('.') && !path.isAbsolute(source)) return undefined;
-    const configPath = path.resolve(workspaceRoot, source);
-    return isInsideWorkspace(workspaceRoot, configPath) ? { path: configPath, target } : undefined;
+    const mountPath = path.resolve(workspaceRoot, source);
+    const configPath = target === '/etc/caddy' ? path.join(mountPath, 'Caddyfile') : mountPath;
+    return isInsideWorkspace(workspaceRoot, configPath)
+      ? { path: configPath, target: '/etc/caddy/Caddyfile' }
+      : undefined;
   }
   return undefined;
 }
