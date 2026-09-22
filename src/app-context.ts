@@ -38,14 +38,27 @@ import { WorkspaceStateRepository } from './state/workspace-state';
 import { RuntimeResolver } from './runtime/snapshot';
 import {
   buildApplicationServiceContract,
+  resolveService,
   type ApplicationServiceContract,
 } from './services/application-contract';
 import { buildOidcCheck, type OidcCheckResult } from './services/oidc-check';
+import { planAccessProfiles, renderAccessProfileCaddyfile, type AccessProfilePlanResult } from './runtime/access-profiles';
+import {
+  caddyReloadCommand,
+  caddyStartCommand,
+  caddyValidationCommand,
+  detectCaddyRuntime,
+  mergeManagedCaddyfile,
+  readWorkspaceFile,
+  writeWorkspaceCaddyfile,
+} from './runtime/caddy-runtime';
+import { detectTailscaleRuntime } from './runtime/tailscale-runtime';
+import { MdnsDiscovery } from './runtime/mdns-discovery';
 import { StartupDiagnosticsService } from './startup/diagnostics';
 import { resolvePaths } from './shared/paths';
 import { logDebug, logInfo, logWarn, mirrorBrokerEntry } from './shared/logger';
 import { normalizeLoopbackBindHost } from './shared/network';
-import { startStreamingCommand, type StreamingCommandHandle } from './shared/utils';
+import { runCommand, startStreamingCommand, type StreamingCommandHandle } from './shared/utils';
 import { TaskExecutor } from './tasks/executor';
 import {
   buildWorkspaceProcessEnv,
@@ -138,6 +151,8 @@ export class AppContext {
   private automaticExtensionReloadInFlight?: Promise<void>;
 
   private automaticExtensionReloadEnabled = false;
+
+  private localDiscoveries: MdnsDiscovery[] = [];
 
   constructor(root = process.cwd()) {
     this.paths = resolvePaths(root);
@@ -368,6 +383,128 @@ export class AppContext {
 
   async readOidcCheck(selector: string): Promise<OidcCheckResult> {
     return buildOidcCheck(await this.readApplicationContract(selector));
+  }
+
+  async readAccessProfilePlan(selector: string): Promise<AccessProfilePlanResult & { caddyfile?: string }> {
+    await this.configRepository.hydrateProcessEnv();
+    const model = await this.configRepository.loadProjectModel();
+    const service = resolveService(model.definitions, selector);
+    const declarations = service.integrations?.access?.endpoints ?? [];
+    const [caddy, tailscale, edgePlan] = await Promise.all([
+      detectCaddyRuntime(this.paths.root, runCommand),
+      detectTailscaleRuntime(this.paths.root, runCommand),
+      this.extensionPlanner.plan('private-edge'),
+    ]);
+    const route = edgePlan.routePlan.routes.find((entry) => entry.serviceId === service.id && entry.url);
+    const tailscaleHostname = route?.url ? new URL(route.url).hostname : undefined;
+    const directLan = declarations.some((entry) => entry.profile === 'lan-mdns' && entry.adapter === 'direct');
+    const plan = planAccessProfiles({
+      service: {
+        id: service.id,
+        name: service.name,
+        runtimeName: service.runtimeName,
+        runtime: service.runtime,
+        port: service.port,
+        upstreamHost: caddy.source === 'docker-compose' && caddy.networkMode !== 'host'
+          ? 'host.docker.internal'
+          : '127.0.0.1',
+        listenHost: directLan ? declarations.find((entry) => entry.targetHost)?.targetHost : '127.0.0.1',
+        loopbackOnly: !directLan,
+        lanReachable: directLan,
+      },
+      declarations,
+      runtime: {
+        tailscaleAvailable: tailscale.source !== 'missing' && tailscale.running,
+        tailscaleHostname,
+        caddyAvailable: caddy.available && caddy.manageable && caddy.hostReachable !== false,
+        mdnsAvailable: true,
+        customDnsConfigured: declarations.some((entry) => entry.profile === 'tailscale-custom-domain')
+          ? declarations.filter((entry) => entry.profile === 'tailscale-custom-domain').every((entry) => entry.dnsReady === true)
+          : undefined,
+      },
+    });
+    const caddyfile = renderAccessProfileCaddyfile(plan.profiles);
+    return { ...plan, ...(caddyfile ? { caddyfile } : {}) };
+  }
+
+  async applyAccessProfileCaddy(): Promise<{ applied: boolean; profiles: number; configPath?: string }> {
+    const model = await this.configRepository.loadProjectModel();
+    const selectors = model.definitions
+      .filter((service) => (service.integrations?.access?.endpoints.length ?? 0) > 0)
+      .map((service) => service.id);
+    const contracts = await Promise.all(selectors.map((selector) => this.readAccessProfilePlan(selector)));
+    const allProfiles = contracts.flatMap((contract) => contract.profiles);
+    const blocked = allProfiles.filter((profile) => profile.route?.caddyRequired && !profile.ready);
+    if (blocked.length > 0) {
+      const details = blocked.flatMap((profile) => profile.prerequisites.filter((item) => item.blocking).map((item) => item.detail));
+      throw new AppError('ACCESS_PROFILE_NOT_READY', details.join(' ') || 'A Caddy-backed access profile has unmet prerequisites.', 409);
+    }
+    const profiles = allProfiles
+      .filter((profile) => profile.route?.caddyRequired && profile.ready);
+    const generated = renderAccessProfileCaddyfile(profiles);
+    const runtime = await detectCaddyRuntime(this.paths.root, runCommand);
+    if (!runtime.manageable || !runtime.configPath || !runtime.configTarget || !runtime.serviceName) {
+      if (!allProfiles.some((profile) => profile.route?.caddyRequired)) return { applied: false, profiles: 0 };
+      throw new AppError('ACCESS_CADDY_NOT_MANAGEABLE', 'Caddy-backed access profiles require a workspace Docker Caddy service with a mounted Caddyfile.', 409);
+    }
+    const previous = await readWorkspaceFile(runtime.configPath) ?? '';
+    const hasManagedAccess = previous.includes('# BEGIN LOCALLINK MANAGED CUSTOM DOMAIN ROUTES')
+      || previous.includes('# BEGIN LOCALLINK MANAGED LAN MDNS ROUTES');
+    if (!hasManagedAccess && !allProfiles.some((profile) => profile.route?.caddyRequired)) {
+      return { applied: false, profiles: 0 };
+    }
+    const merged = mergeManagedCaddyfile(previous, generated);
+    const generatedPath = '.locallink/generated/access-profiles/Caddyfile';
+    await writeWorkspaceCaddyfile(this.paths.root, generatedPath, merged);
+    const validation = caddyValidationCommand(runtime, generatedPath);
+    const valid = await runCommand(validation.command, validation.args, { cwd: this.paths.root, timeoutMs: 15_000 });
+    if (!valid.ok) throw new AppError('ACCESS_CADDY_CONFIG_INVALID', valid.stderr || valid.error || 'Caddy rejected the access profile configuration.', 502);
+    try {
+      await writeWorkspaceCaddyfile(this.paths.root, path.relative(this.paths.root, runtime.configPath), merged);
+      const lifecycle = runtime.running ? caddyReloadCommand(runtime) : caddyStartCommand(runtime);
+      if (!lifecycle) throw new Error('No safe Caddy lifecycle command is available.');
+      const result = await runCommand(lifecycle.command, lifecycle.args, { cwd: this.paths.root, timeoutMs: runtime.running ? 15_000 : 30_000 });
+      if (!result.ok) throw new Error(result.stderr || result.error || `Caddy ${runtime.running ? 'reload' : 'start'} failed.`);
+    } catch (error) {
+      await writeWorkspaceCaddyfile(this.paths.root, path.relative(this.paths.root, runtime.configPath), previous);
+      throw new AppError('ACCESS_CADDY_APPLY_FAILED', error instanceof Error ? error.message : String(error), 502);
+    }
+    return { applied: true, profiles: profiles.length, configPath: path.relative(this.paths.root, runtime.configPath) };
+  }
+
+  async startLocalDiscovery(): Promise<void> {
+    await this.stopLocalDiscovery();
+    const model = await this.configRepository.loadProjectModel();
+    const services = model.definitions.filter((entry) => entry.integrations?.access?.endpoints.some((endpoint) => endpoint.profile === 'lan-mdns'));
+    for (const service of services) {
+      const contract = await this.readAccessProfilePlan(service.id);
+      for (const profile of contract.profiles) {
+        if (!profile.ready || profile.discovery?.kind !== 'mdns-dns-sd') continue;
+        if (profile.route?.caddyRequired) {
+          const runtime = await detectCaddyRuntime(this.paths.root, runCommand);
+          const active = runtime.configPath ? await readWorkspaceFile(runtime.configPath) : undefined;
+          if (!active?.includes(profile.discovery.hostname)) continue;
+        }
+        const discovery = new MdnsDiscovery({
+          hostname: profile.discovery.hostname,
+          serviceInstance: profile.discovery.instanceName,
+          serviceType: `${profile.discovery.serviceType}.local`,
+          port: profile.discovery.port,
+          publicTxt: profile.discovery.txt,
+        }, { onError: (error) => logWarn('mDNS discovery error.', { serviceId: service.id, error: error.message }) });
+        try {
+          await discovery.start();
+          this.localDiscoveries.push(discovery);
+        } catch (error) {
+          logWarn('Could not start local mDNS discovery.', { serviceId: service.id, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+    }
+  }
+
+  async stopLocalDiscovery(): Promise<void> {
+    const active = this.localDiscoveries.splice(0);
+    await Promise.allSettled(active.map((discovery) => discovery.stop()));
   }
 
   async readOnboardingReport(): Promise<WorkspaceOnboardingReport> {

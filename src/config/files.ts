@@ -18,6 +18,11 @@ import {
   type InfraConfigView,
   type ProjectModel,
   type ServiceDefinition,
+  type ServiceAccessEndpoint,
+  type ServiceAccessEndpointAdapter,
+  type ServiceAccessIntegration,
+  type ServiceAccessProfile,
+  type ServiceAccessProtocol,
   type ServiceGroup,
   type ServiceIdentityIntegration,
   type ServiceIntegrations,
@@ -366,6 +371,118 @@ function normalizePrivateEdgeIntegration(input: unknown): ServicePrivateEdgeInte
     : undefined;
 }
 
+const SERVICE_ACCESS_PROFILES = new Set<ServiceAccessProfile>([
+  'tailscale',
+  'tailscale-custom-domain',
+  'lan-mdns',
+]);
+
+const SERVICE_ACCESS_ADAPTERS = new Set<ServiceAccessEndpointAdapter>([
+  'direct',
+  'caddy',
+  'tailscale-serve',
+]);
+
+function plainConfigValue(input: unknown): unknown {
+  const node = input as { toJSON?: () => unknown } | undefined;
+  return typeof node?.toJSON === 'function' ? node.toJSON() : input;
+}
+
+function nonEmptyConfigString(input: unknown): string | undefined {
+  if (typeof input !== 'string' && typeof input !== 'number') return undefined;
+  const value = String(input).trim();
+  return value || undefined;
+}
+
+function normalizeAccessProfile(input: unknown): ServiceAccessProfile | undefined {
+  const value = nonEmptyConfigString(input)?.toLowerCase();
+  return value && SERVICE_ACCESS_PROFILES.has(value as ServiceAccessProfile)
+    ? value as ServiceAccessProfile
+    : undefined;
+}
+
+function normalizeAccessAdapter(input: unknown): ServiceAccessEndpointAdapter | undefined {
+  const value = nonEmptyConfigString(input)?.toLowerCase();
+  return value && SERVICE_ACCESS_ADAPTERS.has(value as ServiceAccessEndpointAdapter)
+    ? value as ServiceAccessEndpointAdapter
+    : undefined;
+}
+
+function normalizeAccessProtocol(input: unknown): ServiceAccessProtocol | undefined {
+  const value = nonEmptyConfigString(input)?.toLowerCase();
+  return value === 'http' || value === 'https' ? value : undefined;
+}
+
+function normalizeAccessEndpoint(input: unknown, index: number): ServiceAccessEndpoint | undefined {
+  const plain = plainConfigValue(input);
+  if (!plain || typeof plain !== 'object' || Array.isArray(plain)) return undefined;
+
+  const value = plain as Record<string, unknown>;
+  const profile = normalizeAccessProfile(value.profile);
+  if (!profile) return undefined;
+
+  const id = nonEmptyConfigString(value.id) || `${profile}-${index + 1}`;
+  const hostname = nonEmptyConfigString(value.hostname);
+  const serviceType = nonEmptyConfigString(value.serviceType ?? value.service_type);
+  const port = nonEmptyConfigString(value.port);
+  const protocol = normalizeAccessProtocol(value.protocol);
+  const adapter = normalizeAccessAdapter(value.adapter);
+  const path = nonEmptyConfigString(value.path);
+  const listenerPort = nonEmptyConfigString(value.listenerPort ?? value.listener_port);
+  const instanceName = nonEmptyConfigString(value.instanceName ?? value.instance_name);
+  const targetHost = nonEmptyConfigString(value.targetHost ?? value.target_host);
+  const txtValue = plainConfigValue(value.txt);
+  const txt = txtValue && typeof txtValue === 'object' && !Array.isArray(txtValue)
+    ? Object.fromEntries(Object.entries(txtValue as Record<string, unknown>)
+        .filter(([, entry]) => typeof entry === 'string' || typeof entry === 'number' || typeof entry === 'boolean')
+        .map(([key, entry]) => [key, String(entry)]))
+    : undefined;
+  const dnsReady = value.dnsReady === true || value.dns_ready === true;
+
+  return {
+    id,
+    profile,
+    ...(hostname ? { hostname } : {}),
+    ...(serviceType ? { serviceType } : {}),
+    ...(port ? { port } : {}),
+    ...(protocol ? { protocol } : {}),
+    ...(adapter ? { adapter } : {}),
+    ...(path ? { path } : {}),
+    ...(listenerPort ? { listenerPort } : {}),
+    ...(instanceName ? { instanceName } : {}),
+    ...(targetHost ? { targetHost } : {}),
+    ...(txt && Object.keys(txt).length > 0 ? { txt } : {}),
+    ...(dnsReady ? { dnsReady: true } : {}),
+  };
+}
+
+function normalizeAccessEndpoints(input: unknown): ServiceAccessEndpoint[] {
+  const plain = plainConfigValue(input);
+  const values = Array.isArray(plain)
+    ? plain
+    : plain && typeof plain === 'object' && !Array.isArray(plain)
+      ? Object.values(plain as Record<string, unknown>)
+      : [];
+
+  return values
+    .map((endpoint, index) => normalizeAccessEndpoint(endpoint, index))
+    .filter((endpoint): endpoint is ServiceAccessEndpoint => endpoint !== undefined);
+}
+
+function normalizeAccessIntegration(input: unknown): ServiceAccessIntegration | undefined {
+  const plain = plainConfigValue(input);
+  if (Array.isArray(plain)) {
+    const endpoints = normalizeAccessEndpoints(plain);
+    return endpoints.length > 0 ? { endpoints } : undefined;
+  }
+  if (!plain || typeof plain !== 'object') return undefined;
+
+  const value = plain as Record<string, unknown>;
+  if (value.enabled === false) return undefined;
+  const endpoints = normalizeAccessEndpoints(value.endpoints);
+  return endpoints.length > 0 ? { endpoints } : undefined;
+}
+
 function normalizeIntegrations(
   input: unknown,
   serviceId: string,
@@ -375,7 +492,58 @@ function normalizeIntegrations(
   const identity = normalizeIdentityIntegration(value.identity, normalizeEnvPrefix(serviceId, 'SERVICE'));
   const observability = normalizeObservabilityIntegration(value.observability, serviceId);
   const privateEdge = normalizePrivateEdgeIntegration(value.privateEdge);
-  return identity || observability || privateEdge ? { identity, observability, privateEdge } : undefined;
+  const access = normalizeAccessIntegration(value.access);
+  return identity || observability || privateEdge || access
+    ? { identity, observability, privateEdge, access }
+    : undefined;
+}
+
+function parseAccessLabelValue(input: string): unknown {
+  try {
+    return parseDocument(input).toJS();
+  } catch {
+    return undefined;
+  }
+}
+
+function accessIntegrationFromLabels(labels: Record<string, string>): ServiceAccessIntegration | undefined {
+  const endpoints: unknown[] = [];
+  const serialized = labels['locallink.accessEndpoints'];
+  if (serialized !== undefined) {
+    const parsed = parseAccessLabelValue(serialized);
+    if (Array.isArray(parsed)) endpoints.push(...parsed);
+  }
+
+  const singleFieldNames = new Set([
+    'id', 'profile', 'hostname', 'serviceType', 'service_type', 'port', 'protocol', 'adapter',
+    'path', 'listenerPort', 'listener_port', 'instanceName', 'instance_name', 'targetHost', 'target_host', 'dnsReady', 'dns_ready',
+  ]);
+  const single: Record<string, unknown> = {};
+  const grouped = new Map<string, Record<string, unknown>>();
+  for (const [key, labelValue] of Object.entries(labels)) {
+    if (!key.startsWith('locallink.access.')) continue;
+    const suffix = key.slice('locallink.access.'.length);
+    if (singleFieldNames.has(suffix)) {
+      single[suffix] = suffix === 'dnsReady' || suffix === 'dns_ready' ? labelValue === 'true' : labelValue;
+      continue;
+    }
+
+    const separator = suffix.indexOf('.');
+    if (separator <= 0 || separator === suffix.length - 1) continue;
+    const endpointId = suffix.slice(0, separator);
+    const field = suffix.slice(separator + 1);
+    if (!singleFieldNames.has(field)) continue;
+    const endpoint = grouped.get(endpointId) || {};
+    endpoint[field] = field === 'dnsReady' || field === 'dns_ready' ? labelValue === 'true' : labelValue;
+    grouped.set(endpointId, endpoint);
+  }
+
+  if (Object.keys(single).length > 0) endpoints.push(single);
+  for (const [id, endpoint] of grouped) {
+    endpoints.push({ id, ...endpoint });
+  }
+
+  return normalizeAccessIntegration({ endpoints });
 }
 
 function integrationsFromLabels(
@@ -395,7 +563,8 @@ function integrationsFromLabels(
     'locallink.privateEdgeLocalOrigin',
     'locallink.privateEdgeAnonymousCors',
   ].some((key) => key in labels);
-  if (!identityDeclared && !observabilityDeclared && !privateEdgeDeclared) return undefined;
+  const access = accessIntegrationFromLabels(labels);
+  if (!identityDeclared && !observabilityDeclared && !privateEdgeDeclared && !access) return undefined;
   return {
     identity: identityDeclared
       ? normalizeIdentityIntegration({
@@ -418,6 +587,7 @@ function integrationsFromLabels(
           anonymousCors: labels['locallink.privateEdgeAnonymousCors'] === 'true',
         })
       : undefined,
+    access,
   };
 }
 

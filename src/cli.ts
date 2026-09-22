@@ -51,6 +51,7 @@ async function runServe(context: AppContext): Promise<FastifyInstance> {
   server.addHook('onClose', async () => {
     removeSignalHandlers();
     context.stopAutomaticExtensionReload();
+    await context.stopLocalDiscovery();
     if (runtime) await context.clearRuntimeBinding(runtime.pid);
   });
   try {
@@ -83,6 +84,7 @@ async function runServe(context: AppContext): Promise<FastifyInstance> {
     automaticPort: runtime.automatic,
   });
   context.startAutomaticExtensionReload();
+  await context.startLocalDiscovery();
   return server;
 }
 
@@ -104,6 +106,7 @@ function normalizeCommand(rawCommand: string | undefined): string {
     case 'init':
     case 'skill':
     case 'service':
+    case 'access':
       return rawCommand;
     case 'help':
     case '-h':
@@ -128,6 +131,8 @@ function printHelp(): void {
       '  locallink [--log-level LEVEL] extensions Print declared, installed, manual, and healthy extension states',
       '  locallink [--log-level LEVEL] extensions reload [SERVICE...] Alias for reloading the selected Private Edge services',
       '  locallink [--log-level LEVEL] service contract SERVICE Print a secret-free application integration contract',
+      '  locallink [--log-level LEVEL] service access SERVICE   Plan Tailscale, custom-domain, and LAN mDNS profiles',
+      '  locallink [--log-level LEVEL] access apply             Apply all ready Caddy-backed access profiles',
       '  locallink [--log-level LEVEL] oidc check SERVICE Print canonical OIDC issuer, public callback, and proxy guidance',
       '  locallink [--log-level LEVEL] extension plan private-edge [SERVICE...]  Preview changes and select services',
       '  locallink [--log-level LEVEL] extension apply private-edge [SERVICE...] Apply workspace declarations and selection',
@@ -300,14 +305,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (command === 'service') {
     const action = options.positionals[1];
     const selector = options.positionals[2];
-    if (action !== 'contract' || !selector || options.positionals.length > 3) {
+    if ((action !== 'contract' && action !== 'access') || !selector || options.positionals.length > 3) {
       throw new AppError(
         'INVALID_SERVICE_COMMAND',
-        'Use "locallink service contract SERVICE".',
+        'Use "locallink service contract SERVICE" or "locallink service access SERVICE".',
         400,
       );
     }
-    const contract = await context.readApplicationContract(selector);
+    const contract = action === 'access'
+      ? await context.readAccessProfilePlan(selector)
+      : await context.readApplicationContract(selector);
     process.stdout.write(`${JSON.stringify(contract, null, 2)}\n`);
     return;
   }
@@ -320,6 +327,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     const check = await context.readOidcCheck(selector);
     process.stdout.write(`${JSON.stringify(check, null, 2)}\n`);
+    return;
+  }
+
+  if (command === 'access') {
+    if (options.positionals[1] !== 'apply' || options.positionals.length > 2) {
+      throw new AppError('INVALID_ACCESS_COMMAND', 'Use "locallink access apply".', 400);
+    }
+    process.stdout.write(`${JSON.stringify(await context.applyAccessProfileCaddy(), null, 2)}\n`);
     return;
   }
 

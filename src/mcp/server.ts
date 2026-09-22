@@ -176,6 +176,21 @@ export async function startMcpServer(context: AppContext): Promise<McpServer> {
   );
 
   server.registerTool(
+    'plan_service_access_profiles',
+    {
+      description: 'Plan the declared Tailscale, Tailscale custom-domain, and LAN mDNS access profiles for one service without changing DNS or Caddy.',
+      inputSchema: z.object({ service: z.string().min(1) }),
+    },
+    async ({ service }) => textResponse(JSON.stringify(await context.readAccessProfilePlan(service), null, 2)),
+  );
+
+  server.registerTool(
+    'apply_access_profile_caddy',
+    { description: 'Validate and apply all ready Caddy-backed custom-domain and LAN mDNS routes through the shared managed Caddyfile.' },
+    async () => textResponse(JSON.stringify(await context.applyAccessProfileCaddy(), null, 2)),
+  );
+
+  server.registerTool(
     'read_onboarding_report',
     {
       description: 'Return the workspace core readiness and every automatic, manual, blocked, or optional foundation onboarding step without changing state.',

@@ -730,7 +730,6 @@ function buildPrivateEdgeCaddyfile(
   const content = [
     '{',
     `  admin 127.0.0.1:${generatedCaddyAdminPort(workspaceId)}`,
-    '  auto_https off',
     '}',
     '',
     '# BEGIN LOCALLINK MANAGED PRIVATE EDGE ROUTES',

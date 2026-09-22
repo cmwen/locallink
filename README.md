@@ -142,6 +142,8 @@ locallink extension apply-routes private-edge "private-edge:<token-from-fresh-pl
 locallink extension reconcile-routes private-edge "private-edge-removal:<token-from-fresh-plan>"
 locallink extension reload private-edge "My API"
 locallink oidc check "My API"
+locallink service access "My API"
+locallink access apply
 ```
 
 When you launch `locallink` from another folder, it reads environment, service, extension, and runtime declarations from that current working directory.
@@ -150,6 +152,40 @@ Use `--log-level debug` or `LOCALLINK_LOG_LEVEL=debug` when you want stderr trac
 While `locallink web` is running, LocalLink watches the workspace service and extension declarations. If Private Edge is already enabled, a change to a watched declaration automatically refreshes the selected routes and reloads managed Caddy/Tailscale configuration. New services remain private until their ports are explicitly added to the extension's `exposedPorts` selection.
 
 Service definitions may declare private-edge compatibility under `integrations.privateEdge`. Set `localOrigin: true` when an upstream validates browser `Host` or `Origin` headers against its loopback origin, and set `anonymousCors: true` when browser `crossorigin` assets need an anonymous `Access-Control-Allow-Origin` response. LocalLink carries those declarations into generated Caddy routes; application-specific proxy workarounds should not be hand-authored in the workspace Caddyfile.
+
+### Access profiles
+
+Services can declare three independent access profiles under `integrations.access.endpoints`:
+
+```js
+integrations: {
+  access: {
+    endpoints: [
+      { id: 'tailnet', profile: 'tailscale', adapter: 'tailscale-serve' },
+      {
+        id: 'domain',
+        profile: 'tailscale-custom-domain',
+        hostname: 'dashboard.example.com',
+        adapter: 'caddy',
+        dnsReady: true,
+      },
+      {
+        id: 'home',
+        profile: 'lan-mdns',
+        hostname: 'dashboard.local',
+        serviceType: '_locallink._tcp',
+        adapter: 'caddy',
+      },
+    ],
+  },
+}
+```
+
+`tailscale` uses the existing confirmed Tailscale Serve lifecycle; Caddy is optional unless `tailscale-caddy` is selected for upstream compatibility. `tailscale-custom-domain` requires external DNS plus Caddy. `dnsReady: true` is an explicit operator attestation that the external record is in place. `lan-mdns` uses only mDNS/DNS-SD: `direct` advertises an already LAN-reachable service, while `caddy` proxies a loopback service and is therefore the only local mode that requires Caddy.
+
+`locallink service access SERVICE` returns the normalized prerequisites and route, listener, DNS, and DNS-SD intents. `locallink access apply` validates one composed Caddyfile, replaces only the `CUSTOM DOMAIN ROUTES` and `LAN MDNS ROUTES` managed sections, and reloads the workspace-owned Caddy service. Private Edge remains in its own managed section, so applying or removing one profile does not overwrite the others. The `locallink web` process advertises ready LAN profiles and sends TTL-zero goodbye records on shutdown.
+
+Local mDNS defaults to HTTP. A custom-domain HTTPS route still needs a certificate strategy appropriate to the private network; standard public HTTP validation generally cannot reach a tailnet-only address, so use a Caddy build/provider capable of DNS-01, a pre-provisioned certificate, or a locally trusted CA.
 
 With the repository defaults, open the URL reported at startup or read it from
 `.locallink/runtime.json`. The first workspace normally receives port 4010;

@@ -15,6 +15,7 @@ import {
   caddyStopCommand,
   detectCaddyRuntime,
   mergeManagedCaddyfile,
+  removeManagedCaddyfileBlock,
   removeWorkspaceFile,
   readWorkspaceFile,
   writeWorkspaceCaddyfile,
@@ -980,7 +981,12 @@ export class ExtensionPlanner {
         if (finalRemoval && backupContent === undefined) {
           throw new AppError('PRIVATE_EDGE_CADDY_BACKUP_MISSING', 'The original workspace Caddyfile backup is missing; LocalLink will not remove managed routes without it.', 409);
         }
-        const nextContent = finalRemoval ? backupContent! : generatedFile.content;
+        const activeCaddyContent = await readWorkspaceFile(runtime.configPath) ?? '';
+        const withoutPrivateEdge = removeManagedCaddyfileBlock(activeCaddyContent, 'PRIVATE EDGE ROUTES');
+        const hasOtherManagedProfiles = withoutPrivateEdge.includes('# BEGIN LOCALLINK MANAGED ');
+        const nextContent = finalRemoval
+          ? hasOtherManagedProfiles ? withoutPrivateEdge : backupContent!
+          : generatedFile.content;
         await writeWorkspaceCaddyfile(this.root, generatedFile.path, nextContent);
         const validation = await this.commandRunner(
           generatedFile.validate.command,

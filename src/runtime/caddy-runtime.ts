@@ -231,22 +231,46 @@ export async function removeWorkspaceFile(workspaceRoot: string, relativePath: s
   }
 }
 
-const MANAGED_START = '# BEGIN LOCALLINK MANAGED PRIVATE EDGE ROUTES';
-const MANAGED_END = '# END LOCALLINK MANAGED PRIVATE EDGE ROUTES';
+const MANAGED_BLOCK_PATTERN = /^# BEGIN LOCALLINK MANAGED ([A-Z0-9][A-Z0-9 _-]*)\n[\s\S]*?^# END LOCALLINK MANAGED \1$/gm;
+
+function managedBlocks(content: string): Map<string, string> {
+  const blocks = new Map<string, string>();
+  for (const match of content.matchAll(MANAGED_BLOCK_PATTERN)) {
+    blocks.set(match[1], match[0].trim());
+  }
+  return blocks;
+}
 
 export function mergeManagedCaddyfile(existing: string | undefined, generated: string): string {
-  const generatedStart = generated.indexOf(MANAGED_START);
-  const generatedEnd = generated.indexOf(MANAGED_END);
-  if (generatedStart < 0 || generatedEnd < generatedStart) return generated;
-  const managedBlock = generated.slice(generatedStart, generatedEnd + MANAGED_END.length).trim();
+  const generatedBlocks = managedBlocks(generated);
+  if (generatedBlocks.size === 0) return generated;
   if (!existing?.trim()) return generated;
 
-  const existingStart = existing.indexOf(MANAGED_START);
-  const existingEnd = existing.indexOf(MANAGED_END);
-  if (existingStart >= 0 && existingEnd >= existingStart) {
-    return `${existing.slice(0, existingStart)}${managedBlock}${existing.slice(existingEnd + MANAGED_END.length)}`.replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+  let merged = existing;
+  for (const [name, managedBlock] of generatedBlocks) {
+    const start = `# BEGIN LOCALLINK MANAGED ${name}`;
+    const end = `# END LOCALLINK MANAGED ${name}`;
+    const existingStart = merged.indexOf(start);
+    const existingEnd = merged.indexOf(end);
+    if (existingStart >= 0 && existingEnd >= existingStart) {
+      merged = `${merged.slice(0, existingStart)}${managedBlock}${merged.slice(existingEnd + end.length)}`;
+    } else {
+      merged = `${merged.trimEnd()}\n\n${managedBlock}\n`;
+    }
   }
-  return `${existing.trimEnd()}\n\n${managedBlock}\n`;
+  return merged.replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+}
+
+export function removeManagedCaddyfileBlock(existing: string, name: string): string {
+  if (!/^[A-Z0-9][A-Z0-9 _-]*$/.test(name)) return existing;
+  const start = `# BEGIN LOCALLINK MANAGED ${name}`;
+  const end = `# END LOCALLINK MANAGED ${name}`;
+  const existingStart = existing.indexOf(start);
+  const existingEnd = existing.indexOf(end);
+  if (existingStart < 0 || existingEnd < existingStart) return existing;
+  return `${existing.slice(0, existingStart)}${existing.slice(existingEnd + end.length)}`
+    .replace(/\n{3,}/g, '\n\n')
+    .trimEnd() + '\n';
 }
 
 export function caddyReloadCommand(

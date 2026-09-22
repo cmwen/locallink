@@ -142,10 +142,51 @@ export interface ServicePrivateEdgeIntegration {
   publicOriginEnv?: string;
 }
 
+export const SERVICE_ACCESS_PROFILES = [
+  'tailscale',
+  'tailscale-custom-domain',
+  'lan-mdns',
+] as const;
+
+export type ServiceAccessProfile = (typeof SERVICE_ACCESS_PROFILES)[number];
+export type ServiceAccessEndpointAdapter = 'direct' | 'caddy' | 'tailscale-serve';
+export type ServiceAccessProtocol = 'http' | 'https';
+
+/**
+ * A provider-neutral access declaration. Runtime planners resolve the selected
+ * profile to a concrete edge or discovery implementation.
+ */
+export interface ServiceAccessEndpoint {
+  id: string;
+  profile: ServiceAccessProfile;
+  /** Omit for a derived Tailscale hostname; LAN discovery expects a .local name. */
+  hostname?: string;
+  /** DNS-SD service type, for example _http._tcp or _locallink._tcp. */
+  serviceType?: string;
+  /** Optional advertised/listener port; otherwise the service port is used. */
+  port?: string;
+  protocol?: ServiceAccessProtocol;
+  /** Optional implementation hint; profile planners may choose a default. */
+  adapter?: ServiceAccessEndpointAdapter;
+  path?: string;
+  listenerPort?: string;
+  instanceName?: string;
+  targetHost?: string;
+  /** Public, non-secret DNS-SD metadata. */
+  txt?: Record<string, string>;
+  /** User-attested external DNS readiness for a custom-domain profile. */
+  dnsReady?: boolean;
+}
+
+export interface ServiceAccessIntegration {
+  endpoints: ServiceAccessEndpoint[];
+}
+
 export interface ServiceIntegrations {
   identity?: ServiceIdentityIntegration;
   observability?: ServiceObservabilityIntegration;
   privateEdge?: ServicePrivateEdgeIntegration;
+  access?: ServiceAccessIntegration;
 }
 
 export interface ServiceRecord extends ServiceDefinition {

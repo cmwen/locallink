@@ -146,7 +146,7 @@ function discoveryUrl(issuer: string | undefined): string | undefined {
   return joinUrl(issuer, '/.well-known/openid-configuration');
 }
 
-function resolveService(definitions: ServiceDefinition[], selector: string): ServiceDefinition {
+export function resolveService(definitions: ServiceDefinition[], selector: string): ServiceDefinition {
   const normalized = selector.trim().toLowerCase();
   if (!normalized) {
     throw new AppError('MISSING_SERVICE_SELECTOR', 'A service id, name, or runtime name is required.', 400);
