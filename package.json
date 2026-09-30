@@ -26,7 +26,7 @@
     "build": "rm -rf public/assets/app && tsc -p frontend/tsconfig.json && vite build --config frontend/vite.config.ts && tsc -p tsconfig.json && rm -rf dist/public && mkdir -p dist && cp -r public dist/public",
     "build:frontend": "rm -rf public/assets/app && tsc -p frontend/tsconfig.json && vite build --config frontend/vite.config.ts",
     "prepack": "pnpm build",
-    "start": "node ./bin/locallink.js web",
+    "start": "node ./bin/locallink.js start",
     "web": "node ./bin/locallink.js web",
     "serve": "node ./bin/locallink.js web",
     "mcp": "node ./bin/locallink.js mcp",

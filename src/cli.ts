@@ -92,10 +92,11 @@ function normalizeCommand(rawCommand: string | undefined): string {
   switch (rawCommand) {
     case undefined:
     case '':
-    case 'start':
     case 'serve':
     case 'web':
       return 'web';
+    case 'start':
+      return 'start';
     case 'mcp':
     case 'snapshot':
     case 'extensions':
@@ -124,6 +125,7 @@ function printHelp(): void {
       '',
       'Usage:',
       '  locallink [--log-level LEVEL] web       Start the local PWA web app',
+      '  locallink [--log-level LEVEL] start     Restore workspace PM2 apps and start its dashboard',
       '  locallink [--log-level LEVEL] mcp       Start the MCP stdio server',
       '  locallink [--log-level LEVEL] doctor    Print startup diagnostics and install guidance',
       '  locallink [--log-level LEVEL] onboard   Print automatic and manual foundation onboarding steps',
@@ -149,8 +151,7 @@ function printHelp(): void {
       '  locallink [--log-level LEVEL] init NAME Scaffold a starter LocalLink workspace in ./NAME',
       '',
       'Aliases:',
-      '  locallink serve',
-      '  locallink start',
+      '  locallink serve                         Alias for locallink web',
       '',
       'Options:',
       '  -l, --log-level LEVEL  One of: silent, error, warn, info, debug',
@@ -258,6 +259,54 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (command === 'web') {
     printStartupDiagnosticsIfNeeded(actionableDiagnosticsReport, hasStartupIssues);
     await runServe(context);
+    return;
+  }
+
+  if (command === 'start') {
+    const restored = await context.executePm2WorkspaceAction('resurrect');
+    if (!restored.result.ok) {
+      throw new AppError(
+        'PM2_WORKSPACE_RESTORE_FAILED',
+        `LocalLink could not restore this workspace's saved PM2 services: ${restored.result.stderr || restored.result.stdout || 'PM2 resurrect failed.'}`,
+        500,
+      );
+    }
+
+    const dashboard = restored.snapshot.services.find(
+      (service) => service.name === 'locallink-dashboard-ui' && service.runtime === 'pm2',
+    );
+    if (!dashboard) {
+      printStartupDiagnosticsIfNeeded(actionableDiagnosticsReport, hasStartupIssues);
+      await runServe(context);
+      return;
+    }
+
+    let finalSnapshot = restored.snapshot;
+    if (dashboard.status !== 'running') {
+      const started = await context.executeTask({
+        runtime: 'pm2',
+        serviceName: dashboard.name,
+        action: 'start',
+      });
+      if (!started.result.ok) {
+        throw new AppError(
+          'LOCAL_LINK_DASHBOARD_START_FAILED',
+          `PM2 services were restored, but LocalLink could not start the dashboard: ${started.result.stderr || started.result.stdout || 'PM2 start failed.'}`,
+          500,
+        );
+      }
+      finalSnapshot = started.snapshot;
+    }
+
+    const restoredCount = finalSnapshot.services.filter(
+      (service) => service.runtime === 'pm2' && service.status === 'running',
+    ).length;
+    process.stdout.write(`Restored ${restoredCount} PM2 services for this workspace.\n`);
+    logInfo('LocalLink workspace PM2 services restored.', {
+      workspaceRoot,
+      restoredCount,
+      pm2Home: restored.result.pm2Home,
+    });
     return;
   }
 

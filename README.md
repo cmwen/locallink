@@ -131,6 +131,7 @@ If you want the `locallink` command directly on your machine, link the package o
 ```bash
 pnpm add -g .
 locallink web
+locallink start
 locallink mcp
 locallink snapshot --log-level debug
 locallink extensions
@@ -148,6 +149,8 @@ locallink access apply
 
 When you launch `locallink` from another folder, it reads environment, service, extension, and runtime declarations from that current working directory.
 Use `--log-level debug` or `LOCALLINK_LOG_LEVEL=debug` when you want stderr traces for startup, state discovery, HTTP requests, and runtime probe failures.
+
+`locallink start` restores the saved PM2 process list for the current workspace and starts its declared LocalLink dashboard. PM2 service lifecycle actions save the workspace process list, so the next `locallink start` restores the latest service state. `locallink web` remains the dashboard-only command. Docker services still require Docker to be running.
 
 While `locallink web` is running, LocalLink watches the workspace service and extension declarations. If Private Edge is already enabled, a change to a watched declaration automatically refreshes the selected routes and reloads managed Caddy/Tailscale configuration. New services remain private until their ports are explicitly added to the extension's `exposedPorts` selection.
 

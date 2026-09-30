@@ -168,6 +168,7 @@ This folder was initialized by \`locallink init\`.
 5. Run LocalLink:
 
 \`\`\`bash
+locallink start
 locallink web
 locallink mcp
 locallink extensions
@@ -177,6 +178,7 @@ locallink extension plan private-edge
 ## Helpful notes
 
 - Each workspace has a stable \`LOCALLINK_WORKSPACE_ID\`, its own Docker Compose project, its own PM2 home, and its own \`.locallink\` state directory.
+- \`locallink start\` restores saved PM2 processes for this workspace and starts the dashboard; \`locallink web\` starts only the dashboard.
 - \`LOCALLINK_WEB_PORT=auto\` finds the first available dashboard port from \`LOCALLINK_WEB_PORT_START\`, so multiple LocalLink dashboards can run on one machine. Set a numeric port to pin it.
 - Optional Private Edge, identity, and observability extensions are configured per workspace. The core dashboard does not require them.
 - Set \`LOCALLINK_ENABLE_PHASE2_ADVISOR=false\` in \`.env\` to opt out of Private Edge suggestions.

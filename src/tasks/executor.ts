@@ -574,6 +574,19 @@ export class TaskExecutor {
         stdout: input.action === 'stop' ? 'PM2 daemon is not running; service is already stopped.' : '',
         stderr: '',
       };
+      if (result.ok) {
+        const saved = await this.executePm2WorkspaceAction('save');
+        if (!saved.ok) {
+          result = {
+            ...result,
+            ok: false,
+            stderr: [
+              result.stderr,
+              `PM2 completed ${input.action} for "${definition.name}", but could not save the workspace process list for restoration: ${saved.stderr || saved.stdout || 'pm2 save failed.'}`,
+            ].filter(Boolean).join('\n'),
+          };
+        }
+      }
     } else {
       await this.ensureRuntimeAvailable(input.runtime);
       const command = this.buildDockerCommand(definition, input.action);
