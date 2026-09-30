@@ -58,6 +58,23 @@ test('plans custom-domain Tailscale access as a Caddy route plus external DNS pr
   assert.equal(plan.prerequisites.find((item) => item.id === 'custom-dns')?.blocking, true);
 });
 
+test('preserves private-edge compatibility headers in a custom-domain Caddy route', () => {
+  const plan = planAccessProfile(
+    service({
+      loopbackOnly: true,
+      privateEdge: { localOrigin: true, anonymousCors: true },
+    }),
+    { profile: 'tailscale-custom-domain', hostname: 'dashboard.example.com' },
+    { caddyAvailable: true, customDnsConfigured: true },
+  );
+
+  const caddyfile = renderAccessProfileCaddyfile([plan]);
+  assert.match(caddyfile, /header_up X-Forwarded-Proto https/);
+  assert.match(caddyfile, /header_up Host 127\.0\.0\.1:4010/);
+  assert.match(caddyfile, /header_up Origin http:\/\/127\.0\.0\.1:4010/);
+  assert.match(caddyfile, /header_down Access-Control-Allow-Origin \*/);
+});
+
 test('plans LAN mDNS with direct adapter and emits DNS-SD intent without custom DNS', () => {
   const plan = planAccessProfile(
     service({ listenHost: '192.168.1.20', lanReachable: true }),

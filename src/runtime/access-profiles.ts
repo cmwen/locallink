@@ -3,6 +3,7 @@ import {
   type ServiceAccessEndpointAdapter,
   type ServiceAccessProfile,
   type ServiceDefinition,
+  type ServicePrivateEdgeIntegration,
 } from '../shared/contracts';
 
 /** The only access profiles understood by the planner. */
@@ -30,6 +31,8 @@ export type AccessServiceInfo = Pick<ServiceDefinition, 'id' | 'name' | 'runtime
   loopbackOnly?: boolean;
   /** Explicitly declares that a direct LAN listener is reachable. */
   lanReachable?: boolean;
+  /** Compatibility behavior already required by the private edge route. */
+  privateEdge?: ServicePrivateEdgeIntegration;
 };
 
 /** Facts discovered by the caller. The planner never probes or mutates them. */
@@ -91,6 +94,8 @@ export interface AccessRouteIntent {
   caddyRequired: boolean;
   /** True when the route is intended for Tailscale Serve. */
   tailscaleServe: boolean;
+  /** Request/response compatibility behavior for the upstream application. */
+  privateEdge?: ServicePrivateEdgeIntegration;
 }
 
 export interface AccessListenerIntent {
@@ -466,6 +471,7 @@ function makePlan(
     upstream,
     caddyRequired: profileAdapter === 'caddy' || profileAdapter === 'tailscale-caddy',
     tailscaleServe: profileAdapter === 'tailscale-serve' || profileAdapter === 'tailscale-caddy',
+    ...(service.privateEdge ? { privateEdge: service.privateEdge } : {}),
   };
   const listener: AccessListenerIntent = {
     adapter: profileAdapter,
@@ -531,10 +537,27 @@ function caddyRouteBlock(plan: AccessProfilePlan): string | undefined {
   const address = plan.profile === 'lan-mdns'
     ? `http://${plan.normalized.hostname}:${plan.normalized.listenerPort}`
     : plan.normalized.hostname;
+  const privateEdge = plan.route.privateEdge;
+  const proxyHeaders = [
+    ...(plan.route.protocol === 'https' ? ['    header_up X-Forwarded-Proto https'] : []),
+    ...(privateEdge?.localOrigin
+      ? [
+          `    header_up Host 127.0.0.1:${plan.route.upstream.port}`,
+          `    header_up Origin http://127.0.0.1:${plan.route.upstream.port}`,
+        ]
+      : []),
+    ...(privateEdge?.anonymousCors ? ['    header_down Access-Control-Allow-Origin *'] : []),
+  ];
   return [
     `${address} {`,
     ...(plan.profile === 'lan-mdns' ? ['  bind 0.0.0.0'] : []),
-    `  reverse_proxy ${plan.route.upstream.protocol}://${plan.route.upstream.host}:${plan.route.upstream.port}`,
+    ...(proxyHeaders.length > 0
+      ? [
+          `  reverse_proxy ${plan.route.upstream.protocol}://${plan.route.upstream.host}:${plan.route.upstream.port} {`,
+          ...proxyHeaders,
+          '  }',
+        ]
+      : [`  reverse_proxy ${plan.route.upstream.protocol}://${plan.route.upstream.host}:${plan.route.upstream.port}`]),
     '}',
   ].join('\n');
 }

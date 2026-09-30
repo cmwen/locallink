@@ -223,7 +223,7 @@ test('RuntimeResolver surfaces edge URLs for a service installed while the web s
       });
     }
     if (command === 'docker' && args.includes('ps')) {
-      return commandResult({ stdout: JSON.stringify({ State: installed ? 'running' : 'created' }) });
+      return commandResult({ stdout: JSON.stringify({ Service: 'api', State: installed ? 'running' : 'created' }) });
     }
     return commandResult();
   };

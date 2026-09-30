@@ -112,6 +112,10 @@ test('parseCaddyReverseProxyPorts resolves static Caddy listeners and environmen
   reverse_proxy host.docker.internal:4011
 }
 
+other.home.example.test {
+  reverse_proxy host.docker.internal:9999
+}
+
 :{$LITELLM_EDGE_PORT} {
   reverse_proxy {$PWA_EDGE_UPSTREAM_HOST}:{$LITELLM_PORT}
 }
@@ -289,6 +293,73 @@ test('discoverServiceEdgeUrls resolves Docker sidecar routes through saved Caddy
   const routes = await discoverServiceEdgeUrls([edge], [service('api', '5050')], commandRunner, {}, root);
 
   assert.deepEqual(routes.get('api'), ['https://edge.tailnet.ts.net:7443/']);
+});
+
+test('discoverServiceEdgeUrls prefers an active custom DNS route over its legacy Serve port', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'locallink-custom-edge-urls-'));
+  await fs.mkdir(path.join(root, 'edge'), { recursive: true });
+  await fs.writeFile(path.join(root, 'edge', 'serve.json'), '{}\n', 'utf8');
+  await fs.writeFile(path.join(root, 'edge', 'Caddyfile'), `{
+  https_port 8443
+}
+
+home.example.test {
+  root * /srv/edge
+  file_server
+}
+
+dashboard.home.example.test {
+  reverse_proxy http://host.docker.internal:4011 {
+    header_up X-Forwarded-Proto https
+  }
+}
+
+:22001 {
+  reverse_proxy http://host.docker.internal:4011
+}
+`, 'utf8');
+  await fs.writeFile(path.join(root, 'docker-compose.yml'), `services:
+  tailscale-edge:
+    image: tailscale/tailscale:latest
+    environment:
+      TS_SERVE_CONFIG: /config/serve.json
+    volumes: ["./edge:/config:ro"]
+  caddy:
+    image: caddy:2
+    network_mode: service:tailscale-edge
+    volumes: ["./edge/Caddyfile:/etc/caddy/Caddyfile:ro"]
+`, 'utf8');
+  const dashboard = service('dashboard', '4011');
+  dashboard.integrations = {
+    access: { endpoints: [{
+      id: 'domain', profile: 'tailscale-custom-domain', hostname: 'dashboard.home.example.test',
+      protocol: 'https', adapter: 'caddy', dnsReady: true,
+    }] },
+  };
+  let serveStatus = JSON.stringify({
+    TCP: { 443: { TCPForward: '127.0.0.1:8443' }, 7443: { HTTPS: true } },
+    Web: { 'edge.tailnet.ts.net:7443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:22001' } } } },
+  });
+  const commandRunner: CommandRunner = async (_command, args) => ({
+    ok: true, code: 0, signal: null,
+    stdout: args.includes('ps') ? JSON.stringify({ State: 'running' }) : args.includes('serve') ? serveStatus : JSON.stringify({ BackendState: 'Running' }),
+    stderr: '', timedOut: false,
+  });
+
+  const edgeService = service('tailscale-edge', '8080');
+  const custom = await discoverServiceEdgeUrls(
+    [extension()], [dashboard, edgeService], commandRunner,
+    { LOCALLINK_CUSTOM_DNS_LANDING_HOST: 'home.example.test' }, root,
+  );
+  assert.deepEqual(custom.get('dashboard'), ['https://dashboard.home.example.test/']);
+  assert.deepEqual(custom.get('tailscale-edge'), ['https://home.example.test/']);
+
+  serveStatus = JSON.stringify({
+    TCP: { 7443: { HTTPS: true } },
+    Web: { 'edge.tailnet.ts.net:7443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:4011' } } } },
+  });
+  const legacy = await discoverServiceEdgeUrls([extension()], [dashboard], commandRunner, {}, root);
+  assert.deepEqual(legacy.get('dashboard'), ['https://edge.tailnet.ts.net:7443/']);
 });
 
 test('discoverServiceEdgeUrls ignores placeholder Pocket ID issuers', async () => {

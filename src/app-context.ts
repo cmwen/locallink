@@ -411,6 +411,7 @@ export class AppContext {
         listenHost: directLan ? declarations.find((entry) => entry.targetHost)?.targetHost : '127.0.0.1',
         loopbackOnly: !directLan,
         lanReachable: directLan,
+        privateEdge: service.integrations?.privateEdge,
       },
       declarations,
       runtime: {

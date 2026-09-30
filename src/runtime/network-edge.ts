@@ -28,6 +28,7 @@ interface TailscaleWebServer {
 interface TailscaleTcpHandler {
   HTTP?: boolean;
   HTTPS?: boolean;
+  TCPForward?: string;
 }
 
 interface TailscaleServeConfig {
@@ -203,23 +204,64 @@ function resolveCaddyEnvironmentVariables(raw: string, env: Record<string, strin
   return raw.replace(/\{\$([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, key: string) => env[key] || '');
 }
 
-export function parseCaddyReverseProxyPorts(raw: string, env: Record<string, string> = {}): Map<string, string[]> {
+function caddyTopLevelBlocks(raw: string, env: Record<string, string>): Array<{ addresses: string; content: string }> {
   const content = resolveCaddyEnvironmentVariables(raw, env);
-  const listeners = [...content.matchAll(/^\s*:([1-9][0-9]{0,4})\s*\{/gm)];
-  const ports = new Map<string, string[]>();
+  const sites = [...content.matchAll(/^([^\s{}][^{}\n]*?)\s*\{\s*$/gm)];
+  return sites.map((site, index) => ({
+    addresses: site[1],
+    content: content.slice((site.index ?? 0) + site[0].length, sites[index + 1]?.index ?? content.length),
+  }));
+}
 
-  for (const [index, listener] of listeners.entries()) {
-    const listenerPort = listener[1];
-    const blockStart = (listener.index ?? 0) + listener[0].length;
-    const blockEnd = listeners[index + 1]?.index ?? content.length;
-    const block = content.slice(blockStart, blockEnd);
-    const upstreamPorts = [...block.matchAll(/^\s*reverse_proxy\s+(?:https?:\/\/)?(?:\[[^\]]+\]|[^\s:/]+):(\d+)\b/gm)]
-      .map((match) => match[1])
-      .filter((port, upstreamIndex, values) => values.indexOf(port) === upstreamIndex);
-    if (upstreamPorts.length > 0) ports.set(listenerPort, upstreamPorts);
+function caddyUpstreamPorts(content: string): string[] {
+  return [...new Set([...content.matchAll(/^\s*reverse_proxy\s+(?:https?:\/\/)?(?:\[[^\]]+\]|[^\s:/]+):(\d+)\b/gm)]
+    .map((match) => match[1]))];
+}
+
+export function parseCaddyReverseProxyPorts(raw: string, env: Record<string, string> = {}): Map<string, string[]> {
+  const ports = new Map<string, string[]>();
+  for (const site of caddyTopLevelBlocks(raw, env)) {
+    const listener = /^:([1-9][0-9]{0,4})$/.exec(site.addresses.trim());
+    if (!listener) continue;
+    const upstreamPorts = caddyUpstreamPorts(site.content);
+    if (upstreamPorts.length > 0) ports.set(listener[1], upstreamPorts);
+  }
+  return ports;
+}
+
+function parseCaddyHostnameProxyPorts(raw: string, env: Record<string, string> = {}): Map<string, string[]> {
+  const ports = new Map<string, string[]>();
+  for (const site of caddyTopLevelBlocks(raw, env)) {
+    const upstreamPorts = caddyUpstreamPorts(site.content);
+    for (const hostname of site.addresses.split(',').map((value) => value.trim().toLowerCase())) {
+      if (hostname && !hostname.startsWith(':') && upstreamPorts.length > 0) {
+        ports.set(hostname, [...new Set(upstreamPorts)]);
+      }
+    }
   }
 
   return ports;
+}
+
+function caddyStaticHostnames(raw: string, env: Record<string, string> = {}): Set<string> {
+  const hostnames = new Set<string>();
+  for (const site of caddyTopLevelBlocks(raw, env)) {
+    if (!/^\s*file_server\b/m.test(site.content)) continue;
+    for (const hostname of site.addresses.split(',').map((value) => value.trim().toLowerCase())) {
+      if (hostname && !hostname.startsWith(':')) hostnames.add(hostname);
+    }
+  }
+  return hostnames;
+}
+
+function rawHttpsForwardActive(raw: string, caddyContent: string): boolean {
+  try {
+    const forward = (JSON.parse(raw) as TailscaleServeConfig).TCP?.['443']?.TCPForward;
+    const port = forward && proxyTargetPort(`http://${forward}`);
+    return Boolean(port && new RegExp(`^\\s*https_port\\s+${port}\\s*$`, 'm').test(caddyContent));
+  } catch {
+    return false;
+  }
 }
 
 function parseTailscaleStatus(raw: string): TailscaleStatus | undefined {
@@ -1040,10 +1082,33 @@ export async function discoverServiceEdgeUrls(
   const caddyProxyPorts = caddyContent
     ? parseCaddyReverseProxyPorts(caddyContent, env)
     : new Map<string, string[]>();
+  const caddyHostnamePorts = caddyRuntime?.running && caddyContent && rawHttpsForwardActive(result.stdout, caddyContent)
+    ? parseCaddyHostnameProxyPorts(caddyContent, env)
+    : new Map<string, string[]>();
+  const staticHostnames = caddyRuntime?.running && caddyContent && rawHttpsForwardActive(result.stdout, caddyContent)
+    ? caddyStaticHostnames(caddyContent, env)
+    : new Set<string>();
+  const landingHostname = env.LOCALLINK_CUSTOM_DNS_LANDING_HOST?.trim().toLowerCase();
+  const sharedTailscaleService = caddyRuntime?.networkMode?.startsWith('service:')
+    ? caddyRuntime.networkMode.slice('service:'.length)
+    : undefined;
 
   for (const service of services) {
     const port = service.port?.trim();
     if (!port || port === '—') continue;
+    if (landingHostname && sharedTailscaleService && staticHostnames.has(landingHostname)
+      && (service.id === sharedTailscaleService || service.runtimeName === sharedTailscaleService)) {
+      urlsByService.set(service.id, [`https://${landingHostname}/`]);
+      continue;
+    }
+    const customUrls = service.integrations?.access?.endpoints
+      .filter((endpoint) => endpoint.profile === 'tailscale-custom-domain' && endpoint.dnsReady && endpoint.hostname)
+      .filter((endpoint) => caddyHostnamePorts.get(endpoint.hostname!.toLowerCase())?.includes(port))
+      .map((endpoint) => `${endpoint.protocol || 'https'}://${endpoint.hostname}${endpoint.path || '/'}`) || [];
+    if (customUrls.length > 0) {
+      urlsByService.set(service.id, [...new Set(customUrls)]);
+      continue;
+    }
     const owned = ownership.filter((route) => route.serviceId === service.id && route.status === 'active');
     const urls = [
       ...routes.filter((route) => route.targetPort === port).map((route) => route.url),
