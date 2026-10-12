@@ -43,6 +43,7 @@
   "license": "ISC",
   "dependencies": {
     "@babel/parser": "^8.0.4",
+    "@cmwen/min-design-system": "0.3.0",
     "@fastify/static": "^10.1.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "fastify": "^5.10.0",

@@ -1,8 +1,9 @@
-const CACHE_NAME = 'locallink-shell-v3';
+const CACHE_NAME = 'locallink-shell-v6';
 const SHELL_ASSETS = [
   './',
   './dashboard',
   './current',
+  './launchpad',
   './external',
   './extensions',
   './resources',
@@ -24,6 +25,7 @@ const NAV_ROUTES = new Map([
   ['/dashboard', './dashboard.html'],
   ['/dashboard.html', './dashboard.html'],
   ['/current', './dashboard.html'],
+  ['/launchpad', './dashboard.html'],
   ['/external', './dashboard.html'],
   ['/extensions', './dashboard.html'],
   ['/resources', './dashboard.html'],

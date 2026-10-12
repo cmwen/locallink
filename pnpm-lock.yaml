@@ -14,6 +14,9 @@ importers:
       '@babel/parser':
         specifier: ^8.0.4
         version: 8.0.4
+      '@cmwen/min-design-system':
+        specifier: 0.3.0
+        version: 0.3.0
       '@fastify/static':
         specifier: ^10.1.0
         version: 10.1.0
@@ -82,6 +85,10 @@ packages:
   '@babel/types@8.0.4':
     resolution: {integrity: sha512-eY+Yn3dCqTGmyiq2QRU66lA5FL8lqqqvecHt0fF3uHONIa7ToYsaCiWV8lOKqAs0Rb2SjixiKFROngnulPtt2g==}
     engines: {node: ^22.18.0 || >=24.11.0}
+
+  '@cmwen/min-design-system@0.3.0':
+    resolution: {integrity: sha512-0oDyI6zXSzNMQn2aUUzwjz2lZkrQifqtgmiTk68zTRMnUygdXgvWQ2VlJCTwcOPdaqVPvxLdwV5gCtO6UIhblg==}
+    engines: {node: '>=22.12.0'}
 
   '@emnapi/core@1.11.1':
     resolution: {integrity: sha512-RSvbQmHzdKzNsLYa/wHrbc3KN4sYLKAdPZxqiM2HATqv/SBk2/ENSHpvXGaLOMcsAyz0poEGqkmmKYG3OWiJEQ==}
@@ -1313,6 +1320,8 @@ snapshots:
     dependencies:
       '@babel/helper-string-parser': 8.0.0
       '@babel/helper-validator-identifier': 8.0.4
+
+  '@cmwen/min-design-system@0.3.0': {}
 
   '@emnapi/core@1.11.1':
     dependencies:

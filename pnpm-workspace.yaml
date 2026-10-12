@@ -1,4 +1,6 @@
 allowBuilds:
   esbuild: true
+minimumReleaseAgeExclude:
+  - '@cmwen/min-design-system@0.3.0'
 overrides:
   locallink: 'link:'

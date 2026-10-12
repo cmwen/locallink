@@ -82,6 +82,11 @@ function toneClass(tone: string | undefined): string {
   return 'warn';
 }
 
+function statusTone(tone: string | undefined): 'success' | 'neutral' | 'danger' | 'warning' {
+  const status = toneClass(tone);
+  return status === 'ok' ? 'success' : status === 'muted' ? 'neutral' : status === 'bad' ? 'danger' : 'warning';
+}
+
 function actionLevel(action: TaskAction): LogEntry['level'] {
   return action === 'stop' || action === 'restart' || action === 'reload' ? 'warn' : 'info';
 }
@@ -134,7 +139,7 @@ export function App() {
   const [state, setState] = useState<DashboardState>(INITIAL_STATE);
   const [source, setSource] = useState<Source>('mock');
   const [view, setView] = useState<View>(() => viewFromPath());
-  const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark'));
+  const [theme, setTheme] = useState<Theme>(() => document.documentElement.dataset.ffTheme === 'light' ? 'light' : 'dark');
   const [queries, setQueries] = useState<Record<View, string>>({ current: '', launchpad: '', extensions: '', resources: '' });
   const networkEdgeEnabled = state.extensions.some((extension) => extension.kind === 'network-edge' && extension.enabled && extension.status !== 'disabled');
   const [healthFilter, setHealthFilter] = useState<ServiceHealthFilter>('all');
@@ -171,7 +176,9 @@ export function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem(THEME_KEY, theme);
+    document.documentElement.dataset.ffTheme = theme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#101e19' : '#f3f4ec');
+    try { localStorage.setItem(THEME_KEY, theme); } catch { /* Keep the session theme when storage is unavailable. */ }
   }, [theme]);
 
   useEffect(() => {
@@ -649,7 +656,10 @@ export function App() {
   }), [logs, queryText]);
 
   return (
-    <div className="app-shell">
+    <div className="app-shell ff-theme" data-ff-density="compact" data-ff-motion="subtle">
+      <a className="skip-link ff-button" href="#workspace-content">Skip to workspace</a>
+      <Sidebar view={view} setView={changeView} networkEdgeEnabled={networkEdgeEnabled} source={source} serviceCount={services.length} />
+      <div id="workspace-content" className="workspace-content" tabIndex={-1}>
       <Topbar
         view={view}
         theme={theme}
@@ -667,7 +677,7 @@ export function App() {
       />
 
       {status ? (
-        <output className="status-banner" aria-live="polite">
+        <output className="status-banner ff-alert" data-ff-tone={source === 'api' ? 'info' : 'warning'} aria-live="polite">
           <span>{status}</span>
           <span className="status-meta mono">
             {source === 'api' ? 'Live API' : 'Sample data'}
@@ -744,6 +754,7 @@ export function App() {
         />
       ) : null}
 
+      </div>
       <MobileNav view={view} setView={changeView} networkEdgeEnabled={networkEdgeEnabled} />
 
       {addTempOpen ? <TempRuntimeModal close={() => setAddTempOpen(false)} submit={addTemporaryRuntime} /> : null}
@@ -759,6 +770,45 @@ export function App() {
         />
       ) : null}
     </div>
+  );
+}
+
+function Sidebar({ view, setView, networkEdgeEnabled, source, serviceCount }: {
+  view: View;
+  setView: (view: View) => void;
+  networkEdgeEnabled: boolean;
+  source: Source;
+  serviceCount: number;
+}) {
+  const descriptions: Record<View, string> = {
+    current: 'Health & lifecycle', launchpad: 'Your private apps', extensions: 'Edge, identity & telemetry', resources: 'Processes, ports & logs',
+  };
+  return (
+    <aside className="workspace-sidebar ff-wave-surface" data-ff-wave="soft">
+      <a className="brand" href="/current" aria-label="LocalLink services" onClick={(event) => {
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        event.preventDefault(); setView('current');
+      }}>
+        <img src="/assets/icons/icon.svg" width="38" height="38" alt="" />
+        <span><strong>LocalLink</strong><span className="brand-caption">Local runtime workspace</span></span>
+      </a>
+      <div className="label sidebar-label">Workspace</div>
+      <nav className="ff-sidebar-nav" aria-label="Workspace navigation">
+        {(['current', ...(networkEdgeEnabled ? ['launchpad' as View] : []), 'extensions', 'resources'] as View[]).map((item) => (
+          <a key={item} className="ff-nav-link workspace-link" href={VIEW_PATHS[item]} aria-current={view === item ? 'page' : undefined} onClick={(event) => {
+            if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+            event.preventDefault(); setView(item);
+          }}>
+            <span><strong>{VIEW_LABELS[item]}</strong><span className="nav-description">{descriptions[item]}</span></span>
+            {item === 'current' ? <span className="ff-pill nav-count">{serviceCount}</span> : null}
+          </a>
+        ))}
+      </nav>
+      <div className="sidebar-footer">
+        <span className="ff-pill" data-ff-tone={source === 'api' ? 'success' : 'warning'}>{source === 'api' ? 'Live workspace' : 'Sample workspace'}</span>
+        <p>{source === 'api' ? 'Local services. One calm place.' : 'Connect the LocalLink API to manage your services.'}</p>
+      </div>
+    </aside>
   );
 }
 
@@ -804,61 +854,55 @@ function Topbar({
 
   return (
     <header className="topbar">
-      <div className="brand">
-        <div className="mark" aria-hidden="true">
-          LL
-        </div>
-        <div>
-          <strong>LocalLink</strong>
-          <div className="muted mono">{VIEW_LABELS[view].toLowerCase()} workspace</div>
-        </div>
+      <div className="page-heading">
+        <div className="label">Your workspace</div>
+        <h1>{VIEW_LABELS[view]}</h1>
+        <p>{view === 'current' ? 'Keep your local services running smoothly.' : view === 'launchpad' ? 'Open the apps connected to your private network.' : view === 'extensions' ? 'Connect your workspace to the tools it needs.' : 'Understand resource usage and inspect live activity.'}</p>
       </div>
       <div className="search">
-        <input className="input" type="search" enterKeyHint="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={placeholder} aria-label={placeholder} />
+        <input className="input ff-input" type="search" enterKeyHint="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={placeholder} aria-label={placeholder} />
         {view === 'current' ? (
           <>
-            <button className="btn primary" type="button" onClick={openTemp}>
+            <button className="btn ff-button" type="button" onClick={openTemp}>
               Create runtime plan
             </button>
             {hasPm2Services ? (
-              <>
-                <button className="btn" type="button" disabled={pm2Pending} onClick={() => void runPm2WorkspaceAction('save')}>
-                  Save PM2
-                </button>
-                <button className="btn" type="button" disabled={pm2Pending} onClick={() => void runPm2WorkspaceAction('resurrect')}>
-                  Resurrect PM2
-                </button>
-              </>
+              <details className="pm2-tools">
+                <summary>PM2 workspace</summary>
+                <div className="actions">
+                  <button className="btn ff-button ff-button-secondary" type="button" disabled={pm2Pending} onClick={() => void runPm2WorkspaceAction('save')}>
+                    Save PM2
+                  </button>
+                  <button className="btn ff-button ff-button-secondary" type="button" disabled={pm2Pending} onClick={() => void runPm2WorkspaceAction('resurrect')}>
+                    Resurrect PM2
+                  </button>
+                </div>
+              </details>
             ) : null}
           </>
         ) : null}
         {view === 'extensions' ? (
-          <button className="btn primary" type="button" onClick={() => setView('current')}>
+          <button className="btn ff-button" type="button" onClick={() => setView('current')}>
             Back to services
           </button>
         ) : null}
         {view === 'launchpad' ? (
-          <button className="btn" type="button" onClick={() => setView('current')}>Back to services</button>
+          <button className="btn ff-button ff-button-secondary" type="button" onClick={() => setView('current')}>Back to services</button>
         ) : null}
         {view === 'resources' ? (
-          <button className="btn" type="button" onClick={() => void copyLogs()}>
+          <button className="btn ff-button ff-button-secondary" type="button" onClick={() => void copyLogs()}>
             Copy logs
           </button>
         ) : null}
       </div>
-      <nav className="actions" aria-label="Workspace navigation">
-        {(['current', ...(networkEdgeEnabled ? ['launchpad' as View] : []), 'extensions', 'resources'] as View[]).map((item) => (
-          <button key={item} className={`btn ${view === item ? 'active' : ''}`} type="button" aria-current={view === item ? 'page' : undefined} onClick={() => setView(item)}>
-            {VIEW_LABELS[item]}
-          </button>
-        ))}
-        <button className="btn" type="button" onClick={() => void refreshState()}>
+      <div className="workspace-tools actions" role="group" aria-label="Workspace tools">
+        <button className="btn ff-button ff-button-secondary" type="button" onClick={() => void refreshState()}>
           Refresh
         </button>
-        <button className="btn" type="button" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
-          {theme === 'dark' ? 'Light' : 'Dark'}
+        <button className="btn ff-button ff-button-secondary" type="button" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
+          {theme === 'dark' ? 'Light theme' : 'Dark theme'}
         </button>
-      </nav>
+      </div>
     </header>
   );
 }
@@ -905,16 +949,16 @@ function CurrentWorkspace({
   setView,
 }: CurrentWorkspaceProps) {
   return (
-    <main className="pane">
+    <main className="pane ff-wave-surface" data-ff-wave="soft">
       <div className="pane-head">
         <div>
           <div className="label">Health</div>
-          <h1>Service health</h1>
+          <h2>Service overview</h2>
         </div>
         <div className="actions" aria-label="Filter services by health">
           {(['all', 'attention', 'running', 'stopped'] as const).map((filter) => (
-            <button key={filter} className={`btn ${healthFilter === filter ? 'active' : ''}`} type="button" aria-pressed={healthFilter === filter} onClick={() => setHealthFilter(filter)}>
-              {filter === 'attention' ? 'needs attention' : filter}
+            <button key={filter} className={`btn ff-button ff-button-secondary ${healthFilter === filter ? 'active' : ''}`} type="button" aria-pressed={healthFilter === filter} onClick={() => setHealthFilter(filter)}>
+              {filter === 'attention' ? 'Needs attention' : filter === 'all' ? 'All services' : filter === 'running' ? 'Running' : 'Stopped'}
             </button>
           ))}
         </div>
@@ -930,10 +974,10 @@ function CurrentWorkspace({
         <section className={`screen-grid ${mobileServiceDetail ? 'mobile-detail' : ''}`}>
           <aside className="service-stack" aria-label="Services">
             {loading && filteredServices.length === 0 ? (
-              <div className="service loading-card">
+              <div className="service loading-card" role="status">
                 <strong>Loading services</strong>
                 <span className="mono">reading local snapshot</span>
-                <span className="pill warn">pending</span>
+                <span className="pill ff-pill" data-ff-tone="warning">pending</span>
               </div>
             ) : null}
             {filteredServices.map((service) => {
@@ -941,7 +985,7 @@ function CurrentWorkspace({
               return (
                 <button
                   key={service.id}
-                  className={`service ${selectedService?.id === service.id ? 'active' : ''}`}
+                  className={`service ff-selectable ${selectedService?.id === service.id ? 'active' : ''}`}
                   type="button"
                   aria-pressed={selectedService?.id === service.id}
                   onClick={() => selectService(service.id)}
@@ -950,15 +994,15 @@ function CurrentWorkspace({
                   <span className="mono">
                     {service.kind} / {formatPort(service.port)}
                   </span>
-                  <span className={`pill ${toneClass(service.statusTone)}`}>{service.statusLabel.toLowerCase()}</span>
-                  {service.edgeUrls?.length ? <span className="pill mono">edge</span> : null}
+                  <span className="pill ff-pill" data-ff-tone={statusTone(service.statusTone)}>{service.statusLabel.toLowerCase()}</span>
+                  {service.edgeUrls?.length ? <span className="pill ff-pill mono">edge</span> : null}
                   {serviceNeedsAttention(service) ? <span className="service-reason">{service.reviewReasons?.[0] || 'Operational state needs attention'}</span> : null}
                   {matchReason && matchReason !== 'name' ? <span className="match-reason">Matched in {matchReason}</span> : null}
                 </button>
               );
             })}
             {!loading && filteredServices.length === 0 ? (
-              <div className="service empty-service">
+              <div className="service empty-service ff-empty-state">
                 <strong>No matching services</strong>
                 <span>Clear search or choose another health filter.</span>
               </div>
@@ -989,7 +1033,7 @@ function CurrentWorkspace({
 
 function LaunchpadWorkspace({ services, query }: { services: ServiceRecord[]; query: string }) {
   return (
-    <main className="pane">
+    <main className="pane ff-wave-surface" data-ff-wave="soft">
       <div className="pane-body">
         <TailscaleLaunchpad services={services} query={query} />
       </div>
@@ -1012,10 +1056,10 @@ function TailscaleLaunchpad({ services, query }: { services: ServiceRecord[]; qu
       <div className="launchpad-head">
         <div>
           <div className="label">Tailscale private edge</div>
-          <h1 id="tailscale-launchpad-title">Quick launchpad</h1>
+          <h2 id="tailscale-launchpad-title">Private apps</h2>
           <p>Open apps exported to your tailnet.</p>
         </div>
-        <span className="pill info mono">{exported.length} {exported.length === 1 ? 'link' : 'links'}</span>
+        <span className="pill ff-pill" data-ff-tone="info">{exported.length} {exported.length === 1 ? 'link' : 'links'}</span>
       </div>
       {exported.length > 0 ? (
         <div className="launchpad-grid">
@@ -1082,41 +1126,41 @@ function ServiceDetail({
   }
 
   return (
-    <article className="detail-grid">
+    <article className="detail-grid" aria-busy={pending}>
       <div className="detail-top">
         <div>
-          <button className="mobile-back btn ghost" type="button" onClick={showServiceList}>Back to services</button>
+          <button className="mobile-back btn ff-button ff-button-quiet" type="button" onClick={showServiceList}>Back to services</button>
           <div className="label">Detail</div>
           <h2>{service.name}</h2>
           <p>{service.detail}</p>
         </div>
         <div className="status-row">
           {mainPageUrl ? (
-            <a className="btn primary" href={mainPageUrl} target="_blank" rel="noreferrer" title={`Open ${service.name} through the Network Edge`}>
+            <a className="btn ff-button" href={mainPageUrl} target="_blank" rel="noreferrer" title={`Open ${service.name} through the Network Edge`}>
               Open main page
             </a>
           ) : null}
-          <span className={`pill ${toneClass(service.statusTone)}`}>{pending ? 'updating' : service.statusLabel.toLowerCase()}</span>
-          <span className="pill mono">{formatPort(service.port)}</span>
+          <span className="pill ff-pill" data-ff-tone={statusTone(service.statusTone)}>{pending ? 'updating' : service.statusLabel.toLowerCase()}</span>
+          <span className="pill ff-pill mono">{formatPort(service.port)}</span>
         </div>
       </div>
 
       <div className="action-row" aria-label={`${service.name} lifecycle actions`}>
-        <button className="btn primary" type="button" disabled={pending || plannedRuntime} onClick={() => void runServiceAction(service, 'start')}>
+        <button className="btn ff-button" type="button" disabled={pending || plannedRuntime} onClick={() => void runServiceAction(service, 'start')}>
           Start
         </button>
-        <button className="btn" type="button" disabled={pending || plannedRuntime} onClick={() => void runServiceAction(service, 'restart')}>
+        <button className="btn ff-button ff-button-secondary" type="button" disabled={pending || plannedRuntime} onClick={() => void runServiceAction(service, 'restart')}>
           Restart
         </button>
         {service.runtime === 'pm2' ? (
-          <button className="btn" type="button" disabled={pending || plannedRuntime} onClick={() => void runServiceAction(service, 'reload')}>
+          <button className="btn ff-button ff-button-secondary" type="button" disabled={pending || plannedRuntime} onClick={() => void runServiceAction(service, 'reload')}>
             Reload
           </button>
         ) : null}
-        <button className="btn" type="button" onClick={() => { setResourceQuery(service.name); setView('resources'); }}>
+        <button className="btn ff-button ff-button-secondary" type="button" onClick={() => { setResourceQuery(service.name); setView('resources'); }}>
           Logs
         </button>
-        <button className="btn danger" type="button" disabled={pending || plannedRuntime} onClick={() => openSafeStop(service)}>
+        <button className="btn ff-button ff-button-danger" type="button" disabled={pending || plannedRuntime} onClick={() => openSafeStop(service)}>
           Stop service
         </button>
       </div>
@@ -1248,13 +1292,13 @@ function ExtensionsWorkspace({
     || services.filter((service) => Boolean(service.port && service.port !== '—')).map((service) => ({ id: service.id, name: service.name, port: service.port }));
 
   return (
-    <main className="pane">
+    <main className="pane ff-wave-surface" data-ff-wave="soft">
       <div className="pane-head">
         <div>
           <div className="label">Connections workspace</div>
-          <h1>Connections and config</h1>
+          <h2>Connections and configuration</h2>
         </div>
-        <span className="pill ok">declared per workspace</span>
+        <span className="pill ff-pill" data-ff-tone="success">declared per workspace</span>
       </div>
       <div className="pane-body stack">
         {visibleExtensions.length > 0 ? (
@@ -1282,33 +1326,33 @@ function ExtensionsWorkspace({
               <ConfigLine label="Pocket ID issuer" value={pocketIdOption?.detectedValue || 'Set POCKET_ID_APP_URL to the private Tailscale Serve HTTPS URL.'} />
             </div>
             <div className="actions">
-              <button className="btn" type="button" disabled={extensionApplying} onClick={() => void managePrivateEdge('plan')}>Preview Private Edge setup</button>
+              <button className="btn ff-button ff-button-secondary" type="button" disabled={extensionApplying} onClick={() => void managePrivateEdge('plan')}>Preview Private Edge setup</button>
               {extensionPlan?.canApply ? (
-                <button className="btn" type="button" disabled={extensionApplying} onClick={() => void managePrivateEdge('apply')}>Apply workspace setup</button>
+                <button className="btn ff-button ff-button-secondary" type="button" disabled={extensionApplying} onClick={() => void managePrivateEdge('apply')}>Apply workspace setup</button>
               ) : null}
               {!extensionPlan?.canApply && extensionPlan?.reconciliation.state === 'clean' && extensionPlan?.routePlan.state === 'ready' && extensionPlan.routePlan.confirmationToken ? (
-                <button className="btn" type="button" disabled={extensionApplying} onClick={() => void managePrivateEdge('routes')}>Apply private routes</button>
+                <button className="btn ff-button ff-button-secondary" type="button" disabled={extensionApplying} onClick={() => void managePrivateEdge('routes')}>Apply private routes</button>
               ) : null}
               {!extensionPlan?.canApply && extensionPlan?.reconciliation.state === 'ready' && extensionPlan.reconciliation.confirmationToken ? (
-                <button className="btn" type="button" disabled={extensionApplying} onClick={() => void managePrivateEdge('reconcile')}>Reconcile owned routes</button>
+                <button className="btn ff-button ff-button-secondary" type="button" disabled={extensionApplying} onClick={() => void managePrivateEdge('reconcile')}>Reconcile owned routes</button>
               ) : null}
-              <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageIdentity('plan')}>Preview Pocket ID setup</button>
+              <button className="btn ff-button ff-button-secondary" type="button" disabled={extensionApplying} onClick={() => void manageIdentity('plan')}>Preview Pocket ID setup</button>
               {identityPlan?.canApply ? (
-                <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageIdentity('apply')}>Install/configure Pocket ID</button>
+                <button className="btn ff-button ff-button-secondary" type="button" disabled={extensionApplying} onClick={() => void manageIdentity('apply')}>Install/configure Pocket ID</button>
               ) : null}
               {!identityPlan?.canApply && identityPlan?.privateEdge.confirmationToken && identityPlan.privateEdge.state === 'ready' ? (
-                <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageIdentity('routes')}>Publish Pocket ID privately</button>
+                <button className="btn ff-button ff-button-secondary" type="button" disabled={extensionApplying} onClick={() => void manageIdentity('routes')}>Publish Pocket ID privately</button>
               ) : null}
-              <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageObservability('plan')}>Preview observability setup</button>
+              <button className="btn ff-button ff-button-secondary" type="button" disabled={extensionApplying} onClick={() => void manageObservability('plan')}>Preview observability setup</button>
               {observabilityPlan?.canApply ? (
-                <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageObservability('apply')}>Install/configure observability</button>
+                <button className="btn ff-button ff-button-secondary" type="button" disabled={extensionApplying} onClick={() => void manageObservability('apply')}>Install/configure observability</button>
               ) : null}
               {!observabilityPlan?.canApply && observabilityPlan?.privateEdge.confirmationToken && observabilityPlan.privateEdge.state === 'ready' ? (
-                <button className="btn" type="button" disabled={extensionApplying} onClick={() => void manageObservability('routes')}>Publish OpenObserve privately</button>
+                <button className="btn ff-button ff-button-secondary" type="button" disabled={extensionApplying} onClick={() => void manageObservability('routes')}>Publish OpenObserve privately</button>
               ) : null}
-              <a className="btn" href="./docs/pocket-id-tailscale.html" target="_blank" rel="noreferrer">Private SSO setup</a>
-              <a className="btn ghost" href="./docs/extensions.html" target="_blank" rel="noreferrer">Extension guide</a>
-              <a className="btn ghost" href="https://tailscale.com/docs/features/tailscale-serve" target="_blank" rel="noreferrer">Tailscale Serve docs</a>
+              <a className="btn ff-button ff-button-secondary" href="./docs/pocket-id-tailscale.html" target="_blank" rel="noreferrer">Private SSO setup</a>
+              <a className="btn ff-button ff-button-quiet" href="./docs/extensions.html" target="_blank" rel="noreferrer">Extension guide</a>
+              <a className="btn ff-button ff-button-quiet" href="https://tailscale.com/docs/features/tailscale-serve" target="_blank" rel="noreferrer">Tailscale Serve docs</a>
             </div>
             <div className="config-lines" aria-label="Private Edge service selection">
               {edgeCandidates.length > 0 ? edgeCandidates.map((service) => (
@@ -1402,10 +1446,10 @@ function ExtensionsWorkspace({
             </div>
             <div className="actions">
               {identityPlan.service.issuer ? (
-                <a className="btn" href={identityPlan.service.issuer} target="_blank" rel="noreferrer">Open Pocket ID</a>
+                <a className="btn ff-button ff-button-secondary" href={identityPlan.service.issuer} target="_blank" rel="noreferrer">Open Pocket ID</a>
               ) : null}
               {identityPlan.service.setupUrl ? (
-                <a className="btn ghost" href={identityPlan.service.setupUrl} target="_blank" rel="noreferrer">Open first-admin setup</a>
+                <a className="btn ff-button ff-button-quiet" href={identityPlan.service.setupUrl} target="_blank" rel="noreferrer">Open first-admin setup</a>
               ) : null}
             </div>
           </article> : null}
@@ -1437,9 +1481,9 @@ function ExtensionsWorkspace({
               ))}
             </div>
             <div className="actions">
-              <a className="btn ghost" href={observabilityPlan.service.localUrl} target="_blank" rel="noreferrer">Open local OpenObserve</a>
+              <a className="btn ff-button ff-button-quiet" href={observabilityPlan.service.localUrl} target="_blank" rel="noreferrer">Open local OpenObserve</a>
               {observabilityPlan.service.privateUrl ? (
-                <a className="btn" href={observabilityPlan.service.privateUrl} target="_blank" rel="noreferrer">Open private OpenObserve</a>
+                <a className="btn ff-button ff-button-secondary" href={observabilityPlan.service.privateUrl} target="_blank" rel="noreferrer">Open private OpenObserve</a>
               ) : null}
             </div>
           </article> : null}
@@ -1464,7 +1508,7 @@ function ExtensionsWorkspace({
                       >
                         {entry.service}
                       </button>
-                      <span className={`pill ${entry.status === 'suggested' ? 'warn' : 'ok'}`}>{entry.status}</span>
+                      <span className="pill ff-pill" data-ff-tone={entry.status === 'suggested' ? 'warning' : 'success'}>{entry.status}</span>
                     </div>
                   );
                 })
@@ -1481,7 +1525,7 @@ function ExtensionsWorkspace({
             <p className="mono">CLI 0.12.4 -&gt; 0.13.0</p>
             <p>Schedules a workspace update plan only. Nothing is installed until the plan is explicitly applied.</p>
             <button
-              className="btn"
+              className="btn ff-button ff-button-secondary"
               type="button"
               onClick={() => {
                 void queueUpdate();
@@ -1493,7 +1537,7 @@ function ExtensionsWorkspace({
         </section> : null}
 
         {!hasResults ? (
-          <section className="empty-search" aria-live="polite">
+          <section className="empty-search ff-empty-state" aria-live="polite">
             <strong>No matching connections or configuration</strong>
             <p>Clear the search to see all connection settings, ports, and update plans.</p>
           </section>
@@ -1551,16 +1595,16 @@ function ResourcesWorkspace({
 
   return (
     <main className="two-col">
-      <section className="pane resource-pane">
+      <section className="pane resource-pane ff-wave-surface" data-ff-wave="soft">
         <div className="pane-head">
           <div>
             <div className="label">System workspace</div>
-            <h1>{resourceScope === 'workspace' ? 'Workspace resources' : 'Host resources'}</h1>
+            <h2>{resourceScope === 'workspace' ? 'Workspace resources' : 'Host resources'}</h2>
           </div>
           <div className="resource-head-actions">
             <div className="actions resource-scope-toggle" aria-label="Resource scope">
               {(['workspace', 'host'] as ResourceScope[]).map((scope) => (
-                <button className={`btn ${resourceScope === scope ? 'active' : ''}`} type="button" key={scope} aria-pressed={resourceScope === scope} onClick={() => setResourceScope(scope)}>
+                <button className={`btn ff-button ff-button-secondary ${resourceScope === scope ? 'active' : ''}`} type="button" key={scope} aria-pressed={resourceScope === scope} onClick={() => setResourceScope(scope)}>
                   {scope === 'workspace' ? 'Workspace' : 'Host'}
                 </button>
               ))}
@@ -1648,11 +1692,11 @@ function ResourcesWorkspace({
                 </div>
                 <div className="actions">
                   {visibleSelectedProcess.serviceId ? (
-                    <button className="btn" type="button" onClick={() => openService(visibleSelectedProcess.serviceId || '')}>
+                    <button className="btn ff-button ff-button-secondary" type="button" onClick={() => openService(visibleSelectedProcess.serviceId || '')}>
                       Open service
                     </button>
                   ) : null}
-                  <button className="btn danger" type="button" onClick={() => openSafeStop(visibleSelectedProcess)}>
+                  <button className="btn ff-button ff-button-danger" type="button" onClick={() => openSafeStop(visibleSelectedProcess)}>
                     Review termination
                   </button>
                 </div>
@@ -1677,13 +1721,13 @@ function ResourcesWorkspace({
         </div>
       </section>
 
-      <section className="pane">
+      <section className="pane ff-wave-surface" data-ff-wave="soft">
         <div className="pane-head">
           <div>
             <div className="label">Operations</div>
             <h2>Ports and activity</h2>
           </div>
-          <button className="btn" type="button" onClick={() => setPauseLogs(!pauseLogs)}>
+          <button className="btn ff-button ff-button-secondary" type="button" onClick={() => setPauseLogs(!pauseLogs)}>
             {pauseLogs ? 'Resume' : 'Pause'}
           </button>
         </div>
@@ -1701,7 +1745,7 @@ function ResourcesWorkspace({
                 <strong>Port allocation</strong>
                 <p>{state.ports.rule}</p>
               </div>
-              <button className="btn primary" type="button" onClick={() => void allocatePort()}>
+              <button className="btn ff-button" type="button" onClick={() => void allocatePort()}>
                 Allocate
               </button>
             </div>
@@ -1710,7 +1754,7 @@ function ResourcesWorkspace({
                 <div className="port-row" key={`${entry.service}-${entry.port}`}>
                   <span className="mono">{entry.port}</span>
                   <span>{entry.service}</span>
-                  <span className={`pill ${entry.status === 'suggested' ? 'warn' : 'ok'}`}>{entry.status}</span>
+                  <span className="pill ff-pill" data-ff-tone={entry.status === 'suggested' ? 'warning' : 'success'}>{entry.status}</span>
                 </div>
               ))}
               {state.ports.recent.length === 0 ? <p className="empty-copy">No service port bindings were detected.</p> : null}
@@ -1723,7 +1767,7 @@ function ResourcesWorkspace({
                 <strong>Runtime activity</strong>
                 <p>{pauseLogs ? 'Feed paused at the current position.' : 'Docker, PM2, and lifecycle events.'}</p>
               </div>
-              <button className="btn ghost" type="button" onClick={() => void copyLogs()}>
+              <button className="btn ff-button ff-button-quiet" type="button" onClick={() => void copyLogs()}>
                 Copy
               </button>
             </div>
@@ -1931,7 +1975,7 @@ function ExtensionButton({
         <strong>{title}</strong>
         <span>{detail}</span>
       </span>
-      <span className={`pill ${healthy ? 'ok' : warn ? 'warn' : ''}`}>{status}</span>
+      <span className="pill ff-pill" data-ff-tone={healthy ? 'success' : warn ? 'warning' : 'neutral'}>{status}</span>
     </div>
   );
 }
@@ -1949,13 +1993,14 @@ function MobileNav({ view, setView, networkEdgeEnabled }: { view: View; setView:
   return (
     <nav className="mobile-nav" aria-label="Mobile screen navigation">
       {(['current', ...(networkEdgeEnabled ? ['launchpad' as View] : []), 'extensions', 'resources'] as View[]).map((item) => (
-        <button key={item} className={view === item ? 'active' : ''} type="button" aria-current={view === item ? 'page' : undefined} onClick={() => setView(item)}>
+        <a key={item} className="ff-nav-link" href={VIEW_PATHS[item]} aria-current={view === item ? 'page' : undefined} onClick={(event) => {
+          if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+          event.preventDefault(); setView(item);
+          window.scrollTo({ top: 0, behavior: 'instant' });
+        }}>
           {VIEW_LABELS[item]}
-        </button>
+        </a>
       ))}
-      <button type="button" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
-        Top
-      </button>
     </nav>
   );
 }
@@ -1992,7 +2037,7 @@ function TempRuntimeModal({ close, submit }: { close: () => void; submit: (input
   const { dialogRef, closeDialog, handleClose } = useNativeDialog(close);
 
   return (
-    <dialog ref={dialogRef} className="modal-card" aria-labelledby="runtime-plan-title" onClose={handleClose}>
+    <dialog ref={dialogRef} className="modal-card ff-dialog ff-wave-surface" data-ff-wave="soft" aria-labelledby="runtime-plan-title" onClose={handleClose}>
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -2004,7 +2049,7 @@ function TempRuntimeModal({ close, submit }: { close: () => void; submit: (input
             <div className="label">Temporary runtime</div>
             <h2 id="runtime-plan-title">Create runtime plan</h2>
           </div>
-          <button className="btn ghost" type="button" onClick={closeDialog}>
+          <button className="btn ff-button ff-button-quiet" type="button" onClick={closeDialog}>
             Close
           </button>
         </div>
@@ -2013,7 +2058,7 @@ function TempRuntimeModal({ close, submit }: { close: () => void; submit: (input
           <div className="form-grid">
             <label>
               <span className="label">Type</span>
-              <select className="select" value={type} onChange={(event) => setType(event.target.value)} data-initial-focus>
+              <select className="select ff-select" value={type} onChange={(event) => setType(event.target.value)} data-initial-focus>
                 <option>Docker</option>
                 <option>PM2</option>
                 <option>MCP server</option>
@@ -2022,14 +2067,14 @@ function TempRuntimeModal({ close, submit }: { close: () => void; submit: (input
             </label>
             <label>
               <span className="label">Port</span>
-              <input className="input" value={port} onChange={(event) => setPort(event.target.value)} />
+              <input className="input ff-input" value={port} onChange={(event) => setPort(event.target.value)} />
             </label>
           </div>
           <label>
             <span className="label">Command</span>
-            <textarea rows={3} value={command} onChange={(event) => setCommand(event.target.value)} />
+            <textarea className="ff-input" rows={3} value={command} onChange={(event) => setCommand(event.target.value)} />
           </label>
-          <button className="btn primary" type="submit">
+          <button className="btn ff-button" type="submit">
             Save runtime plan
           </button>
         </div>
@@ -2058,13 +2103,13 @@ function SafeStopModal({
   const { dialogRef, closeDialog, handleClose } = useNativeDialog(close);
 
   return (
-    <dialog ref={dialogRef} className="modal-card" aria-labelledby="safe-stop-title" onClose={handleClose}>
+    <dialog ref={dialogRef} className="modal-card ff-dialog ff-wave-surface" data-ff-wave="soft" aria-labelledby="safe-stop-title" onClose={handleClose}>
         <div className="pane-head">
           <div>
             <div className="label">Safe termination</div>
             <h2 id="safe-stop-title">{heading}</h2>
           </div>
-          <button className="btn ghost" type="button" onClick={closeDialog}>
+          <button className="btn ff-button ff-button-quiet" type="button" onClick={closeDialog}>
             Close
           </button>
         </div>
@@ -2087,7 +2132,7 @@ function SafeStopModal({
           )}
           <label>
             <span className="label">Reason (optional)</span>
-            <textarea
+            <textarea className="ff-input"
               rows={3}
               placeholder="For example: orphan process after closing the dev server"
               value={reason}
@@ -2095,7 +2140,7 @@ function SafeStopModal({
               data-initial-focus
             />
           </label>
-          <button className="btn danger" type="button" disabled={target.type === 'process' && (!review || !review.canTerminate)} onClick={() => void confirm()}>
+          <button className="btn ff-button ff-button-danger" type="button" disabled={target.type === 'process' && (!review || !review.canTerminate)} onClick={() => void confirm()}>
             {target.type === 'service' ? 'Stop service' : review ? 'Terminate reviewed process' : 'Reviewing process...'}
           </button>
         </div>
